@@ -1,0 +1,44 @@
+import type {
+  Exercise,
+  ExerciseInput,
+  Routine,
+  RoutineAggregate,
+  RoutineVersion,
+  RoutineVersionInput,
+  Workout,
+  WorkoutSetCorrection,
+} from "../entities";
+
+export type ExerciseQuery = { includeArchived?: boolean; search?: string };
+export type WorkoutQuery = { includeArchived?: boolean; status?: string };
+
+export interface ExerciseRepository {
+  listExercises(ownerEmail: string, query?: ExerciseQuery): Promise<Exercise[]>;
+  getExercise(ownerEmail: string, id: string): Promise<Exercise | null>;
+  createExercise(ownerEmail: string, input: ExerciseInput): Promise<Exercise>;
+  updateExercise(ownerEmail: string, id: string, input: Partial<ExerciseInput>): Promise<Exercise | null>;
+  archiveExercise(ownerEmail: string, id: string): Promise<boolean>;
+}
+
+export interface RoutineRepository {
+  listRoutineAggregates(ownerEmail: string, includeArchived?: boolean): Promise<RoutineAggregate[]>;
+  getRoutineAggregate(ownerEmail: string, idOrCode: string): Promise<RoutineAggregate | null>;
+  createRoutine(ownerEmail: string, code: string, input: RoutineVersionInput): Promise<RoutineAggregate>;
+  updateRoutineIdentity(ownerEmail: string, idOrCode: string, input: { code?: string; isActive?: boolean }): Promise<Routine | null>;
+  listRoutineVersions(ownerEmail: string, idOrCode: string): Promise<RoutineVersion[]>;
+  getRoutineVersion(ownerEmail: string, idOrCode: string, versionId: string): Promise<RoutineVersion | null>;
+  createRoutineVersion(ownerEmail: string, idOrCode: string, input: RoutineVersionInput): Promise<RoutineVersion>;
+  updateRoutineVersion(ownerEmail: string, idOrCode: string, versionId: string, input: RoutineVersionInput): Promise<RoutineVersion | null>;
+  deleteRoutineVersion(ownerEmail: string, idOrCode: string, versionId: string): Promise<boolean>;
+  publishRoutineVersion(ownerEmail: string, idOrCode: string, versionId: string): Promise<RoutineAggregate | null>;
+}
+
+export interface WorkoutRepository {
+  listWorkouts(ownerEmail: string, query?: WorkoutQuery): Promise<Workout[]>;
+  getWorkout(ownerEmail: string, id: string): Promise<Workout | null>;
+  updateWorkout(ownerEmail: string, id: string, input: { bodyWeight?: number | null; notes?: string; status?: string }): Promise<Workout | null>;
+  archiveWorkout(ownerEmail: string, id: string): Promise<boolean>;
+  correctWorkoutSet(ownerEmail: string, workoutId: string, setId: string, input: WorkoutSetCorrection): Promise<Workout | null>;
+}
+
+export type EntityRepository = ExerciseRepository & RoutineRepository & WorkoutRepository;

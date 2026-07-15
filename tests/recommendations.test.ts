@@ -88,3 +88,21 @@ test("recommends recovery when recent upper- and lower-body work blocks every ro
   assert.equal(result.recommendedRoutineCode, null);
   assert.ok(result.routines.every((routine) => routine.availability === "recovering"));
 });
+
+test("uses exercise muscle metadata in preference to legacy routine-position mappings", () => {
+  const performedAt = completedSession("A", 12).completedAt;
+  const result = buildRoutineRecommendations(
+    [completedSession("A", 12)],
+    Array.from({ length: 8 }, () => ({
+      routineCode: "A" as const,
+      exerciseOrder: 1,
+      setType: "regular",
+      performedAt,
+      muscles: { quads: 1, glutes: 0.8 },
+    })),
+    NOW,
+  );
+
+  assert.equal(result.routines.find((routine) => routine.code === "C")?.availability, "recovering");
+  assert.equal(result.routines.find((routine) => routine.code === "A")?.availability, "available");
+});

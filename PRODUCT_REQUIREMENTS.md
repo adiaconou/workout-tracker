@@ -1,6 +1,6 @@
 # Workout Tracker — Product Requirements Document
 
-**Status:** Draft v0.3
+**Status:** Draft v0.4
 **Date:** July 14, 2026
 **Product:** Mobile-first workout logging Site  
 **Source material:** [Rolling 4-Workout Plan](https://docs.google.com/spreadsheets/d/1jiCjg9aBBTWVHEHzPgvOAG3aPuIHWifwSO6EOsXT534/edit) in the Google Drive folder **Workout Plan**
@@ -30,7 +30,7 @@ The source spreadsheet describes the plan clearly, but it is optimized for readi
 
 - Social features, coaching, leaderboards, or shared/multi-athlete accounts
 - AI-generated routine creation, medical diagnosis, or automatic prescription changes. The first release may provide deterministic, explainable goal and recovery guidance from the user's own logged history.
-- Creating entirely new routines or adding/removing exercises inside the app
+- End-user catalog-management screens for creating entirely new routines or exercises. Authenticated CRUD APIs and the underlying entity model are included so these screens can be added without another persistence redesign.
 - Nutrition, cardio, or body-measurement tracking beyond optional workout body weight and notes
 - Advanced analytics, charts, or automatic progression changes
 - Wearable-device integration
@@ -188,16 +188,20 @@ This section defines the information the product must preserve and the observabl
 - The product must not mark a workout Completed or Partial while performed/skipped set actions remain unresolved or unsaved. The user may exit, but the session remains In Progress until persistence succeeds or the affected action is explicitly discarded.
 - Completed workout history must remain readable after routine definitions change.
 
-### 8.2 Routine and prescribed-set model
+### 8.2 Exercise catalog, routine, and prescribed-set model
 
-The product must represent each routine as an ordered, versioned definition and each prescribed set as a distinct logical item.
+The product must maintain reusable exercise catalog identities independently from routine programming. A routine is a stable identity with immutable versions; each version contains ordered exercise placements, and each placement contains individually addressable prescribed sets.
+
+An exercise catalog entry owns movement metadata such as name, equipment, movement pattern, tracking type, load type, side mode, instructions, and weighted primary/supporting muscle associations. Sets, reps, RIR, and rest do not belong to the exercise catalog because they vary by routine.
+
+A published routine version is immutable. Editing a routine creates a new version, preserves earlier versions, and changes only future workout instances. Exercise and set order are stored as explicit positions rather than serialized arrays.
 
 Required logical fields:
 
 | Field | Purpose |
 | --- | --- |
 | routine_id / routine_version | Stable routine identity and snapshot version |
-| exercise_id / exercise_order | Stable identity and display sequence |
+| exercise_id / exercise_order | Reusable catalog identity and placement sequence |
 | exercise_name | Display label |
 | set_id / set_order / set_type | Warm-up, regular, failure, drop, EMOM, or test set |
 | target_min / target_max / target_unit | Structured reps or seconds target |
@@ -210,6 +214,8 @@ Required logical fields:
 | instruction / notes | Display guidance that should not be lost |
 | active | Allows retirement without deleting history |
 
+The persistence model must preserve separate logical entities for Exercise, Exercise Muscle, Routine, Routine Version, Routine Exercise, and Routine Set. API consumers may update a draft version as one aggregate so a routine cannot be left partially updated.
+
 ### 8.3 Workout session model
 
 Each started workout must have one durable logical session with:
@@ -218,6 +224,7 @@ Each started workout must have one durable logical session with:
 
 - Status values: In Progress, Completed, Partial, Abandoned.
 - The session includes an immutable snapshot of the prescribed routine version used when it started.
+- Starting a session materializes ordered Workout Exercise and Workout Set records. This supports resume, substitutions, corrections, and future ad-hoc workouts without mutating the source routine.
 - Starting or retrying Start Workout must not create duplicate sessions.
 - Only one session may be active unless the user explicitly completes or abandons it.
 
@@ -270,6 +277,7 @@ Each prescribed set in a session must have one logical performance record with:
 | FR-14 | P1 | Edit prior set data, if enabled | Edit updates the existing logical record and audit timestamp without duplicating it |
 | FR-15 | P2 | Export/share a session summary | User can create a readable summary without exposing private credentials or unrelated workout data |
 | FR-16 | P0 | Recommend a workout for today | The routine library shows one explainable goal-aligned recommendation plus an independent recovery status for all routines, based on recent completed sets, while preserving manual access to every routine |
+| FR-17 | P0 | Provide a reusable entity and API layer | Authenticated owner-scoped APIs can create, read, update, and archive exercises, routines, and workouts; routine versions and workout-set corrections preserve the versioning and history invariants in Section 8 |
 
 ## 10. Reliability, security, and quality requirements
 
@@ -309,6 +317,7 @@ Workout values remain private user data. Product analytics should not include ex
 - Immediate, idempotent persistence of every performed/skipped set
 - Basic session summary and sync/error states
 - Explainable Best today recommendation and per-routine recovery availability
+- Reusable exercise catalog, immutable routine versions, materialized workout logs, and authenticated entity APIs
 
 ### Follow-up / P1
 
@@ -447,4 +456,4 @@ Workout A progresses through these set targets:
 
 ## 16. Definition of done for the first release
 
-The first release is done when the user can authenticate, view all four canonical routines, see an explainable Best today recommendation and independent availability status for each routine, start any routine, log or skip every prescribed set, receive the correct rest/EMOM/superset behavior, safely resume after interruption, and finish the workout with every performed or skipped set reflected exactly once in durable workout history.
+The first release is done when the user can authenticate, view all four canonical routines, see an explainable Best today recommendation and independent availability status for each routine, start any routine, log or skip every prescribed set, receive the correct rest/EMOM/superset behavior, safely resume after interruption, and finish the workout with every performed or skipped set reflected exactly once in durable workout history. Exercise, routine-version, workout, and workout-set data must also be accessible through the owner-scoped entity services and APIs without bypassing version or history protections.

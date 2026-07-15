@@ -1,5 +1,17 @@
 import { getWorkoutUser } from "../../chatgpt-auth";
 import { startWorkout } from "../../../lib/store";
+import { getEntityServices } from "@/application/services";
+
+export async function GET(request: Request) {
+  const user = await getWorkoutUser();
+  if (!user) return Response.json({ error: "Sign in is required." }, { status: 401 });
+  const url = new URL(request.url);
+  const workouts = await getEntityServices().workouts.list(user.email, {
+    includeArchived: url.searchParams.get("includeArchived") === "true",
+    status: url.searchParams.get("status") ?? undefined,
+  });
+  return Response.json({ workouts });
+}
 
 export async function POST(request: Request) {
   const user = await getWorkoutUser();

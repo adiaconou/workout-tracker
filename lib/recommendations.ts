@@ -6,6 +6,7 @@ export type RecentCompletedSet = {
   exerciseOrder: number;
   setType: "warmup" | "regular" | "failure" | "drop" | "emom" | string;
   performedAt: string;
+  muscles?: MuscleWeights;
 };
 
 export type RecentCompletedSession = {
@@ -30,12 +31,13 @@ export type RecommendationResult = {
   routines: RoutineRecommendation[];
 };
 
-type MuscleGroup = "back" | "chest" | "shoulders" | "biceps" | "triceps" | "quads" | "hamstrings" | "glutes" | "core" | "grip";
-type MuscleWeights = Partial<Record<MuscleGroup, number>>;
+export type MuscleGroup = "back" | "chest" | "shoulders" | "biceps" | "triceps" | "quads" | "hamstrings" | "glutes" | "core" | "grip";
+export type MuscleWeights = Partial<Record<MuscleGroup, number>>;
+export type RoutineProfiles = Partial<Record<RoutineCode, MuscleWeights>>;
 
 const ROUTINE_ORDER: RoutineCode[] = ["A", "B", "C", "D"];
 
-const EXERCISE_MUSCLES: Record<RoutineCode, Record<number, MuscleWeights>> = {
+export const EXERCISE_MUSCLES: Record<RoutineCode, Record<number, MuscleWeights>> = {
   A: {
     1: { back: 1, biceps: 0.45, grip: 0.25 },
     2: { chest: 1, triceps: 0.6, shoulders: 0.45 },
@@ -144,6 +146,7 @@ export function buildRoutineRecommendations(
   sessions: RecentCompletedSession[],
   completedSets: RecentCompletedSet[],
   now = new Date(),
+  configuredProfiles?: RoutineProfiles,
 ): RecommendationResult {
   const validSessions = sessions
     .filter((session) => ROUTINE_ORDER.includes(session.routineCode) && Number.isFinite(new Date(session.completedAt).getTime()))
@@ -152,7 +155,7 @@ export function buildRoutineRecommendations(
   const recoveryLoad: Partial<Record<MuscleGroup, number>> = {};
 
   for (const set of recentSets) {
-    const muscles = EXERCISE_MUSCLES[set.routineCode]?.[set.exerciseOrder] ?? {};
+    const muscles = set.muscles ?? EXERCISE_MUSCLES[set.routineCode]?.[set.exerciseOrder] ?? {};
     const factor = setEffortFactor(set.setType) * timeDecay(hoursBetween(now, set.performedAt));
     for (const [muscle, weight] of Object.entries(muscles) as Array<[MuscleGroup, number]>) {
       recoveryLoad[muscle] = (recoveryLoad[muscle] ?? 0) + weight * factor;
@@ -171,7 +174,7 @@ export function buildRoutineRecommendations(
   const lowerBodyDue = !validSessions.slice(0, 3).some((session) => session.routineCode === "C");
 
   const draft = ROUTINE_ORDER.map((code) => {
-    const profile = ROUTINE_PROFILES[code];
+    const profile = configuredProfiles?.[code] ?? ROUTINE_PROFILES[code];
     const profileTotal = Object.values(profile).reduce((sum, value) => sum + (value ?? 0), 0);
     const muscleOverlap = (Object.entries(profile) as Array<[MuscleGroup, number]>)
       .map(([muscle, profileWeight]) => {
@@ -183,7 +186,7 @@ export function buildRoutineRecommendations(
     const overlappingMuscles = muscleOverlap.filter((item) => item.contribution >= 0.025).slice(0, 3).map((item) => item.muscle);
     const relevantSetAges = recentSets
       .filter((set) => {
-        const setMuscles = EXERCISE_MUSCLES[set.routineCode]?.[set.exerciseOrder] ?? {};
+        const setMuscles = set.muscles ?? EXERCISE_MUSCLES[set.routineCode]?.[set.exerciseOrder] ?? {};
         return overlappingMuscles.some((muscle) => Boolean(setMuscles[muscle]));
       })
       .map((set) => hoursBetween(now, set.performedAt));
