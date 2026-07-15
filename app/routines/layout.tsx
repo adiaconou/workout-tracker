@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { chatGPTSignOutPath, requireChatGPTUser } from "../chatgpt-auth";
+import { InstallAppButton } from "./install-app-button";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +15,7 @@ export default async function RoutinesLayout({ children }: { children: React.Rea
         </Link>
         <nav className="site-nav" aria-label="Main navigation">
           <Link className="nav-link active" href="/routines" aria-current="page">Routines</Link>
+          <InstallAppButton />
           <a className="nav-link" href={chatGPTSignOutPath("/routines")}>Sign out</a>
         </nav>
         <span className="account-label" title={user.email}>{user.displayName}</span>

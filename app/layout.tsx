@@ -1,6 +1,11 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
+import { PwaRegister } from "./pwa-register";
 import "./globals.css";
+
+export const viewport: Viewport = {
+  themeColor: "#090d14",
+};
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -10,8 +15,22 @@ export async function generateMetadata(): Promise<Metadata> {
 
   return {
     metadataBase: base,
+    applicationName: "Workout Tracker",
     title: { default: "Workout Tracker", template: "%s · Workout Tracker" },
     description: "A focused, private workout tracker for the rolling A–D strength plan.",
+    manifest: "/manifest.webmanifest",
+    appleWebApp: {
+      capable: true,
+      statusBarStyle: "black-translucent",
+      title: "Workout Tracker",
+    },
+    icons: {
+      icon: [
+        { url: "/favicon.svg", type: "image/svg+xml" },
+        { url: "/icons/icon-192.png", type: "image/png", sizes: "192x192" },
+      ],
+      apple: [{ url: "/icons/icon-192.png", type: "image/png", sizes: "192x192" }],
+    },
     openGraph: {
       title: "Workout Tracker",
       description: "One set at a time. Build, run, and preserve your rolling A–D plan.",
@@ -30,7 +49,10 @@ export async function generateMetadata(): Promise<Metadata> {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        {children}
+        <PwaRegister />
+      </body>
     </html>
   );
 }

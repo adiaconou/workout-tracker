@@ -117,6 +117,18 @@ select {
   background: var(--surface);
 }
 
+.install-app-button {
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  cursor: pointer;
+}
+
+.install-app-button:hover {
+  border-color: var(--accent);
+  color: var(--paper);
+  background: var(--surface);
+}
+
 .account-label {
   justify-self: end;
   max-width: 220px;
