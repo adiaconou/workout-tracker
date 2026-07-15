@@ -5,7 +5,7 @@ import test from "node:test";
 const root = new URL("../", import.meta.url);
 
 test("replaces the starter with the workout tracker product", async () => {
-  const [layout, page, auth, routines, routineLayout, installButton, detail, activeWorkout, workoutApi, store, manifest, serviceWorker, hosting] = await Promise.all([
+  const [layout, page, auth, routines, routineLayout, installButton, detail, activeWorkout, workoutApi, store, recommendations, manifest, serviceWorker, hosting] = await Promise.all([
     readFile(new URL("app/layout.tsx", root), "utf8"),
     readFile(new URL("app/page.tsx", root), "utf8"),
     readFile(new URL("app/chatgpt-auth.ts", root), "utf8"),
@@ -16,6 +16,7 @@ test("replaces the starter with the workout tracker product", async () => {
     readFile(new URL("app/workouts/[sessionId]/active-workout.tsx", root), "utf8"),
     readFile(new URL("app/api/workouts/route.ts", root), "utf8"),
     readFile(new URL("lib/store.ts", root), "utf8"),
+    readFile(new URL("lib/recommendations.ts", root), "utf8"),
     readFile(new URL("public/manifest.webmanifest", root), "utf8"),
     readFile(new URL("public/sw.js", root), "utf8"),
     readFile(new URL(".openai/hosting.json", root), "utf8"),
@@ -28,6 +29,8 @@ test("replaces the starter with the workout tracker product", async () => {
   assert.match(auth, /isWorkoutOwnerEmail/);
   assert.match(auth, /OWNER_EMAIL/);
   assert.match(routines, /requireWorkoutUser/);
+  assert.match(routines, /getRoutineRecommendations/);
+  assert.match(routines, /Best today/);
   assert.match(workoutApi, /getWorkoutUser/);
   assert.match(routines, /A → B → C → D → repeat/);
   assert.match(routineLayout, /InstallAppButton/);
@@ -46,6 +49,12 @@ test("replaces the starter with the workout tracker product", async () => {
   assert.match(store, /rest_ends_at/);
   assert.match(store, /status = 'Abandoned'/);
   assert.match(store, /requiresConfirmation: true/);
+  assert.match(store, /sp\.performed_at >= \?/);
+  assert.match(recommendations, /completedSets\.filter/);
+  assert.match(recommendations, /72/);
+  assert.match(recommendations, /warmup/);
+  assert.match(recommendations, /failure.*drop/);
+  assert.match(recommendations, /Available with caution/);
   assert.match(manifest, /"display": "standalone"/);
   assert.match(manifest, /icon-maskable-512\.png/);
   assert.match(serviceWorker, /\/offline\.html/);

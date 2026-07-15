@@ -1,6 +1,12 @@
 import { env } from "cloudflare:workers";
 import { canonicalRoutines } from "./routines";
 import { buildGuidedSets, type GuidedSet } from "./workout";
+import {
+  buildRoutineRecommendations,
+  type RecentCompletedSession,
+  type RecentCompletedSet,
+  type RecommendationResult,
+} from "./recommendations";
 
 export type RoutineExercise = {
   id: string;
@@ -227,6 +233,35 @@ export async function getRoutineList(ownerEmail: string): Promise<RoutineSummary
     exerciseCount: Number(row.exerciseCount),
     setCount: Number(row.setCount),
   }));
+}
+
+export async function getRoutineRecommendations(ownerEmail: string): Promise<RecommendationResult> {
+  await ensureUserRoutines(ownerEmail);
+  const cutoff = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString();
+  const d1 = db();
+  const [sessions, completedSets] = await Promise.all([
+    d1
+      .prepare(`SELECT routine_code AS routineCode, completed_at AS completedAt
+        FROM workout_sessions
+        WHERE owner_email = ? AND status = 'Completed' AND completed_at IS NOT NULL
+        ORDER BY completed_at DESC LIMIT 12`)
+      .bind(ownerEmail)
+      .all<RecentCompletedSession>(),
+    d1
+      .prepare(`SELECT ws.routine_code AS routineCode, sp.exercise_order AS exerciseOrder,
+        sp.set_type AS setType, sp.performed_at AS performedAt
+        FROM set_performances sp
+        INNER JOIN workout_sessions ws ON ws.id = sp.session_id AND ws.owner_email = sp.owner_email
+        WHERE sp.owner_email = ? AND sp.status = 'Completed' AND sp.performed_at >= ?
+        ORDER BY sp.performed_at DESC`)
+      .bind(ownerEmail, cutoff)
+      .all<RecentCompletedSet>(),
+  ]);
+
+  return buildRoutineRecommendations(
+    sessions.results,
+    completedSets.results.map((set) => ({ ...set, exerciseOrder: Number(set.exerciseOrder) })),
+  );
 }
 
 export async function getRoutine(ownerEmail: string, code: string): Promise<Routine | null> {

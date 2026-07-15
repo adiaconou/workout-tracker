@@ -1,7 +1,7 @@
 # Workout Tracker — Product Requirements Document
 
-**Status:** Draft v0.2  
-**Date:** July 13, 2026  
+**Status:** Draft v0.3
+**Date:** July 14, 2026
 **Product:** Mobile-first workout logging Site  
 **Source material:** [Rolling 4-Workout Plan](https://docs.google.com/spreadsheets/d/1jiCjg9aBBTWVHEHzPgvOAG3aPuIHWifwSO6EOsXT534/edit) in the Google Drive folder **Workout Plan**
 
@@ -9,7 +9,7 @@
 
 Workout Tracker is a single-user, mobile-first web app for running and logging the existing rolling four-workout plan. The product must save every performed or skipped set to a durable store so workout history survives refreshes, interruptions, device changes, and future app deployments.
 
-The app includes routines A–D from the source plan, lets the user start any routine, guides the user through each prescribed set, captures actual performance, automatically runs the correct rest timer, and durably saves each set-level action. The choice of database, storage engine, API, authentication provider, synchronization design, and hosting implementation belongs in the eventual technical design, not this product document.
+The app includes routines A–D from the source plan, lets the user start any routine, guides the user through each prescribed set, captures actual performance, automatically runs the correct rest timer, and durably saves each set-level action. It also uses recent completed-set history to distinguish routines that are recovered enough to perform from the routine that best advances the user's goals today. The choice of database, storage engine, API, authentication provider, synchronization design, and hosting implementation belongs in the eventual technical design, not this product document.
 
 ## 2. Problem statement
 
@@ -24,12 +24,13 @@ The source spreadsheet describes the plan clearly, but it is optimized for readi
 5. Handle the plan's real programming details, including warm-ups, rep ranges, timed holds, per-side work, failure sets, a drop set, supersets, and EMOM rounds.
 6. Make an in-progress workout recoverable after refresh, navigation, connection loss, or accidental app closure.
 7. Capture the complete plan and its behavior precisely enough that the app can be reproduced from this PRD plus an eventual technical design.
+8. Recommend a goal-aligned routine without hiding the recovery status of the other routines or preventing manual choice.
 
 ## 4. Non-goals for the first release
 
 - Social features, coaching, leaderboards, or shared/multi-athlete accounts
-- AI-generated programming or medical/training recommendations
-- Editing the routine definition inside the app
+- AI-generated routine creation, medical diagnosis, or automatic prescription changes. The first release may provide deterministic, explainable goal and recovery guidance from the user's own logged history.
+- Creating entirely new routines or adding/removing exercises inside the app
 - Nutrition, cardio, or body-measurement tracking beyond optional workout body weight and notes
 - Advanced analytics, charts, or automatic progression changes
 - Wearable-device integration
@@ -96,8 +97,8 @@ The existing wide format is useful for manual review, but it does not represent 
 
 1. The first release is for one authenticated user.
 2. The app ships with the routine definitions and progression rules captured in this PRD.
-3. Routine editing is outside the first release.
-4. Weight defaults to pounds, with a setting to switch to kilograms. Bodyweight, added weight, and assistance are distinct load types.
+3. The user may edit the existing routine prescriptions. Routine changes create a new version and never alter an in-progress workout snapshot or historical session.
+4. Weight defaults to pounds. Bodyweight, added weight, and assistance are distinct load types. A kilograms setting may be added later.
 5. Body weight is captured once per workout session, not once per exercise.
 6. Routine content is snapshotted when a workout starts so later routine changes do not alter a workout already in progress or its historical meaning.
 7. Product behavior must not depend on a particular database, cloud vendor, spreadsheet, API framework, or hosting implementation.
@@ -107,8 +108,16 @@ The existing wide format is useful for manual review, but it does not represent 
 ### 7.1 Home and routine library
 
 - Show all four routines with identifier, focus, summary, exercise count, estimated duration, and most recent completion date.
-- Highlight the recommended next routine based on the most recently completed routine in the A → B → C → D sequence.
+- Show one prominent **Best today** recommendation that combines goal fit with current recovery availability.
+- Show a separate availability state for every routine: **Available**, **Available with caution**, or **Recovering**.
+- Calculate recovery from muscle-group overlap with completed sets logged during the prior 72 hours. Warm-ups contribute less recovery load; failure and drop sets contribute more.
+- Calculate goal fit from the plan's priorities: improve pull-ups, build upper-body strength and definition, train legs once per rolling cycle, strengthen the core, and preserve the A → B → C → D balance.
+- Prefer the next routine in the rolling sequence when it is available. If it has substantial recent overlap, recommend the strongest available goal fit instead.
+- Explain why a routine is recommended and why a routine is limited, using plain-language muscle groups and the age of the relevant workout data.
+- If every routine has substantial recent overlap, recommend a recovery day rather than presenting a routine as recovered.
 - Allow the user to start any routine even when it is not the recommended next routine.
+- Never disable or hide a routine because of recovery guidance; the user retains the final decision.
+- Identify this guidance as an estimate from logged training, not a guarantee of readiness or a medical safety assessment.
 - If an incomplete workout exists, show **Resume workout** as the primary action.
 
 ### 7.2 Routine detail
@@ -231,6 +240,16 @@ Each prescribed set in a session must have one logical performance record with:
 - Import, migration, storage, indexing, and physical schema choices belong in the technical design.
 - Regardless of implementation, the logical entities, values, relationships, and durability behavior defined here must remain observable to the user.
 
+### 8.6 Goal and recovery guidance
+
+- Each canonical exercise must have a maintained association with its primary and supporting muscle groups. These associations may be product-owned configuration rather than user-visible data in the first release.
+- Recovery scoring uses only sets that were actually completed. Skipped sets do not add recovery load.
+- A completed routine advances the rolling sequence; a partial or abandoned routine does not. Its completed sets may still affect recovery availability.
+- The same history and time must always produce the same recommendation. The first release does not use generative AI or silently modify routine prescriptions.
+- The recommendation response must preserve, for every routine: availability state, short availability reason, goal-fit reason, whether it is next in sequence, and whether it is the single recommended routine.
+- No workout history means all routines are available and Routine A is the starting recommendation.
+- Recommendation thresholds and muscle associations are product configuration that must be regression-tested against no-history, partial-session, upper-body, lower-body, and all-routines-recovering scenarios.
+
 ## 9. Functional requirements and acceptance criteria
 
 | ID | Priority | Requirement | Acceptance criterion |
@@ -250,6 +269,7 @@ Each prescribed set in a session must have one logical performance record with:
 | FR-13 | P1 | Apply progression guidance | Relevant pull-up progression prompt appears after qualifying sessions without automatically changing the plan |
 | FR-14 | P1 | Edit prior set data, if enabled | Edit updates the existing logical record and audit timestamp without duplicating it |
 | FR-15 | P2 | Export/share a session summary | User can create a readable summary without exposing private credentials or unrelated workout data |
+| FR-16 | P0 | Recommend a workout for today | The routine library shows one explainable goal-aligned recommendation plus an independent recovery status for all routines, based on recent completed sets, while preserving manual access to every routine |
 
 ## 10. Reliability, security, and quality requirements
 
@@ -262,6 +282,7 @@ Each prescribed set in a session must have one logical performance record with:
 - Keep interactive controls usable on a phone, with large touch targets, readable contrast, keyboard avoidance, and screen-reader labels.
 - Initial app load should show routine names promptly. Set logging should feel immediate even if durable confirmation takes longer.
 - The app must not provide medical diagnosis or encourage training through pain; retain the plan's instruction to stop or modify an exercise if pain develops.
+- Recovery availability must be labeled as guidance derived from logged training. It must not claim to measure soreness, injury, sleep, or medical readiness that the product does not observe.
 - The technical design must map these product-level security and durability requirements to concrete controls and failure handling.
 
 ## 11. Analytics and operational events
@@ -271,6 +292,7 @@ For product quality, record only minimal non-sensitive events such as:
 - routine_viewed, workout_started, workout_resumed
 - set_completed, set_skipped, rest_skipped
 - workout_completed, workout_partial, workout_abandoned
+- recommendation_viewed, recommendation_overridden
 - durable_save_succeeded, durable_save_failed, duplicate_write_prevented
 
 Workout values remain private user data. Product analytics should not include exercise notes, body weight, or exact performance values unless the user explicitly opts in.
@@ -286,6 +308,7 @@ Workout values remain private user data. Product analytics should not include ex
 - One durable session per workout
 - Immediate, idempotent persistence of every performed/skipped set
 - Basic session summary and sync/error states
+- Explainable Best today recommendation and per-routine recovery availability
 
 ### Follow-up / P1
 
@@ -299,13 +322,20 @@ Workout values remain private user data. Product analytics should not include ex
 
 - Trends and volume charts
 - Session sharing/export
-- Routine editing UI and exercise substitutions
+- New-routine creation, exercise additions/removals, and exercise substitutions
 - Cardio, measurements, and wearable integration
 
-## 13. Open product decisions before implementation
+## 13. Product decisions and remaining questions
 
-1. Confirm the default weight unit and how assisted pull-up load should be entered (assistance amount, band label, or both).
-2. Decide whether completed workout records may be corrected or become immutable after completion.
+Resolved:
+
+- Weight defaults to pounds.
+- Completed workout records may be corrected later. Corrections update the existing logical record and preserve an audit timestamp.
+- Recovery guidance never prevents the user from opening or starting a routine.
+
+Remaining:
+
+1. Decide how assisted pull-up load should be entered: assistance amount, band label, or both.
 
 ## 14. Technical decisions intentionally deferred
 
@@ -417,4 +447,4 @@ Workout A progresses through these set targets:
 
 ## 16. Definition of done for the first release
 
-The first release is done when the user can authenticate, view all four canonical routines, start any routine, log or skip every prescribed set, receive the correct rest/EMOM/superset behavior, safely resume after interruption, and finish the workout with every performed or skipped set reflected exactly once in durable workout history.
+The first release is done when the user can authenticate, view all four canonical routines, see an explainable Best today recommendation and independent availability status for each routine, start any routine, log or skip every prescribed set, receive the correct rest/EMOM/superset behavior, safely resume after interruption, and finish the workout with every performed or skipped set reflected exactly once in durable workout history.
