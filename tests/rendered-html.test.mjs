@@ -5,7 +5,7 @@ import test from "node:test";
 const root = new URL("../", import.meta.url);
 
 test("replaces the starter with the workout tracker product", async () => {
-  const [layout, page, auth, routines, routineLayout, appHeader, installButton, detail, exerciseLibrary, exerciseDetail, activeWorkout, workoutApi, store, recommendations, manifest, serviceWorker, hosting] = await Promise.all([
+  const [layout, page, auth, routines, routineLayout, appHeader, installButton, detail, exerciseLibraryPage, exerciseLibrary, exerciseDetail, activeWorkout, workoutApi, store, recommendations, manifest, serviceWorker, hosting] = await Promise.all([
     readFile(new URL("app/layout.tsx", root), "utf8"),
     readFile(new URL("app/page.tsx", root), "utf8"),
     readFile(new URL("app/chatgpt-auth.ts", root), "utf8"),
@@ -15,6 +15,7 @@ test("replaces the starter with the workout tracker product", async () => {
     readFile(new URL("app/routines/install-app-button.tsx", root), "utf8"),
     readFile(new URL("app/routines/[routineId]/routine-editor.tsx", root), "utf8"),
     readFile(new URL("app/exercises/page.tsx", root), "utf8"),
+    readFile(new URL("app/exercises/exercise-library.tsx", root), "utf8"),
     readFile(new URL("app/exercises/[exerciseId]/page.tsx", root), "utf8"),
     readFile(new URL("app/workouts/[sessionId]/active-workout.tsx", root), "utf8"),
     readFile(new URL("app/api/workouts/route.ts", root), "utf8"),
@@ -46,8 +47,10 @@ test("replaces the starter with the workout tracker product", async () => {
   assert.match(detail, /requiresConfirmation/);
   assert.match(detail, /abandonActive/);
   assert.match(detail, /router\.push\(`\/workouts\/\$\{payload\.session\.id\}`\)/);
-  assert.match(exerciseLibrary, /Exercise Library/);
-  assert.match(exerciseLibrary, /getEntityServices\(\)\.exercises\.list/);
+  assert.match(exerciseLibraryPage, /Exercise Library/);
+  assert.match(exerciseLibraryPage, /getEntityServices\(\)\.exercises\.list/);
+  assert.match(exerciseLibrary, /onChange=\{\(event\) => setQuery\(event\.target\.value\)\}/);
+  assert.match(exerciseLibrary, /matchesQuery/);
   assert.match(exerciseLibrary, /encodeURIComponent\(exercise\.id\)/);
   assert.match(exerciseLibrary, /exercise-library-row/);
   assert.match(exerciseDetail, /services\.exercises\.get/);
