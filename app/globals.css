@@ -861,29 +861,29 @@ textarea.text-input {
 .exercise-library-head,
 .exercise-library-row {
   display: grid;
-  grid-template-columns: 42px minmax(230px, 1.2fr) minmax(130px, 0.58fr) minmax(240px, 0.9fr) 90px 28px;
-  gap: 18px;
+  grid-template-columns: 34px minmax(210px, 1.2fr) minmax(115px, 0.58fr) minmax(210px, 0.9fr) 78px 22px;
+  gap: 12px;
   align-items: center;
 }
 
 .exercise-library-head {
-  min-height: 34px;
+  min-height: 28px;
   color: var(--dim);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 8px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .exercise-library-row {
-  min-height: 76px;
-  padding: 10px 0;
+  min-height: 54px;
+  padding: 6px 0;
   border-top: 1px solid var(--line);
   transition: background 160ms ease, padding 160ms ease;
 }
 
 .exercise-library-row:hover {
-  padding-inline: 12px;
+  padding-inline: 8px;
   background: var(--surface-soft);
 }
 
@@ -894,19 +894,19 @@ textarea.text-input {
 .exercise-library-index {
   color: var(--dim);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 9px;
 }
 
 .exercise-library-name {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 3px;
+  gap: 1px;
 }
 
 .exercise-library-name strong {
   overflow: hidden;
-  font-size: 16px;
+  font-size: 14px;
   letter-spacing: -0.015em;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -915,7 +915,7 @@ textarea.text-input {
 .exercise-library-name small {
   color: var(--dim);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 8px;
   letter-spacing: 0.05em;
   text-transform: uppercase;
 }
@@ -923,12 +923,12 @@ textarea.text-input {
 .exercise-library-movement,
 .exercise-library-tracking {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .exercise-library-tracking {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 9px;
   text-transform: uppercase;
 }
 
@@ -936,8 +936,12 @@ textarea.text-input {
   display: flex;
   min-width: 0;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 4px;
   align-items: center;
+}
+
+.exercise-library-row .row-arrow {
+  font-size: 18px;
 }
 
 .muscle-chip,
@@ -945,13 +949,13 @@ textarea.text-input {
 .entity-status {
   display: inline-flex;
   align-items: center;
-  min-height: 23px;
-  padding: 0 8px;
+  min-height: 19px;
+  padding: 0 6px;
   border: 1px solid var(--line);
   border-radius: 999px;
   color: var(--muted);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 8px;
   line-height: 1;
   text-transform: uppercase;
 }
@@ -959,7 +963,7 @@ textarea.text-input {
 .muscle-count,
 .metadata-empty {
   color: var(--dim);
-  font-size: 10px;
+  font-size: 9px;
 }
 
 .library-empty {
@@ -989,9 +993,11 @@ textarea.text-input {
 
 .entity-status {
   min-height: 26px;
+  padding: 0 8px;
   margin-bottom: 6px;
   border-color: rgb(92 190 132 / 40%);
   color: var(--success);
+  font-size: 9px;
 }
 
 .exercise-fact-grid {
@@ -1168,7 +1174,7 @@ textarea.text-input {
 
   .exercise-library-head,
   .exercise-library-row {
-    grid-template-columns: 38px minmax(220px, 1fr) minmax(130px, 0.5fr) minmax(210px, 0.9fr) 28px;
+    grid-template-columns: 32px minmax(190px, 1fr) minmax(110px, 0.5fr) minmax(180px, 0.9fr) 22px;
   }
 
   .exercise-library-head > span:nth-child(5),
@@ -1349,9 +1355,9 @@ textarea.text-input {
   }
 
   .exercise-library-row {
-    grid-template-columns: 30px minmax(0, 1fr) minmax(120px, auto) 24px;
-    gap: 10px;
-    min-height: 70px;
+    grid-template-columns: 26px minmax(0, 1fr) minmax(105px, auto) 20px;
+    gap: 8px;
+    min-height: 54px;
   }
 
   .exercise-library-movement,
@@ -1453,8 +1459,8 @@ textarea.text-input {
   }
 
   .exercise-library-row {
-    grid-template-columns: 26px minmax(0, 1fr) 22px;
-    min-height: 64px;
+    grid-template-columns: 22px minmax(0, 1fr) 18px;
+    min-height: 50px;
   }
 
   .exercise-library-muscles {
