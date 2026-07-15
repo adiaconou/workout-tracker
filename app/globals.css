@@ -1198,6 +1198,30 @@ textarea.text-input {
   min-height: 52px;
 }
 
+.access-denied-page {
+  display: grid;
+  align-content: center;
+  width: min(100% - 36px, 900px);
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 64px 0;
+}
+
+.access-denied-page h1 {
+  max-width: 850px;
+}
+
+.access-denied-page > p:not(.eyebrow) {
+  max-width: 620px;
+  margin: 30px 0;
+  color: var(--muted);
+  font-size: 18px;
+}
+
+.access-denied-page .primary-button {
+  width: min(100%, 280px);
+}
+
 @media (max-width: 900px) {
   .active-workout-shell {
     padding-inline: 24px;

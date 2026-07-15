@@ -1,8 +1,8 @@
-import { getChatGPTUser } from "@/app/chatgpt-auth";
+import { getWorkoutUser } from "@/app/chatgpt-auth";
 import { recordWorkoutSet } from "@/lib/store";
 
 export async function POST(request: Request, { params }: { params: Promise<{ sessionId: string }> }) {
-  const user = await getChatGPTUser();
+  const user = await getWorkoutUser();
   if (!user) return Response.json({ error: "Sign in is required." }, { status: 401 });
   try {
     const { sessionId } = await params;

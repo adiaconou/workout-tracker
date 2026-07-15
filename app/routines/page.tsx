@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { requireChatGPTUser } from "../chatgpt-auth";
+import { requireWorkoutUser } from "../chatgpt-auth";
 import { getRoutineList } from "../../lib/store";
 
 export const dynamic = "force-dynamic";
@@ -11,7 +11,7 @@ export const metadata: Metadata = {
 };
 
 export default async function RoutinesPage() {
-  const user = await requireChatGPTUser("/routines");
+  const user = await requireWorkoutUser("/routines");
   const routines = await getRoutineList(user.email);
 
   return (

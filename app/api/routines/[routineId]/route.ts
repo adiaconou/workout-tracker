@@ -1,8 +1,8 @@
-import { getChatGPTUser } from "../../../chatgpt-auth";
+import { getWorkoutUser } from "../../../chatgpt-auth";
 import { updateRoutine } from "../../../../lib/store";
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ routineId: string }> }) {
-  const user = await getChatGPTUser();
+  const user = await getWorkoutUser();
   if (!user) return Response.json({ error: "Sign in is required." }, { status: 401 });
 
   try {

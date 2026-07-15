@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 
@@ -42,6 +43,22 @@ export async function requireChatGPTUser(
   if (user) return user;
 
   redirect(chatGPTSignInPath(returnTo));
+}
+
+export function isWorkoutOwnerEmail(email: string, configuredOwnerEmail = env.OWNER_EMAIL): boolean {
+  const ownerEmail = configuredOwnerEmail?.trim().toLowerCase();
+  return Boolean(ownerEmail && email.trim().toLowerCase() === ownerEmail);
+}
+
+export async function getWorkoutUser(): Promise<ChatGPTUser | null> {
+  const user = await getChatGPTUser();
+  return user && isWorkoutOwnerEmail(user.email) ? user : null;
+}
+
+export async function requireWorkoutUser(returnTo: string): Promise<ChatGPTUser> {
+  const user = await requireChatGPTUser(returnTo);
+  if (isWorkoutOwnerEmail(user.email)) return user;
+  redirect("/access-denied");
 }
 
 export function chatGPTSignInPath(returnTo: string): string {

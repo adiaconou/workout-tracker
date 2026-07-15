@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { requireChatGPTUser } from "@/app/chatgpt-auth";
+import { requireWorkoutUser } from "@/app/chatgpt-auth";
 import { getWorkoutSession } from "@/lib/store";
 import { ActiveWorkout } from "./active-workout";
 
@@ -13,7 +13,7 @@ export const metadata: Metadata = {
 
 export default async function ActiveWorkoutPage({ params }: { params: Promise<{ sessionId: string }> }) {
   const { sessionId } = await params;
-  const user = await requireChatGPTUser(`/workouts/${sessionId}`);
+  const user = await requireWorkoutUser(`/workouts/${sessionId}`);
   const workout = await getWorkoutSession(user.email, sessionId);
   if (!workout) notFound();
   return <ActiveWorkout initialWorkout={workout} />;

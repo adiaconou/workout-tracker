@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requireChatGPTUser } from "../../chatgpt-auth";
+import { requireWorkoutUser } from "../../chatgpt-auth";
 import { getRoutine } from "../../../lib/store";
 import { RoutineEditor } from "./routine-editor";
 
@@ -15,7 +15,7 @@ export async function generateMetadata({ params }: { params: Promise<{ routineId
 export default async function RoutineDetailPage({ params }: { params: Promise<{ routineId: string }> }) {
   const { routineId } = await params;
   const code = routineId.toUpperCase();
-  const user = await requireChatGPTUser(`/routines/${code}`);
+  const user = await requireWorkoutUser(`/routines/${code}`);
   const routine = await getRoutine(user.email, code);
   if (!routine) notFound();
 

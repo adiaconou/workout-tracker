@@ -1,11 +1,11 @@
 import Link from "next/link";
-import { chatGPTSignOutPath, requireChatGPTUser } from "../chatgpt-auth";
+import { chatGPTSignOutPath, requireWorkoutUser } from "../chatgpt-auth";
 import { InstallAppButton } from "./install-app-button";
 
 export const dynamic = "force-dynamic";
 
 export default async function RoutinesLayout({ children }: { children: React.ReactNode }) {
-  const user = await requireChatGPTUser("/routines");
+  const user = await requireWorkoutUser("/routines");
   return (
     <div className="app-shell">
       <header className="site-header">

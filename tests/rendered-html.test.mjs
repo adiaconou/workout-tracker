@@ -5,14 +5,16 @@ import test from "node:test";
 const root = new URL("../", import.meta.url);
 
 test("replaces the starter with the workout tracker product", async () => {
-  const [layout, page, routines, routineLayout, installButton, detail, activeWorkout, store, manifest, serviceWorker, hosting] = await Promise.all([
+  const [layout, page, auth, routines, routineLayout, installButton, detail, activeWorkout, workoutApi, store, manifest, serviceWorker, hosting] = await Promise.all([
     readFile(new URL("app/layout.tsx", root), "utf8"),
     readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("app/chatgpt-auth.ts", root), "utf8"),
     readFile(new URL("app/routines/page.tsx", root), "utf8"),
     readFile(new URL("app/routines/layout.tsx", root), "utf8"),
     readFile(new URL("app/routines/install-app-button.tsx", root), "utf8"),
     readFile(new URL("app/routines/[routineId]/routine-editor.tsx", root), "utf8"),
     readFile(new URL("app/workouts/[sessionId]/active-workout.tsx", root), "utf8"),
+    readFile(new URL("app/api/workouts/route.ts", root), "utf8"),
     readFile(new URL("lib/store.ts", root), "utf8"),
     readFile(new URL("public/manifest.webmanifest", root), "utf8"),
     readFile(new URL("public/sw.js", root), "utf8"),
@@ -22,6 +24,10 @@ test("replaces the starter with the workout tracker product", async () => {
   assert.match(layout, /Workout Tracker/);
   assert.doesNotMatch(layout, /codex-preview|Starter Project|_sites-preview/);
   assert.match(page, /redirect\("\/routines"\)/);
+  assert.match(auth, /isWorkoutOwnerEmail/);
+  assert.match(auth, /OWNER_EMAIL/);
+  assert.match(routines, /requireWorkoutUser/);
+  assert.match(workoutApi, /getWorkoutUser/);
   assert.match(routines, /A → B → C → D → repeat/);
   assert.match(routineLayout, /InstallAppButton/);
   assert.match(installButton, /beforeinstallprompt/);
