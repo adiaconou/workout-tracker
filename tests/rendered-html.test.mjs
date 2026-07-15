@@ -21,6 +21,9 @@ test("replaces the starter with the workout tracker product", async () => {
   assert.match(routines, /A → B → C → D → repeat/);
   assert.match(detail, /Start workout/);
   assert.match(detail, /Edit routine/);
+  assert.match(detail, /Abandon and start Routine/);
+  assert.match(detail, /requiresConfirmation/);
+  assert.match(detail, /abandonActive/);
   assert.match(detail, /router\.push\(`\/workouts\/\$\{payload\.session\.id\}`\)/);
   assert.match(activeWorkout, /Complete set/);
   assert.match(activeWorkout, /Skip this set/);
@@ -28,5 +31,7 @@ test("replaces the starter with the workout tracker product", async () => {
   assert.match(activeWorkout, /Overall workout progress/);
   assert.match(store, /set_performances/);
   assert.match(store, /rest_ends_at/);
+  assert.match(store, /status = 'Abandoned'/);
+  assert.match(store, /requiresConfirmation: true/);
   assert.match(hosting, /"d1": "DB"/);
 });

@@ -315,16 +315,22 @@ export async function updateRoutine(ownerEmail: string, code: string, input: Edi
   return getRoutine(ownerEmail, code);
 }
 
-export async function startWorkout(ownerEmail: string, code: string) {
+export async function startWorkout(ownerEmail: string, code: string, abandonActive = false) {
   await ensureUserRoutines(ownerEmail);
   const d1 = db();
+  const requestedCode = code.toUpperCase();
   const active = await d1
     .prepare("SELECT id, routine_code AS routineCode, started_at AS startedAt, total_sets AS totalSets FROM workout_sessions WHERE owner_email = ? AND status = 'In Progress' LIMIT 1")
     .bind(ownerEmail)
     .first<{ id: string; routineCode: string; startedAt: string; totalSets: number }>();
-  if (active) return { created: false, session: active };
+  if (active?.routineCode === requestedCode) {
+    return { created: false, requiresConfirmation: false, session: active };
+  }
+  if (active && !abandonActive) {
+    return { created: false, requiresConfirmation: true, session: active };
+  }
 
-  const routine = await getRoutine(ownerEmail, code);
+  const routine = await getRoutine(ownerEmail, requestedCode);
   if (!routine) return null;
   const now = new Date().toISOString();
   const totalSets = routine.exercises.reduce(
@@ -332,16 +338,31 @@ export async function startWorkout(ownerEmail: string, code: string) {
     0,
   );
   const id = crypto.randomUUID();
-  await d1
-    .prepare(`INSERT INTO workout_sessions (
+  const createSession = d1.prepare(`INSERT INTO workout_sessions (
       id, owner_email, routine_code, routine_version, status, snapshot_json,
       current_exercise, current_set, completed_sets, skipped_sets, total_sets,
       started_at, updated_at
     ) VALUES (?, ?, ?, ?, 'In Progress', ?, 1, 1, 0, 0, ?, ?, ?)`)
-    .bind(id, ownerEmail, routine.code, routine.version, JSON.stringify(routine), totalSets, now, now)
-    .run();
+    .bind(id, ownerEmail, routine.code, routine.version, JSON.stringify(routine), totalSets, now, now);
 
-  return { created: true, session: { id, routineCode: routine.code, startedAt: now, totalSets } };
+  if (active) {
+    await d1.batch([
+      d1
+        .prepare(`UPDATE workout_sessions SET status = 'Abandoned', completed_at = ?,
+          rest_ends_at = NULL, updated_at = ?
+          WHERE id = ? AND owner_email = ? AND status = 'In Progress'`)
+        .bind(now, now, active.id, ownerEmail),
+      createSession,
+    ]);
+  } else {
+    await createSession.run();
+  }
+
+  return {
+    created: true,
+    requiresConfirmation: false,
+    session: { id, routineCode: routine.code, startedAt: now, totalSets },
+  };
 }
 
 async function getRawWorkoutSession(ownerEmail: string, sessionId: string) {

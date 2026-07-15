@@ -21,6 +21,7 @@ export function RoutineEditor({ initialRoutine }: { initialRoutine: Routine }) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [activeRoutineCode, setActiveRoutineCode] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
@@ -66,7 +67,7 @@ export function RoutineEditor({ initialRoutine }: { initialRoutine: Routine }) {
     }
   }
 
-  async function startWorkout() {
+  async function startWorkout(abandonActive = false) {
     setStarting(true);
     setError("");
     setMessage("");
@@ -74,14 +75,20 @@ export function RoutineEditor({ initialRoutine }: { initialRoutine: Routine }) {
       const response = await fetch("/api/workouts", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ routineId: routine.code }),
+        body: JSON.stringify({ routineId: routine.code, abandonActive }),
       });
       const payload = await response.json() as {
         created?: boolean;
+        requiresConfirmation?: boolean;
         session?: { id: string; routineCode: string };
         error?: string;
       };
       if (!response.ok || !payload.session) throw new Error(payload.error ?? "The workout could not be started.");
+      if (payload.requiresConfirmation) {
+        setActiveRoutineCode(payload.session.routineCode);
+        return;
+      }
+      setActiveRoutineCode(null);
       router.push(`/workouts/${payload.session.id}`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "The workout could not be started.");
@@ -124,7 +131,7 @@ export function RoutineEditor({ initialRoutine }: { initialRoutine: Routine }) {
               <label className="duration-field">Minutes <input type="number" min="15" max="180" value={draft.durationMin} onChange={(event) => updateRoutineField("durationMin", Number(event.target.value))} /></label>
             ) : <span><b>{routine.durationMin}</b> minutes</span>}
           </div>
-          <button className="primary-button" type="button" onClick={startWorkout} disabled={starting || editing}>
+          <button className="primary-button" type="button" onClick={() => startWorkout()} disabled={starting || editing}>
             {starting ? "Creating workout…" : "Start workout"}<span aria-hidden="true">→</span>
           </button>
           <p className="action-note">Creates a durable workout instance from version {routine.version}.</p>
@@ -189,6 +196,27 @@ export function RoutineEditor({ initialRoutine }: { initialRoutine: Routine }) {
       </section>
 
       <p className="safety-note">Stop or modify an exercise if pain develops. Routine edits affect future workouts only; every started workout keeps its original snapshot.</p>
+
+      {activeRoutineCode && (
+        <div className="confirmation-backdrop">
+          <section className="confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="abandon-workout-title" aria-describedby="abandon-workout-description">
+            <p className="eyebrow">Workout in progress</p>
+            <h2 id="abandon-workout-title">Abandon Routine {activeRoutineCode}?</h2>
+            <p id="abandon-workout-description">
+              Starting Routine {routine.code} will mark Routine {activeRoutineCode} as abandoned. Any sets you already logged will stay in your history.
+            </p>
+            {error && <p className="error-message" role="alert">{error}</p>}
+            <div className="confirmation-actions">
+              <button className="secondary-button" type="button" onClick={() => { setActiveRoutineCode(null); setError(""); }} disabled={starting}>
+                Keep Routine {activeRoutineCode}
+              </button>
+              <button className="primary-button compact" type="button" onClick={() => startWorkout(true)} disabled={starting} autoFocus>
+                {starting ? "Starting…" : `Abandon and start Routine ${routine.code}`}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </>
   );
 }

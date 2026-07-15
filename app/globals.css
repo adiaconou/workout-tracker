@@ -1145,6 +1145,47 @@ textarea.text-input {
   margin: 0 auto;
 }
 
+.confirmation-backdrop {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(4 7 11 / 82%);
+  backdrop-filter: blur(8px);
+}
+
+.confirmation-dialog {
+  width: min(100%, 620px);
+  padding: 42px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  box-shadow: 0 32px 100px rgb(0 0 0 / 55%);
+}
+
+.confirmation-dialog h2 {
+  margin-bottom: 22px;
+  font-size: clamp(34px, 6vw, 54px);
+}
+
+.confirmation-dialog > p:not(.eyebrow) {
+  margin-bottom: 32px;
+  color: var(--muted);
+  font-size: 17px;
+}
+
+.confirmation-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.confirmation-actions .primary-button,
+.confirmation-actions .secondary-button {
+  min-height: 52px;
+}
+
 @media (max-width: 900px) {
   .active-workout-shell {
     padding-inline: 24px;
@@ -1253,6 +1294,24 @@ textarea.text-input {
   }
 
   .skip-rest-button {
+    width: 100%;
+  }
+
+  .confirmation-backdrop {
+    align-items: end;
+    padding: 12px;
+  }
+
+  .confirmation-dialog {
+    padding: 30px 22px 22px;
+  }
+
+  .confirmation-actions {
+    flex-direction: column-reverse;
+  }
+
+  .confirmation-actions .primary-button,
+  .confirmation-actions .secondary-button {
     width: 100%;
   }
 }
