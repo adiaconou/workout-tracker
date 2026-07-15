@@ -22,6 +22,7 @@ test("replaces the starter with the workout tracker product", async () => {
   ]);
 
   assert.match(layout, /Workout Tracker/);
+  assert.match(layout, /mobile-web-app-capable/);
   assert.doesNotMatch(layout, /codex-preview|Starter Project|_sites-preview/);
   assert.match(page, /redirect\("\/routines"\)/);
   assert.match(auth, /isWorkoutOwnerEmail/);
