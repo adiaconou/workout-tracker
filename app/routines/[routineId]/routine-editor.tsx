@@ -82,11 +82,7 @@ export function RoutineEditor({ initialRoutine }: { initialRoutine: Routine }) {
         error?: string;
       };
       if (!response.ok || !payload.session) throw new Error(payload.error ?? "The workout could not be started.");
-      setMessage(
-        payload.created
-          ? `Workout ${payload.session.routineCode} started. Its routine snapshot is saved.`
-          : `You already have Routine ${payload.session.routineCode} in progress. That workout remains active.`,
-      );
+      router.push(`/workouts/${payload.session.id}`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "The workout could not be started.");
     } finally {

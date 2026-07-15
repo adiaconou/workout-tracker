@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { canonicalRoutines } from "./routines";
+import { buildGuidedSets, type GuidedSet } from "./workout";
 
 export type RoutineExercise = {
   id: string;
@@ -35,6 +36,30 @@ export type RoutineSummary = Omit<Routine, "exercises"> & {
 
 type EditableRoutine = Pick<Routine, "focus" | "summary" | "durationMin"> & {
   exercises: RoutineExercise[];
+};
+
+type RawWorkoutSession = {
+  id: string;
+  routineCode: string;
+  routineVersion: number;
+  status: string;
+  snapshotJson: string;
+  currentExercise: number;
+  currentSet: number;
+  completedSets: number;
+  skippedSets: number;
+  totalSets: number;
+  restEndsAt: string | null;
+  lastPerformanceId: string | null;
+  startedAt: string;
+  completedAt: string | null;
+};
+
+export type WorkoutView = Omit<RawWorkoutSession, "snapshotJson"> & {
+  routine: Routine;
+  sets: GuidedSet[];
+  currentSetIndex: number;
+  currentRestSeconds: number;
 };
 
 function db(): D1Database {
@@ -88,11 +113,51 @@ export async function ensureWorkoutSchema() {
       completed_sets INTEGER NOT NULL DEFAULT 0,
       skipped_sets INTEGER NOT NULL DEFAULT 0,
       total_sets INTEGER NOT NULL,
+      rest_ends_at TEXT,
+      last_performance_id TEXT,
       started_at TEXT NOT NULL,
+      completed_at TEXT,
       updated_at TEXT NOT NULL
     )`),
     d1.prepare("CREATE UNIQUE INDEX IF NOT EXISTS one_active_session_per_owner ON workout_sessions(owner_email) WHERE status = 'In Progress'"),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS set_performances (
+      id TEXT PRIMARY KEY,
+      owner_email TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      prescribed_set_id TEXT NOT NULL,
+      exercise_id TEXT NOT NULL,
+      exercise_order INTEGER NOT NULL,
+      exercise_name TEXT NOT NULL,
+      set_order INTEGER NOT NULL,
+      set_type TEXT NOT NULL,
+      target_display TEXT NOT NULL,
+      target_rest_sec INTEGER NOT NULL,
+      rest_rule TEXT NOT NULL,
+      actual_reps INTEGER,
+      actual_duration_sec INTEGER,
+      actual_weight REAL,
+      weight_unit TEXT NOT NULL DEFAULT 'lb',
+      status TEXT NOT NULL,
+      performed_at TEXT NOT NULL,
+      rest_skipped INTEGER NOT NULL DEFAULT 0,
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`),
+    d1.prepare("CREATE UNIQUE INDEX IF NOT EXISTS set_performances_session_set_idx ON set_performances(session_id, prescribed_set_id)"),
   ]);
+
+  const columns = await d1.prepare("PRAGMA table_info(workout_sessions)").all<{ name: string }>();
+  const columnNames = new Set(columns.results.map((column) => column.name));
+  if (!columnNames.has("rest_ends_at")) {
+    await d1.prepare("ALTER TABLE workout_sessions ADD COLUMN rest_ends_at TEXT").run();
+  }
+  if (!columnNames.has("last_performance_id")) {
+    await d1.prepare("ALTER TABLE workout_sessions ADD COLUMN last_performance_id TEXT").run();
+  }
+  if (!columnNames.has("completed_at")) {
+    await d1.prepare("ALTER TABLE workout_sessions ADD COLUMN completed_at TEXT").run();
+  }
 }
 
 function routineId(ownerEmail: string, code: string) {
@@ -277,4 +342,190 @@ export async function startWorkout(ownerEmail: string, code: string) {
     .run();
 
   return { created: true, session: { id, routineCode: routine.code, startedAt: now, totalSets } };
+}
+
+async function getRawWorkoutSession(ownerEmail: string, sessionId: string) {
+  await ensureWorkoutSchema();
+  return db()
+    .prepare(`SELECT id, routine_code AS routineCode, routine_version AS routineVersion,
+      status, snapshot_json AS snapshotJson, current_exercise AS currentExercise,
+      current_set AS currentSet, completed_sets AS completedSets, skipped_sets AS skippedSets,
+      total_sets AS totalSets, rest_ends_at AS restEndsAt,
+      last_performance_id AS lastPerformanceId, started_at AS startedAt,
+      completed_at AS completedAt
+      FROM workout_sessions WHERE id = ? AND owner_email = ?`)
+    .bind(sessionId, ownerEmail)
+    .first<RawWorkoutSession>();
+}
+
+export async function getWorkoutSession(ownerEmail: string, sessionId: string): Promise<WorkoutView | null> {
+  const session = await getRawWorkoutSession(ownerEmail, sessionId);
+  if (!session) return null;
+  const routine = JSON.parse(session.snapshotJson) as Routine;
+  const sets = buildGuidedSets(routine);
+  let restEndsAt = session.restEndsAt;
+  if (restEndsAt && new Date(restEndsAt).getTime() <= Date.now()) {
+    restEndsAt = null;
+    await db()
+      .prepare("UPDATE workout_sessions SET rest_ends_at = NULL WHERE id = ? AND owner_email = ?")
+      .bind(sessionId, ownerEmail)
+      .run();
+  }
+
+  let currentRestSeconds = 0;
+  if (session.lastPerformanceId) {
+    const performance = await db()
+      .prepare("SELECT target_rest_sec AS targetRestSec FROM set_performances WHERE id = ? AND owner_email = ?")
+      .bind(session.lastPerformanceId, ownerEmail)
+      .first<{ targetRestSec: number }>();
+    currentRestSeconds = Number(performance?.targetRestSec ?? 0);
+  }
+
+  return {
+    ...session,
+    routineVersion: Number(session.routineVersion),
+    currentExercise: Number(session.currentExercise),
+    currentSet: Number(session.currentSet),
+    completedSets: Number(session.completedSets),
+    skippedSets: Number(session.skippedSets),
+    totalSets: Number(session.totalSets),
+    restEndsAt,
+    routine,
+    sets,
+    currentSetIndex: Math.max(0, Math.min(sets.length, Number(session.currentSet) - 1)),
+    currentRestSeconds,
+  };
+}
+
+type RecordSetInput = {
+  prescribedSetId?: string;
+  status?: "Completed" | "Skipped";
+  actualReps?: number | null;
+  actualDurationSec?: number | null;
+  actualWeight?: number | null;
+};
+
+function cleanNonNegativeNumber(value: unknown, allowDecimal = false) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return null;
+  return allowDecimal ? Math.round(number * 100) / 100 : Math.round(number);
+}
+
+export async function recordWorkoutSet(ownerEmail: string, sessionId: string, input: RecordSetInput) {
+  const session = await getRawWorkoutSession(ownerEmail, sessionId);
+  if (!session) return null;
+  if (session.status !== "In Progress") throw new Error("This workout is no longer in progress.");
+
+  const routine = JSON.parse(session.snapshotJson) as Routine;
+  const sets = buildGuidedSets(routine);
+  const currentIndex = Math.max(0, Number(session.currentSet) - 1);
+  const prescribedSet = sets[currentIndex];
+  if (!prescribedSet) throw new Error("This workout has no remaining sets.");
+  if (input.prescribedSetId !== prescribedSet.id) {
+    throw new Error("The workout has already advanced. Refresh to continue from the current set.");
+  }
+
+  const status = input.status === "Skipped" ? "Skipped" : "Completed";
+  const actualWeight = cleanNonNegativeNumber(input.actualWeight, true);
+  const actualReps = cleanNonNegativeNumber(input.actualReps);
+  const actualDurationSec = cleanNonNegativeNumber(input.actualDurationSec);
+  if (status === "Completed" && actualWeight === null) throw new Error("Enter the weight used for this set.");
+  if (status === "Completed" && prescribedSet.targetUnit === "reps" && actualReps === null) {
+    throw new Error("Enter the reps completed for this set.");
+  }
+  if (status === "Completed" && prescribedSet.targetUnit === "seconds" && actualDurationSec === null) {
+    throw new Error("Enter the seconds completed for this set.");
+  }
+
+  const now = new Date().toISOString();
+  const performanceId = `${sessionId}::${prescribedSet.id}`;
+  const d1 = db();
+  await d1
+    .prepare(`INSERT INTO set_performances (
+      id, owner_email, session_id, prescribed_set_id, exercise_id, exercise_order,
+      exercise_name, set_order, set_type, target_display, target_rest_sec, rest_rule,
+      actual_reps, actual_duration_sec, actual_weight, weight_unit, status,
+      performed_at, rest_skipped, notes, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'lb', ?, ?, 0, '', ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      actual_reps = excluded.actual_reps,
+      actual_duration_sec = excluded.actual_duration_sec,
+      actual_weight = excluded.actual_weight,
+      status = excluded.status,
+      performed_at = excluded.performed_at,
+      updated_at = excluded.updated_at`)
+    .bind(
+      performanceId, ownerEmail, sessionId, prescribedSet.id, prescribedSet.exerciseId,
+      prescribedSet.exerciseOrder, prescribedSet.exerciseName, prescribedSet.globalIndex + 1,
+      prescribedSet.setType, prescribedSet.target, prescribedSet.restSeconds,
+      prescribedSet.restRule, status === "Completed" ? actualReps : null,
+      status === "Completed" ? actualDurationSec : null,
+      status === "Completed" ? actualWeight : null, status, now, now, now,
+    )
+    .run();
+
+  const counts = await d1
+    .prepare(`SELECT
+      SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) AS completedSets,
+      SUM(CASE WHEN status = 'Skipped' THEN 1 ELSE 0 END) AS skippedSets
+      FROM set_performances WHERE session_id = ? AND owner_email = ?`)
+    .bind(sessionId, ownerEmail)
+    .first<{ completedSets: number | null; skippedSets: number | null }>();
+  const completedSets = Number(counts?.completedSets ?? 0);
+  const skippedSets = Number(counts?.skippedSets ?? 0);
+  const nextSetIndex = currentIndex + 1;
+  const workoutCompleted = nextSetIndex >= sets.length;
+  const restSeconds = workoutCompleted ? 0 : prescribedSet.restSeconds;
+  const restEndsAt = restSeconds > 0 ? new Date(Date.now() + restSeconds * 1000).toISOString() : null;
+  const nextSet = sets[nextSetIndex];
+
+  if (workoutCompleted) {
+    await d1
+      .prepare(`UPDATE workout_sessions SET status = 'Completed', current_set = ?,
+        completed_sets = ?, skipped_sets = ?, rest_ends_at = NULL,
+        last_performance_id = ?, completed_at = ?, updated_at = ?
+        WHERE id = ? AND owner_email = ?`)
+      .bind(sets.length + 1, completedSets, skippedSets, performanceId, now, now, sessionId, ownerEmail)
+      .run();
+  } else {
+    await d1
+      .prepare(`UPDATE workout_sessions SET current_exercise = ?, current_set = ?,
+        completed_sets = ?, skipped_sets = ?, rest_ends_at = ?,
+        last_performance_id = ?, updated_at = ?
+        WHERE id = ? AND owner_email = ?`)
+      .bind(nextSet.exerciseOrder, nextSetIndex + 1, completedSets, skippedSets, restEndsAt, performanceId, now, sessionId, ownerEmail)
+      .run();
+  }
+
+  return {
+    performanceId,
+    completedSets,
+    skippedSets,
+    nextSetIndex,
+    restSeconds,
+    restEndsAt,
+    workoutCompleted,
+  };
+}
+
+export async function skipWorkoutRest(ownerEmail: string, sessionId: string) {
+  const session = await getRawWorkoutSession(ownerEmail, sessionId);
+  if (!session) return null;
+  if (session.status !== "In Progress") throw new Error("This workout is no longer in progress.");
+  const now = new Date().toISOString();
+  const d1 = db();
+  const statements: D1PreparedStatement[] = [
+    d1
+      .prepare("UPDATE workout_sessions SET rest_ends_at = NULL, updated_at = ? WHERE id = ? AND owner_email = ?")
+      .bind(now, sessionId, ownerEmail),
+  ];
+  if (session.lastPerformanceId) {
+    statements.push(
+      d1
+        .prepare("UPDATE set_performances SET rest_skipped = 1, updated_at = ? WHERE id = ? AND owner_email = ?")
+        .bind(now, session.lastPerformanceId, ownerEmail),
+    );
+  }
+  await d1.batch(statements);
+  return { skipped: true };
 }

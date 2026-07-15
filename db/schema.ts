@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const routines = sqliteTable(
   "routines",
@@ -61,7 +61,44 @@ export const workoutSessions = sqliteTable(
     completedSets: integer("completed_sets").notNull().default(0),
     skippedSets: integer("skipped_sets").notNull().default(0),
     totalSets: integer("total_sets").notNull(),
+    restEndsAt: text("rest_ends_at"),
+    lastPerformanceId: text("last_performance_id"),
     startedAt: text("started_at").notNull(),
+    completedAt: text("completed_at"),
     updatedAt: text("updated_at").notNull(),
   },
+);
+
+export const setPerformances = sqliteTable(
+  "set_performances",
+  {
+    id: text("id").primaryKey(),
+    ownerEmail: text("owner_email").notNull(),
+    sessionId: text("session_id").notNull(),
+    prescribedSetId: text("prescribed_set_id").notNull(),
+    exerciseId: text("exercise_id").notNull(),
+    exerciseOrder: integer("exercise_order").notNull(),
+    exerciseName: text("exercise_name").notNull(),
+    setOrder: integer("set_order").notNull(),
+    setType: text("set_type").notNull(),
+    targetDisplay: text("target_display").notNull(),
+    targetRestSec: integer("target_rest_sec").notNull(),
+    restRule: text("rest_rule").notNull(),
+    actualReps: integer("actual_reps"),
+    actualDurationSec: integer("actual_duration_sec"),
+    actualWeight: real("actual_weight"),
+    weightUnit: text("weight_unit").notNull().default("lb"),
+    status: text("status").notNull(),
+    performedAt: text("performed_at").notNull(),
+    restSkipped: integer("rest_skipped").notNull().default(0),
+    notes: text("notes").notNull().default(""),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("set_performances_session_set_idx").on(
+      table.sessionId,
+      table.prescribedSetId,
+    ),
+  ],
 );
