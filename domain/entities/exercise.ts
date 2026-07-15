@@ -1,6 +1,6 @@
 export const muscleGroups = [
   "back", "chest", "shoulders", "biceps", "triceps",
-  "quads", "hamstrings", "glutes", "core", "grip",
+  "quads", "hamstrings", "glutes", "calves", "core", "grip",
 ] as const;
 
 export type MuscleGroup = (typeof muscleGroups)[number];
@@ -46,4 +46,3 @@ export type ExerciseInput = {
 export function normalizeExerciseName(name: string) {
   return name.trim().toLowerCase().replace(/\s+/g, " ");
 }
-

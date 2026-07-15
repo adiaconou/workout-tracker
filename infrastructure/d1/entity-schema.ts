@@ -2,6 +2,7 @@ import type { Routine } from "../../lib/store";
 import { buildGuidedSets } from "../../lib/workout";
 import { EXERCISE_MUSCLES, type RoutineCode } from "../../lib/recommendations";
 import { canonicalRoutines } from "../../lib/routines";
+import { homeGymExercises } from "../../lib/home-gym-exercises";
 import { normalizeExerciseName, type MuscleGroup } from "../../domain/entities/exercise";
 import { expandLegacyPrescription } from "../../domain/prescription";
 
@@ -233,6 +234,42 @@ async function catalogExercise(
   return record.id;
 }
 
+async function ensureHomeGymExerciseCatalog(d1: D1Database, ownerEmail: string) {
+  const now = new Date().toISOString();
+  for (const exercise of homeGymExercises) {
+    const normalizedName = normalizeExerciseName(exercise.name);
+    const exerciseId = `${ownerEmail}::home-gym::${encodeURIComponent(normalizedName)}`;
+    const existing = await d1.prepare("SELECT id FROM exercise_catalog WHERE owner_email = ? AND (id = ? OR normalized_name = ?)")
+      .bind(ownerEmail, exerciseId, normalizedName).first<{ id: string }>();
+    if (existing) continue;
+
+    const statements: D1PreparedStatement[] = [
+      d1.prepare(`INSERT OR IGNORE INTO exercise_catalog (
+        id, owner_email, name, normalized_name, equipment, movement_pattern, tracking_type,
+        default_load_type, side_mode, instructions, is_active, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`).bind(
+        exerciseId,
+        ownerEmail,
+        exercise.name,
+        normalizedName,
+        exercise.equipment ?? "other",
+        exercise.movementPattern ?? "other",
+        exercise.trackingType ?? "reps",
+        exercise.defaultLoadType ?? "external",
+        exercise.sideMode ?? "bilateral",
+        exercise.instructions ?? "",
+        now,
+        now,
+      ),
+    ];
+    for (const muscle of exercise.muscles ?? []) {
+      statements.push(d1.prepare("INSERT OR IGNORE INTO exercise_muscles (exercise_id, muscle_group, role, weight) VALUES (?, ?, ?, ?)")
+        .bind(exerciseId, muscle.muscleGroup, muscle.role, muscle.weight));
+    }
+    await d1.batch(statements);
+  }
+}
+
 type LegacyExercise = {
   id: string; exerciseOrder: number; name: string; warmup: string; warmupSets: number;
   regularSets: number; failureSets: number; dropSets: number; target: string; rest: string;
@@ -386,6 +423,7 @@ export async function ensureEntityData(d1: D1Database, ownerEmail: string) {
     WHERE r.owner_email = ? AND (r.current_version_id IS NULL OR rv.id IS NULL OR r.current_version_id <> rv.id)
     ORDER BY r.code`).bind(ownerEmail).all<{ code: string }>();
   for (const routine of routines.results) await syncLegacyRoutineVersion(d1, ownerEmail, routine.code);
+  await ensureHomeGymExerciseCatalog(d1, ownerEmail);
   const sessions = await d1.prepare(`SELECT ws.id FROM workout_sessions ws
     LEFT JOIN workout_exercises we ON we.workout_id = ws.id
     WHERE ws.owner_email = ? GROUP BY ws.id HAVING COUNT(we.id) = 0`)

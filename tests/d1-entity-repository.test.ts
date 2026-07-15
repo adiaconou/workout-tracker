@@ -83,12 +83,22 @@ test("D1 entity repository seeds, versions, publishes, materializes, and archive
 
     const seededExercises = await repository.listExercises(owner);
     const seededRoutines = await repository.listRoutineAggregates(owner);
-    assert.ok(seededExercises.length >= 20);
+    assert.ok(seededExercises.length >= 70);
+    assert.ok(seededExercises.some((exercise) => exercise.name === "Machine chest press"));
+    assert.ok(seededExercises.some((exercise) => exercise.name === "Kettlebell Turkish get-up"));
+    assert.ok(seededExercises.some((exercise) => exercise.name === "EZ-bar biceps curl"));
     assert.equal(seededRoutines.length, 4);
     assert.ok(seededRoutines.every((routine) => routine.currentVersion?.status === "published"));
 
+    const machinePress = seededExercises.find((exercise) => exercise.name === "Machine chest press")!;
+    await repository.updateExercise(owner, machinePress.id, { name: "My machine press" });
+    await ensureEntityData(d1, owner);
+    assert.equal((await repository.listExercises(owner)).length, seededExercises.length);
+    assert.equal((await repository.getExercise(owner, machinePress.id))?.name, "My machine press");
+    assert.equal((await repository.listExercises(owner)).some((exercise) => exercise.name === "Machine chest press"), false);
+
     const exercise = await repository.createExercise(owner, {
-      name: "Goblet squat",
+      name: "Test goblet squat",
       equipment: "kettlebell",
       movementPattern: "squat",
       muscles: [
@@ -116,7 +126,7 @@ test("D1 entity repository seeds, versions, publishes, materializes, and archive
     const snapshot = {
       code: "E", version: 2, focus: "Updated legs again", summary: "", durationMin: 30, updatedAt: startedAt,
       exercises: [{
-        id: `${owner}::exercise::E::1`, exerciseOrder: 1, name: "Goblet squat", warmup: "None",
+        id: `${owner}::exercise::E::1`, exerciseOrder: 1, name: "Test goblet squat", warmup: "None",
         warmupSets: 0, regularSets: 1, failureSets: 0, dropSets: 0, target: "8–10 reps",
         rest: "90 sec", effort: "2 RIR", purpose: "Test", loadType: "external", weightUnit: "lb",
       }],

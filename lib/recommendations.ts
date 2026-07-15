@@ -31,7 +31,7 @@ export type RecommendationResult = {
   routines: RoutineRecommendation[];
 };
 
-export type MuscleGroup = "back" | "chest" | "shoulders" | "biceps" | "triceps" | "quads" | "hamstrings" | "glutes" | "core" | "grip";
+export type MuscleGroup = "back" | "chest" | "shoulders" | "biceps" | "triceps" | "quads" | "hamstrings" | "glutes" | "calves" | "core" | "grip";
 export type MuscleWeights = Partial<Record<MuscleGroup, number>>;
 export type RoutineProfiles = Partial<Record<RoutineCode, MuscleWeights>>;
 
@@ -91,6 +91,7 @@ const MUSCLE_LABELS: Record<MuscleGroup, string> = {
   quads: "quads",
   hamstrings: "hamstrings",
   glutes: "glutes",
+  calves: "calves",
   core: "core",
   grip: "grip",
 };

@@ -3,12 +3,20 @@ import test from "node:test";
 import type { EntityRepository } from "../domain/repositories/entity-repository";
 import type { Exercise } from "../domain/entities";
 import { expandLegacyPrescription, parseRestPrescription } from "../domain/prescription";
+import { homeGymExercises } from "../lib/home-gym-exercises";
 import {
   ExerciseService,
   WorkoutService,
   validateExerciseInput,
   validateRoutineVersionInput,
 } from "../application/services/entity-services";
+
+test("home-gym exercise catalog is valid and has no duplicate names", () => {
+  assert.ok(homeGymExercises.length >= 50);
+  const names = homeGymExercises.map((exercise) => exercise.name.trim().toLowerCase());
+  assert.equal(new Set(names).size, names.length);
+  for (const exercise of homeGymExercises) assert.doesNotThrow(() => validateExerciseInput(exercise));
+});
 
 test("expands an exercise prescription into individually addressable sets", () => {
   const sets = expandLegacyPrescription({
@@ -114,4 +122,3 @@ test("workout corrections reject invalid performance values before persistence",
   assert.throws(() => service.correctSet("owner@example.com", "workout", "set", { actualWeight: -1 }), /non-negative/);
   assert.throws(() => service.update("owner@example.com", "workout", { bodyWeight: -180 }), /non-negative/);
 });
-
