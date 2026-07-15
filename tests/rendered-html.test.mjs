@@ -5,14 +5,17 @@ import test from "node:test";
 const root = new URL("../", import.meta.url);
 
 test("replaces the starter with the workout tracker product", async () => {
-  const [layout, page, auth, routines, routineLayout, installButton, detail, activeWorkout, workoutApi, store, recommendations, manifest, serviceWorker, hosting] = await Promise.all([
+  const [layout, page, auth, routines, routineLayout, appHeader, installButton, detail, exerciseLibrary, exerciseDetail, activeWorkout, workoutApi, store, recommendations, manifest, serviceWorker, hosting] = await Promise.all([
     readFile(new URL("app/layout.tsx", root), "utf8"),
     readFile(new URL("app/page.tsx", root), "utf8"),
     readFile(new URL("app/chatgpt-auth.ts", root), "utf8"),
     readFile(new URL("app/routines/page.tsx", root), "utf8"),
     readFile(new URL("app/routines/layout.tsx", root), "utf8"),
+    readFile(new URL("app/app-header.tsx", root), "utf8"),
     readFile(new URL("app/routines/install-app-button.tsx", root), "utf8"),
     readFile(new URL("app/routines/[routineId]/routine-editor.tsx", root), "utf8"),
+    readFile(new URL("app/exercises/page.tsx", root), "utf8"),
+    readFile(new URL("app/exercises/[exerciseId]/page.tsx", root), "utf8"),
     readFile(new URL("app/workouts/[sessionId]/active-workout.tsx", root), "utf8"),
     readFile(new URL("app/api/workouts/route.ts", root), "utf8"),
     readFile(new URL("lib/store.ts", root), "utf8"),
@@ -33,7 +36,9 @@ test("replaces the starter with the workout tracker product", async () => {
   assert.match(routines, /Best today/);
   assert.match(workoutApi, /getWorkoutUser/);
   assert.match(routines, /A → B → C → D → repeat/);
-  assert.match(routineLayout, /InstallAppButton/);
+  assert.match(routineLayout, /AppHeader/);
+  assert.match(appHeader, /InstallAppButton/);
+  assert.match(appHeader, /href="\/exercises"/);
   assert.match(installButton, /beforeinstallprompt/);
   assert.match(detail, /Start workout/);
   assert.match(detail, /Edit routine/);
@@ -41,6 +46,13 @@ test("replaces the starter with the workout tracker product", async () => {
   assert.match(detail, /requiresConfirmation/);
   assert.match(detail, /abandonActive/);
   assert.match(detail, /router\.push\(`\/workouts\/\$\{payload\.session\.id\}`\)/);
+  assert.match(exerciseLibrary, /Exercise Library/);
+  assert.match(exerciseLibrary, /getEntityServices\(\)\.exercises\.list/);
+  assert.match(exerciseLibrary, /encodeURIComponent\(exercise\.id\)/);
+  assert.match(exerciseLibrary, /exercise-library-row/);
+  assert.match(exerciseDetail, /services\.exercises\.get/);
+  assert.match(exerciseDetail, /Used in routines/);
+  assert.match(exerciseDetail, /Muscle groups/);
   assert.match(activeWorkout, /Complete set/);
   assert.match(activeWorkout, /Skip this set/);
   assert.match(activeWorkout, /Skip rest/);
