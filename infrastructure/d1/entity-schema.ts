@@ -7,6 +7,27 @@ import { normalizeExerciseName, type MuscleGroup } from "../../domain/entities/e
 import { expandLegacyPrescription } from "../../domain/prescription";
 
 const createStatements = [
+  `CREATE TABLE IF NOT EXISTS app_users (
+    id TEXT PRIMARY KEY, owner_email TEXT NOT NULL, display_name TEXT NOT NULL,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  )`,
+  "CREATE UNIQUE INDEX IF NOT EXISTS app_users_owner_email_idx ON app_users(owner_email)",
+  `CREATE TABLE IF NOT EXISTS auth_identities (
+    id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL, provider_subject TEXT NOT NULL, email TEXT NOT NULL,
+    email_verified INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+  )`,
+  "CREATE UNIQUE INDEX IF NOT EXISTS auth_identities_provider_subject_idx ON auth_identities(provider, provider_subject)",
+  "CREATE INDEX IF NOT EXISTS auth_identities_user_idx ON auth_identities(user_id)",
+  `CREATE TABLE IF NOT EXISTS auth_sessions (
+    id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    refresh_token_hash TEXT NOT NULL, device_name TEXT NOT NULL,
+    expires_at TEXT NOT NULL, revoked_at TEXT, created_at TEXT NOT NULL,
+    rotated_at TEXT NOT NULL, last_used_at TEXT NOT NULL
+  )`,
+  "CREATE UNIQUE INDEX IF NOT EXISTS auth_sessions_refresh_hash_idx ON auth_sessions(refresh_token_hash)",
+  "CREATE INDEX IF NOT EXISTS auth_sessions_user_idx ON auth_sessions(user_id)",
   `CREATE TABLE IF NOT EXISTS routines (
     id TEXT PRIMARY KEY, owner_email TEXT NOT NULL, code TEXT NOT NULL,
     version INTEGER NOT NULL DEFAULT 1, focus TEXT NOT NULL, summary TEXT NOT NULL,

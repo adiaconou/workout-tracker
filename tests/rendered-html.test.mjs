@@ -4,75 +4,68 @@ import test from "node:test";
 
 const root = new URL("../", import.meta.url);
 
-test("replaces the starter with the workout tracker product", async () => {
-  const [layout, page, auth, routines, routineLayout, appHeader, installButton, detail, exerciseLibraryPage, exerciseLibrary, exerciseDetail, activeWorkout, workoutApi, store, recommendations, manifest, serviceWorker, hosting] = await Promise.all([
-    readFile(new URL("app/layout.tsx", root), "utf8"),
-    readFile(new URL("app/page.tsx", root), "utf8"),
-    readFile(new URL("app/chatgpt-auth.ts", root), "utf8"),
-    readFile(new URL("app/routines/page.tsx", root), "utf8"),
-    readFile(new URL("app/routines/layout.tsx", root), "utf8"),
-    readFile(new URL("app/app-header.tsx", root), "utf8"),
-    readFile(new URL("app/routines/install-app-button.tsx", root), "utf8"),
-    readFile(new URL("app/routines/[routineId]/routine-editor.tsx", root), "utf8"),
-    readFile(new URL("app/exercises/page.tsx", root), "utf8"),
-    readFile(new URL("app/exercises/exercise-library.tsx", root), "utf8"),
-    readFile(new URL("app/exercises/[exerciseId]/page.tsx", root), "utf8"),
-    readFile(new URL("app/workouts/[sessionId]/active-workout.tsx", root), "utf8"),
-    readFile(new URL("app/api/workouts/route.ts", root), "utf8"),
-    readFile(new URL("lib/store.ts", root), "utf8"),
-    readFile(new URL("lib/recommendations.ts", root), "utf8"),
-    readFile(new URL("public/manifest.webmanifest", root), "utf8"),
-    readFile(new URL("public/sw.js", root), "utf8"),
+test("uses one Expo Router application for Android and hosted web", async () => {
+  const [
+    packageJson,
+    appConfig,
+    rootLayout,
+    tabs,
+    routines,
+    routineDetail,
+    exerciseLibrary,
+    exerciseDetail,
+    activeWorkout,
+    authContext,
+    pendingWrites,
+    worker,
+    buildScript,
+    hosting,
+  ] = await Promise.all([
+    readFile(new URL("package.json", root), "utf8"),
+    readFile(new URL("app.config.ts", root), "utf8"),
+    readFile(new URL("app/_layout.tsx", root), "utf8"),
+    readFile(new URL("app/(tabs)/_layout.tsx", root), "utf8"),
+    readFile(new URL("src/features/routines/routines-screen.tsx", root), "utf8"),
+    readFile(new URL("src/features/routines/routine-detail-screen.tsx", root), "utf8"),
+    readFile(new URL("src/features/exercises/exercise-library-screen.tsx", root), "utf8"),
+    readFile(new URL("src/features/exercises/exercise-detail-screen.tsx", root), "utf8"),
+    readFile(new URL("src/features/workouts/active-workout-screen.tsx", root), "utf8"),
+    readFile(new URL("src/auth/auth-context.tsx", root), "utf8"),
+    readFile(new URL("src/api/pending-writes.ts", root), "utf8"),
+    readFile(new URL("worker/index.ts", root), "utf8"),
+    readFile(new URL("scripts/build-sites.mjs", root), "utf8"),
     readFile(new URL(".openai/hosting.json", root), "utf8"),
   ]);
 
-  assert.match(layout, /Workout Tracker/);
-  assert.match(layout, /mobile-web-app-capable/);
-  assert.doesNotMatch(layout, /codex-preview|Starter Project|_sites-preview/);
-  assert.match(page, /redirect\("\/routines"\)/);
-  assert.match(auth, /isWorkoutOwnerEmail/);
-  assert.match(auth, /OWNER_EMAIL/);
-  assert.match(routines, /requireWorkoutUser/);
-  assert.match(routines, /getRoutineRecommendations/);
+  assert.match(packageJson, /expo-router\/entry/);
+  assert.doesNotMatch(packageJson, /"next"|"vinext"/);
+  assert.match(appConfig, /com\.adiaconou\.workouttracker/);
+  assert.match(appConfig, /react-native-nitro-google-signin/);
+  assert.match(rootLayout, /Stack\.Protected/);
+  assert.match(rootLayout, /AuthProvider/);
+  assert.match(rootLayout, /serviceWorker\.register/);
+  assert.match(tabs, /Routines/);
+  assert.match(tabs, /Exercises/);
   assert.match(routines, /Best today/);
-  assert.match(workoutApi, /getWorkoutUser/);
-  assert.match(routines, /A → B → C → D → repeat/);
-  assert.match(routineLayout, /AppHeader/);
-  assert.match(appHeader, /InstallAppButton/);
-  assert.match(appHeader, /href="\/exercises"/);
-  assert.match(installButton, /beforeinstallprompt/);
-  assert.match(detail, /Start workout/);
-  assert.match(detail, /Edit routine/);
-  assert.match(detail, /Abandon and start Routine/);
-  assert.match(detail, /requiresConfirmation/);
-  assert.match(detail, /abandonActive/);
-  assert.match(detail, /router\.push\(`\/workouts\/\$\{payload\.session\.id\}`\)/);
-  assert.match(exerciseLibraryPage, /Exercise Library/);
-  assert.match(exerciseLibraryPage, /getEntityServices\(\)\.exercises\.list/);
-  assert.match(exerciseLibrary, /onChange=\{\(event\) => setQuery\(event\.target\.value\)\}/);
-  assert.match(exerciseLibrary, /matchesQuery/);
-  assert.match(exerciseLibrary, /encodeURIComponent\(exercise\.id\)/);
-  assert.match(exerciseLibrary, /exercise-library-row/);
-  assert.match(exerciseDetail, /services\.exercises\.get/);
+  assert.match(routines, /A → B → C → D/);
+  assert.match(routineDetail, /Start workout/);
+  assert.match(routineDetail, /Edit routine/);
+  assert.match(routineDetail, /Abandon and start Routine/);
+  assert.match(exerciseLibrary, /onChangeText=\{setQuery\}/);
+  assert.match(exerciseLibrary, /minHeight: 46/);
   assert.match(exerciseDetail, /Used in routines/);
-  assert.match(exerciseDetail, /Muscle groups/);
   assert.match(activeWorkout, /Complete set/);
   assert.match(activeWorkout, /Skip this set/);
   assert.match(activeWorkout, /Skip rest/);
-  assert.match(activeWorkout, /Overall workout progress/);
-  assert.match(store, /set_performances/);
-  assert.match(store, /rest_ends_at/);
-  assert.match(store, /status = 'Abandoned'/);
-  assert.match(store, /requiresConfirmation: true/);
-  assert.match(store, /sp\.performed_at >= \?/);
-  assert.match(recommendations, /completedSets\.filter/);
-  assert.match(recommendations, /72/);
-  assert.match(recommendations, /warmup/);
-  assert.match(recommendations, /failure.*drop/);
-  assert.match(recommendations, /Available with caution/);
-  assert.match(manifest, /"display": "standalone"/);
-  assert.match(manifest, /icon-maskable-512\.png/);
-  assert.match(serviceWorker, /\/offline\.html/);
-  assert.doesNotMatch(serviceWorker, /\/api\/workouts/);
+  assert.match(activeWorkout, /accessibilityRole="progressbar"/);
+  assert.match(authContext, /SecureStore|session-storage/);
+  assert.match(authContext, /google\/exchange/);
+  assert.match(pendingWrites, /AsyncStorage/);
+  assert.match(pendingWrites, /x-idempotency-key/);
+  assert.match(worker, /handleApiRequest/);
+  assert.match(worker, /index\.html/);
+  assert.match(buildScript, /expo/);
+  assert.match(buildScript, /dist\/server\/index\.js/);
+  assert.match(buildScript, /manifest\.webmanifest/);
   assert.match(hosting, /"d1": "DB"/);
 });

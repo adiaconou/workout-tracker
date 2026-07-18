@@ -1,40 +1,92 @@
-# Workout Tracker entity API
+# Workout Tracker API
 
-All endpoints require the authenticated workout owner. Resources are owner-scoped, IDs are opaque, and deletes archive durable entities instead of destroying referenced history.
+The framework-neutral Worker API is versioned under `/api/v1`. Every resource
+is owner-scoped and every response includes an `x-request-id` header.
+
+Hosted web calls are authenticated by the ChatGPT identity headers forwarded by
+Sites. Native calls use `Authorization: Bearer <access-token>`.
+
+## Authentication
+
+- `GET /api/v1/auth/session`
+- `POST /api/v1/auth/google/exchange`
+  with `{ idToken, deviceName? }`
+- `POST /api/v1/auth/refresh` with `{ refreshToken }`
+- `POST /api/v1/auth/logout`
+
+The Google exchange verifies the token signature, issuer, audience, expiry,
+verified email, and owner allowlist. It returns a short-lived access token and a
+rotating refresh token. Only a hash of the refresh token is stored.
+
+## Bootstrap
+
+- `GET /api/v1/bootstrap`
+
+Returns the current user, routine summaries, recovery-aware recommendations,
+and the optional active workout in one request.
 
 ## Exercises
 
-- `GET /api/exercises?search=&includeArchived=false`
-- `POST /api/exercises`
-- `GET /api/exercises/:exerciseId`
-- `PATCH /api/exercises/:exerciseId`
-- `DELETE /api/exercises/:exerciseId`
+- `GET /api/v1/exercises?search=&includeArchived=false`
+- `POST /api/v1/exercises`
+- `GET /api/v1/exercises/:exerciseId`
+- `PATCH /api/v1/exercises/:exerciseId`
+- `DELETE /api/v1/exercises/:exerciseId`
 
-Exercise request bodies support `name`, `equipment`, `movementPattern`, `trackingType`, `defaultLoadType`, `sideMode`, `instructions`, and `muscles[]` with `muscleGroup`, `role`, and `weight`.
+Exercise bodies support `name`, `equipment`, `movementPattern`,
+`trackingType`, `defaultLoadType`, `sideMode`, `instructions`, and
+`muscles[]`, whose entries contain `muscleGroup`, `role`, and `weight`.
+
+Deletes archive durable exercises rather than destroying referenced workout
+history.
 
 ## Routines
 
-- `GET /api/routines?includeArchived=false`
-- `POST /api/routines` with `{ code, version }`
-- `GET /api/routines/:routineId`
-- `PATCH /api/routines/:routineId` for identity fields
-- `DELETE /api/routines/:routineId`
-- `GET|POST /api/routines/:routineId/versions`
-- `GET|PATCH|DELETE /api/routines/:routineId/versions/:versionId`
-- `POST /api/routines/:routineId/versions/:versionId/publish`
+- `GET /api/v1/routines?includeArchived=false`
+- `POST /api/v1/routines` with `{ code, version }`
+- `GET /api/v1/routines/:routineId`
+- `PATCH /api/v1/routines/:routineId`
+- `DELETE /api/v1/routines/:routineId`
+- `GET|POST /api/v1/routines/:routineId/versions`
+- `GET|PATCH|DELETE /api/v1/routines/:routineId/versions/:versionId`
+- `POST /api/v1/routines/:routineId/versions/:versionId/publish`
+- `GET|PATCH /api/v1/routines/:routineId/prescription`
 
-Routine-version bodies contain `focus`, `summary`, `durationMin`, and ordered `exercises[]`. Each placement contains an `exerciseId`, `position`, optional superset metadata, and ordered `sets[]` with structured targets, RIR, rest, type, side mode, and notes. Only draft versions can be changed or removed; publishing makes a version immutable and supersedes the prior version.
+Routine versions contain ordered exercise placements and ordered sets with
+target reps or duration, RIR, rest, set type, side mode, and notes. The
+aggregate `prescription` patch used by the editor creates and publishes a new
+immutable version.
 
 ## Workouts
 
-- `GET /api/workouts?status=&includeArchived=false`
-- `POST /api/workouts` to start a routine instance
-- `GET /api/workouts/:workoutId`
-- `PATCH /api/workouts/:workoutId` for session metadata or status
-- `DELETE /api/workouts/:workoutId`
-- `POST /api/workouts/:workoutId/sets` to complete or skip the current set
-- `PATCH /api/workouts/:workoutId/sets/:setId` to correct a logged set
-- `POST /api/workouts/:workoutId/rest/skip`
+- `GET /api/v1/workouts?status=&includeArchived=false`
+- `POST /api/v1/workouts`
+- `GET /api/v1/workouts/:workoutId`
+- `PATCH /api/v1/workouts/:workoutId`
+- `DELETE /api/v1/workouts/:workoutId`
+- `POST /api/v1/workouts/:workoutId/sets`
+- `PATCH /api/v1/workouts/:workoutId/sets/:setId`
+- `POST /api/v1/workouts/:workoutId/rest/skip`
 
-Starting a workout materializes its ordered exercise and set rows. Each workout set preserves planned values separately from actual reps, duration, weight, RIR, and rest values.
+Starting a workout materializes its ordered exercises and prescribed sets.
+Actual reps, duration, weight, RIR, and rest remain separate from the planned
+snapshot. Completing or skipping a set accepts `x-idempotency-key`; a retry of
+an already-recorded prescribed set returns the current workout instead of
+creating a duplicate.
 
+## Errors
+
+Errors use a stable machine-readable envelope:
+
+```json
+{
+  "error": {
+    "code": "stable_machine_code",
+    "message": "Human-readable explanation",
+    "retryable": false
+  }
+}
+```
+
+Authentication failures use `401`, authorization failures `403`, missing
+records `404`, validation failures `400`, and state conflicts `409`.

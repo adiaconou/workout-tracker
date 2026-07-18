@@ -1,5 +1,56 @@
 import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
+export const appUsers = sqliteTable(
+  "app_users",
+  {
+    id: text("id").primaryKey(),
+    ownerEmail: text("owner_email").notNull(),
+    displayName: text("display_name").notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("app_users_owner_email_idx").on(table.ownerEmail),
+  ],
+);
+
+export const authIdentities = sqliteTable(
+  "auth_identities",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull().references(() => appUsers.id, { onDelete: "cascade" }),
+    provider: text("provider").notNull(),
+    providerSubject: text("provider_subject").notNull(),
+    email: text("email").notNull(),
+    emailVerified: integer("email_verified", { mode: "boolean" }).notNull().default(false),
+    createdAt: text("created_at").notNull(),
+    lastSeenAt: text("last_seen_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("auth_identities_provider_subject_idx").on(table.provider, table.providerSubject),
+    index("auth_identities_user_idx").on(table.userId),
+  ],
+);
+
+export const authSessions = sqliteTable(
+  "auth_sessions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull().references(() => appUsers.id, { onDelete: "cascade" }),
+    refreshTokenHash: text("refresh_token_hash").notNull(),
+    deviceName: text("device_name").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    revokedAt: text("revoked_at"),
+    createdAt: text("created_at").notNull(),
+    rotatedAt: text("rotated_at").notNull(),
+    lastUsedAt: text("last_used_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("auth_sessions_refresh_hash_idx").on(table.refreshTokenHash),
+    index("auth_sessions_user_idx").on(table.userId),
+  ],
+);
+
 export const routines = sqliteTable(
   "routines",
   {

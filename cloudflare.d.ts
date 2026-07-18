@@ -24,5 +24,8 @@ declare module "cloudflare:workers" {
   export const env: {
     DB?: D1Database;
     OWNER_EMAIL?: string;
+    AUTH_SESSION_SECRET?: string;
+    GOOGLE_WEB_CLIENT_ID?: string;
+    ASSETS?: Fetcher;
   };
 }

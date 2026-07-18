@@ -522,7 +522,27 @@ function cleanNonNegativeNumber(value: unknown, allowDecimal = false) {
 export async function recordWorkoutSet(ownerEmail: string, sessionId: string, input: RecordSetInput) {
   const session = await getRawWorkoutSession(ownerEmail, sessionId);
   if (!session) return null;
-  if (session.status !== "In Progress") throw new Error("This workout is no longer in progress.");
+  if (session.status !== "In Progress") {
+    const existing = input.prescribedSetId
+      ? await db().prepare(`SELECT id AS performanceId
+          FROM set_performances WHERE session_id = ? AND owner_email = ?
+          AND prescribed_set_id = ?`)
+        .bind(sessionId, ownerEmail, input.prescribedSetId)
+        .first<{ performanceId: string }>()
+      : null;
+    if (existing) {
+      return {
+        performanceId: existing.performanceId,
+        completedSets: Number(session.completedSets),
+        skippedSets: Number(session.skippedSets),
+        nextSetIndex: Math.max(0, Number(session.currentSet) - 1),
+        restSeconds: 0,
+        restEndsAt: null,
+        workoutCompleted: session.status === "Completed",
+      };
+    }
+    throw new Error("This workout is no longer in progress.");
+  }
 
   const routine = JSON.parse(session.snapshotJson) as Routine;
   const sets = buildGuidedSets(routine);
@@ -530,6 +550,24 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
   const prescribedSet = sets[currentIndex];
   if (!prescribedSet) throw new Error("This workout has no remaining sets.");
   if (input.prescribedSetId !== prescribedSet.id) {
+    const existing = input.prescribedSetId
+      ? await db().prepare(`SELECT id AS performanceId, target_rest_sec AS restSeconds
+          FROM set_performances WHERE session_id = ? AND owner_email = ?
+          AND prescribed_set_id = ?`)
+        .bind(sessionId, ownerEmail, input.prescribedSetId)
+        .first<{ performanceId: string; restSeconds: number }>()
+      : null;
+    if (existing) {
+      return {
+        performanceId: existing.performanceId,
+        completedSets: Number(session.completedSets),
+        skippedSets: Number(session.skippedSets),
+        nextSetIndex: Math.max(0, Number(session.currentSet) - 1),
+        restSeconds: session.restEndsAt ? Number(existing.restSeconds) : 0,
+        restEndsAt: session.restEndsAt,
+        workoutCompleted: false,
+      };
+    }
     throw new Error("The workout has already advanced. Refresh to continue from the current set.");
   }
 

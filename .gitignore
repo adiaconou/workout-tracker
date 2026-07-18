@@ -13,10 +13,11 @@
 # testing
 /coverage
 
-# next.js
-/.next/
+# generated Expo/native projects
+/.expo/
 /.vinext/
-/out/
+/android/
+/ios/
 
 # misc
 .DS_Store
@@ -35,7 +36,6 @@ yarn-error.log*
 .vercel
 
 # typescript
-next-env.d.ts
 *.tsbuildinfo
 /dist/
 /.wrangler/

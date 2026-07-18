@@ -15,6 +15,7 @@ test("applies the complete migration chain and creates the normalized entity mod
       "drizzle/0000_bent_starjammers.sql",
       "drizzle/0001_windy_timeslip.sql",
       "drizzle/0002_workable_whizzer.sql",
+      "drizzle/0003_faulty_sandman.sql",
     ];
     const sql = (await Promise.all(filenames.map((filename) => readFile(new URL(filename, root), "utf8"))))
       .join("\n").replaceAll("--> statement-breakpoint", "\n");
@@ -24,10 +25,11 @@ test("applies the complete migration chain and creates the normalized entity mod
     const query = `SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;
       PRAGMA table_info(routines);
       PRAGMA table_info(workout_sessions);
+      PRAGMA table_info(auth_sessions);
       PRAGMA foreign_key_list(workout_sets);`;
     const inspected = spawnSync("/usr/bin/sqlite3", [database], { input: query, encoding: "utf8" });
     assert.equal(inspected.status, 0, inspected.stderr);
-    for (const table of ["exercise_catalog", "exercise_muscles", "routine_versions", "routine_version_exercises", "routine_set_templates", "workout_exercises", "workout_sets"]) {
+    for (const table of ["app_users", "auth_identities", "auth_sessions", "exercise_catalog", "exercise_muscles", "routine_versions", "routine_version_exercises", "routine_set_templates", "workout_exercises", "workout_sets"]) {
       assert.match(inspected.stdout, new RegExp(`(^|\\n)${table}(\\n|$)`));
     }
     assert.match(inspected.stdout, /current_version_id/);
@@ -35,6 +37,7 @@ test("applies the complete migration chain and creates the normalized entity mod
     assert.match(inspected.stdout, /is_archived/);
     assert.match(inspected.stdout, /workout_exercises/);
     assert.match(inspected.stdout, /routine_set_templates/);
+    assert.match(inspected.stdout, /refresh_token_hash/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

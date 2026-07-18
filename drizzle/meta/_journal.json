@@ -22,6 +22,13 @@
       "when": 1784093728775,
       "tag": "0002_workable_whizzer",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1784402792363,
+      "tag": "0003_faulty_sandman",
+      "breakpoints": true
     }
   ]
 }
