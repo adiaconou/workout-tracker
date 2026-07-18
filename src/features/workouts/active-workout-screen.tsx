@@ -20,11 +20,11 @@ import {
   Button,
   Card,
   Eyebrow,
-  Field,
   Heading,
   LoadingView,
   Message,
   Screen,
+  StepperField,
 } from "../../components/ui";
 import { colors, radii, spacing } from "../../theme/tokens";
 
@@ -327,7 +327,7 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
 
           <Card>
             <Eyebrow>Log this set</Eyebrow>
-            <Field
+            <StepperField
               label={loadLabel(currentSet.loadType)}
               value={weight}
               onChangeText={setWeight}
@@ -335,7 +335,7 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
               placeholder="0"
               selectTextOnFocus
             />
-            <Field
+            <StepperField
               label={currentSet.targetUnit === "seconds" ? "Seconds completed" : "Reps completed"}
               value={result}
               onChangeText={setResult}

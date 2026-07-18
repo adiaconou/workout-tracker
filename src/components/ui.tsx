@@ -12,6 +12,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { colors, maxContentWidth, radii, spacing } from "../theme/tokens";
+import { stepNumericText } from "./stepper-value";
 
 export function Screen({
   children,
@@ -130,6 +131,75 @@ export function Field({
         selectionColor={colors.accent}
         style={[styles.input, props.multiline && styles.inputMultiline, props.style]}
       />
+      {hint ? <Text style={styles.fieldHint}>{hint}</Text> : null}
+    </View>
+  );
+}
+
+export function StepperField({
+  label,
+  hint,
+  value,
+  onChangeText,
+  minimum = 0,
+  step = 1,
+  ...props
+}: Omit<TextInputProps, "onChangeText" | "value"> & {
+  label: string;
+  hint?: string;
+  value: string;
+  onChangeText: (value: string) => void;
+  minimum?: number;
+  step?: number;
+}) {
+  const numericValue = Number(value);
+  const disabled = props.editable === false;
+  const canDecrement =
+    !disabled && Number.isFinite(numericValue) && numericValue > minimum;
+
+  function changeBy(delta: number) {
+    onChangeText(stepNumericText(value, delta, minimum));
+  }
+
+  return (
+    <View style={styles.field}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <View style={styles.stepperRow}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Decrease ${label} by ${step}`}
+          disabled={!canDecrement}
+          onPress={() => changeBy(-step)}
+          style={({ pressed }) => [
+            styles.stepperButton,
+            !canDecrement && styles.stepperButtonDisabled,
+            pressed && canDecrement && styles.stepperButtonPressed,
+          ]}
+        >
+          <Text style={styles.stepperButtonText}>−</Text>
+        </Pressable>
+        <TextInput
+          {...props}
+          value={value}
+          onChangeText={onChangeText}
+          placeholderTextColor={colors.textDim}
+          selectionColor={colors.accent}
+          style={[styles.input, styles.stepperInput, props.style]}
+        />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Increase ${label} by ${step}`}
+          disabled={disabled}
+          onPress={() => changeBy(step)}
+          style={({ pressed }) => [
+            styles.stepperButton,
+            disabled && styles.stepperButtonDisabled,
+            pressed && !disabled && styles.stepperButtonPressed,
+          ]}
+        >
+          <Text style={styles.stepperButtonText}>+</Text>
+        </Pressable>
+      </View>
       {hint ? <Text style={styles.fieldHint}>{hint}</Text> : null}
     </View>
   );
@@ -256,6 +326,38 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   inputMultiline: { minHeight: 88, textAlignVertical: "top" },
+  stepperRow: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    gap: spacing.sm,
+  },
+  stepperInput: {
+    flex: 1,
+    minWidth: 0,
+    textAlign: "center",
+    fontVariant: ["tabular-nums"],
+  },
+  stepperButton: {
+    width: 48,
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: radii.md,
+    backgroundColor: colors.surfaceRaised,
+  },
+  stepperButtonDisabled: { opacity: 0.35 },
+  stepperButtonPressed: {
+    backgroundColor: colors.accentDark,
+    borderColor: colors.accent,
+  },
+  stepperButtonText: {
+    color: colors.text,
+    fontSize: 24,
+    lineHeight: 28,
+    fontWeight: "700",
+  },
   fieldHint: { color: colors.textDim, fontSize: 12, lineHeight: 17 },
   center: { flex: 1, minHeight: 320, alignItems: "center", justifyContent: "center", gap: spacing.md },
   loadingLabel: { color: colors.textMuted, fontSize: 14 },
