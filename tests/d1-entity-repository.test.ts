@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { D1EntityRepository } from "../infrastructure/d1/entity-repository";
 import { ensureEntityData, ensureEntitySchema, materializeWorkoutFromSnapshot } from "../infrastructure/d1/entity-schema";
+import { getPreviousPerformanceByExercise } from "../infrastructure/d1/previous-performance";
 import type { RoutineVersionInput } from "../domain/entities";
 
 function literal(value: unknown) {
@@ -131,12 +132,40 @@ test("D1 entity repository seeds, versions, publishes, materializes, and archive
         rest: "90 sec", effort: "2 RIR", purpose: "Test", loadType: "external", weightUnit: "lb",
       }],
     };
+    const previousWorkoutId = "workout-previous";
+    const previousStartedAt = "2026-07-14T12:00:00.000Z";
+    await d1.prepare(`INSERT INTO workout_sessions (
+      id, owner_email, routine_code, routine_version, status, snapshot_json, current_exercise,
+      current_set, completed_sets, skipped_sets, total_sets, started_at, completed_at, updated_at
+    ) VALUES (?, ?, 'E', 2, 'Completed', ?, 1, 2, 1, 0, 1, ?, ?, ?)`)
+      .bind(
+        previousWorkoutId,
+        owner,
+        JSON.stringify(snapshot),
+        previousStartedAt,
+        previousStartedAt,
+        previousStartedAt,
+      ).run();
+    await materializeWorkoutFromSnapshot(d1, owner, previousWorkoutId);
+    await d1.prepare(`UPDATE workout_sets SET actual_weight = 70, actual_reps = 9,
+      status = 'completed', completed_at = ?, updated_at = ? WHERE workout_id = ?`)
+      .bind(previousStartedAt, previousStartedAt, previousWorkoutId).run();
+
     await d1.prepare(`INSERT INTO workout_sessions (
       id, owner_email, routine_code, routine_version, status, snapshot_json, current_exercise,
       current_set, completed_sets, skipped_sets, total_sets, started_at, updated_at
     ) VALUES (?, ?, 'E', 2, 'In Progress', ?, 1, 1, 0, 0, 1, ?, ?)`)
       .bind(workoutId, owner, JSON.stringify(snapshot), startedAt, startedAt).run();
     await materializeWorkoutFromSnapshot(d1, owner, workoutId);
+    const previousPerformance = await getPreviousPerformanceByExercise(
+      d1,
+      owner,
+      workoutId,
+      startedAt,
+    );
+    assert.equal(previousPerformance[1].workoutId, previousWorkoutId);
+    assert.equal(previousPerformance[1].sets[0].actualWeight, 70);
+    assert.equal(previousPerformance[1].sets[0].actualReps, 9);
     const workout = await repository.getWorkout(owner, workoutId);
     assert.equal(workout?.routineVersionId, draft.id);
     assert.equal(workout?.exercises.length, 1);

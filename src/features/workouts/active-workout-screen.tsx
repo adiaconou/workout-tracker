@@ -27,6 +27,7 @@ import {
   StepperField,
 } from "../../components/ui";
 import { colors, radii, spacing } from "../../theme/tokens";
+import { formatPreviousSetPerformance } from "./previous-performance";
 
 type RecordSetResponse = {
   performanceId: string;
@@ -100,6 +101,9 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   const exercisePosition = currentSet
     ? exerciseOrders.indexOf(currentSet.exerciseOrder) + 1
     : exerciseOrders.length;
+  const previousExerciseSets = currentSet
+    ? workout?.previousPerformanceByExercise[currentSet.exerciseOrder]?.sets ?? []
+    : [];
 
   useEffect(() => {
     if (!currentSet) return;
@@ -304,6 +308,10 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
             </Body>
             <Fact label="Target" value={currentSet.target} />
             <Fact label="Effort" value={currentSet.effort} />
+            <PreviousPerformance
+              sets={previousExerciseSets}
+              setCount={currentSet.exerciseSetTotal}
+            />
           </Card>
         </View>
       ) : currentSet ? (
@@ -398,6 +406,28 @@ function Prescription({ label, value }: { label: string; value: string }) {
   );
 }
 
+function PreviousPerformance({
+  sets,
+  setCount,
+}: {
+  sets: NonNullable<WorkoutView["previousPerformanceByExercise"][number]>["sets"];
+  setCount: number;
+}) {
+  return (
+    <View style={styles.previousPerformance}>
+      <Text style={styles.previousHeading}>Last time</Text>
+      {Array.from({ length: Math.max(1, setCount) }, (_, index) => (
+        <View key={index} style={styles.previousSetRow}>
+          <Text style={styles.previousSetLabel}>Set {index + 1}</Text>
+          <Text style={styles.previousSetValue}>
+            {formatPreviousSetPerformance(sets[index])}
+          </Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
 function formatTimer(seconds: number) {
   const minutes = Math.floor(seconds / 60);
   const remainder = seconds % 60;
@@ -443,6 +473,34 @@ const styles = StyleSheet.create({
   fact: { flexDirection: "row", justifyContent: "space-between", gap: spacing.lg, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, paddingTop: spacing.sm },
   factLabel: { color: colors.textDim, fontSize: 11, textTransform: "uppercase", fontWeight: "700" },
   factValue: { color: colors.text, fontSize: 13, fontWeight: "600", textAlign: "right", flex: 1 },
+  previousPerformance: {
+    gap: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    paddingTop: spacing.md,
+  },
+  previousHeading: {
+    color: colors.textDim,
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+  },
+  previousSetRow: {
+    minHeight: 24,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.lg,
+  },
+  previousSetLabel: { color: colors.textMuted, fontSize: 12 },
+  previousSetValue: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: "700",
+    fontVariant: ["tabular-nums"],
+    textAlign: "right",
+  },
   exerciseLine: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   setType: { color: colors.textMuted, fontSize: 12, fontWeight: "700" },
   setCard: { backgroundColor: colors.surfaceRaised, paddingVertical: spacing.xl },

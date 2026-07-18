@@ -13,6 +13,15 @@ import {
 import { getEntityServices } from "../application/services";
 import { expandLegacyPrescription } from "../domain/prescription";
 import { ensureEntityData, ensureEntitySchema, materializeWorkoutFromSnapshot } from "../infrastructure/d1/entity-schema";
+import {
+  getPreviousPerformanceByExercise,
+  type PreviousExercisePerformance,
+} from "../infrastructure/d1/previous-performance";
+
+export type {
+  PreviousExercisePerformance,
+  PreviousExerciseSet,
+} from "../infrastructure/d1/previous-performance";
 
 export type RoutineExercise = {
   id: string;
@@ -72,6 +81,7 @@ export type WorkoutView = Omit<RawWorkoutSession, "snapshotJson"> & {
   sets: GuidedSet[];
   currentSetIndex: number;
   currentRestSeconds: number;
+  previousPerformanceByExercise: Record<number, PreviousExercisePerformance>;
 };
 
 function db(): D1Database {
@@ -488,6 +498,12 @@ export async function getWorkoutSession(ownerEmail: string, sessionId: string): 
       .first<{ targetRestSec: number }>();
     currentRestSeconds = Number(performance?.targetRestSec ?? 0);
   }
+  const previousPerformanceByExercise = await getPreviousPerformanceByExercise(
+    db(),
+    ownerEmail,
+    sessionId,
+    session.startedAt,
+  );
 
   return {
     ...session,
@@ -502,6 +518,7 @@ export async function getWorkoutSession(ownerEmail: string, sessionId: string): 
     sets,
     currentSetIndex: Math.max(0, Math.min(sets.length, Number(session.currentSet) - 1)),
     currentRestSeconds,
+    previousPerformanceByExercise,
   };
 }
 

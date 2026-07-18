@@ -47,4 +47,5 @@ test("keeps published versions immutable and materializes normalized workout row
   assert.match(store, /createVersion/);
   assert.match(store, /publish/);
   assert.match(store, /prescribed_set_id = \?/);
+  assert.match(store, /getPreviousPerformanceByExercise/);
 });
