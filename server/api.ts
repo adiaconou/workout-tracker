@@ -1,5 +1,6 @@
 import { getEntityServices } from "../application/services";
 import {
+  completeWorkoutEarly,
   getRoutine,
   getRoutineList,
   getRoutineRecommendations,
@@ -364,6 +365,20 @@ async function handleWorkouts({ request, user, segments }: RouteContext) {
         : apiError(request, 404, "workout_not_found", "Workout not found.");
     } catch (error) {
       return apiError(request, 400, "rest_skip_failed", errorMessage(error, "Rest could not be skipped."));
+    }
+  } else if (child === "complete" && !childId && request.method === "POST") {
+    try {
+      const result = await completeWorkoutEarly(user.email, workoutId);
+      return result
+        ? apiResponse(request, result)
+        : apiError(request, 404, "workout_not_found", "Workout not found.");
+    } catch (error) {
+      return apiError(
+        request,
+        400,
+        "workout_complete_failed",
+        errorMessage(error, "The workout could not be completed early."),
+      );
     }
   } else if (!child) {
     if (request.method === "GET") {

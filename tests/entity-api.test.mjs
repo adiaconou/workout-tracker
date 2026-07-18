@@ -19,6 +19,8 @@ test("exposes owner-scoped CRUD through the versioned Worker API", async () => {
   assert.match(api, /createVersion/);
   assert.match(api, /publish/);
   assert.match(api, /correctSet/);
+  assert.match(api, /completeWorkoutEarly/);
+  assert.match(api, /child === "complete"/);
   assert.match(api, /google.*exchange/is);
   assert.match(api, /refresh/);
   assert.match(auth, /oai-authenticated-user-email/);
@@ -48,4 +50,6 @@ test("keeps published versions immutable and materializes normalized workout row
   assert.match(store, /publish/);
   assert.match(store, /prescribed_set_id = \?/);
   assert.match(store, /getPreviousPerformanceByExercise/);
+  assert.match(store, /remainingSetsSkipped/);
+  assert.match(store, /status = 'skipped'/);
 });

@@ -63,6 +63,9 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(activeWorkout, /View full workout/);
   assert.match(activeWorkout, /WorkoutProgressModal/);
   assert.match(activeWorkout, /sets logged/);
+  assert.match(activeWorkout, /Built-in stopwatch/);
+  assert.match(activeWorkout, /Finish workout early/);
+  assert.match(activeWorkout, /\/complete/);
   assert.match(activeWorkout, /accessibilityRole="progressbar"/);
   assert.match(authContext, /SecureStore|session-storage/);
   assert.match(authContext, /google\/exchange/);

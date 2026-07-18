@@ -34,6 +34,11 @@ import {
   buildWorkoutExerciseProgress,
   type ExerciseProgress,
 } from "./workout-progress";
+import {
+  formatStopwatch,
+  getStopwatchElapsedMs,
+  getStopwatchSeconds,
+} from "./stopwatch";
 
 type RecordSetResponse = {
   performanceId: string;
@@ -43,6 +48,14 @@ type RecordSetResponse = {
   restSeconds: number;
   restEndsAt: string | null;
   workoutCompleted: boolean;
+};
+
+type CompleteWorkoutResponse = {
+  completedSets: number;
+  skippedSets: number;
+  remainingSetsSkipped: number;
+  workoutCompleted: true;
+  endedEarly: boolean;
 };
 
 export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
@@ -62,6 +75,9 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   const [pendingCount, setPendingCount] = useState(0);
   const [workoutCompleted, setWorkoutCompleted] = useState(false);
   const [showFullProgress, setShowFullProgress] = useState(false);
+  const [showFinishEarly, setShowFinishEarly] = useState(false);
+  const [stopwatchStartedAt, setStopwatchStartedAt] = useState<number | null>(null);
+  const [stopwatchElapsedMs, setStopwatchElapsedMs] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -123,7 +139,21 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
     setResult("");
     setError("");
     setSaveState("");
+    setStopwatchStartedAt(null);
+    setStopwatchElapsedMs(0);
   }, [currentIndex, currentSet?.id]);
+
+  useEffect(() => {
+    if (stopwatchStartedAt === null) return;
+    const tick = () => {
+      const elapsedMs = getStopwatchElapsedMs(stopwatchStartedAt, 0);
+      setStopwatchElapsedMs(elapsedMs);
+      setResult(String(getStopwatchSeconds(elapsedMs)));
+    };
+    tick();
+    const timer = setInterval(tick, 100);
+    return () => clearInterval(timer);
+  }, [stopwatchStartedAt]);
 
   useEffect(() => {
     if (!restEndsAt) return;
@@ -150,7 +180,22 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
     setSaveState("");
 
     const numericWeight = Number(weight);
-    const numericResult = Number(result);
+    let resultForSave = result;
+    if (
+      status === "Completed" &&
+      currentSet.targetUnit === "seconds" &&
+      (stopwatchStartedAt !== null || stopwatchElapsedMs > 0)
+    ) {
+      const elapsedMs = getStopwatchElapsedMs(
+        stopwatchStartedAt,
+        stopwatchElapsedMs,
+      );
+      resultForSave = String(getStopwatchSeconds(elapsedMs));
+      setStopwatchElapsedMs(elapsedMs);
+      setStopwatchStartedAt(null);
+      setResult(resultForSave);
+    }
+    const numericResult = Number(resultForSave);
     if (status === "Completed" && (!Number.isFinite(numericWeight) || numericWeight < 0)) {
       setError("Enter the weight used for this set.");
       setSaving(false);
@@ -236,6 +281,72 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
     }
   }
 
+  function startStopwatch() {
+    setStopwatchStartedAt(Date.now() - stopwatchElapsedMs);
+  }
+
+  function pauseStopwatch() {
+    if (stopwatchStartedAt === null) return;
+    const elapsedMs = getStopwatchElapsedMs(
+      stopwatchStartedAt,
+      stopwatchElapsedMs,
+    );
+    setStopwatchElapsedMs(elapsedMs);
+    setStopwatchStartedAt(null);
+    setResult(String(getStopwatchSeconds(elapsedMs)));
+  }
+
+  function resetStopwatch() {
+    setStopwatchStartedAt(null);
+    setStopwatchElapsedMs(0);
+    setResult("");
+  }
+
+  function updateDurationResult(value: string) {
+    setResult(value);
+    if (stopwatchStartedAt !== null) return;
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      setStopwatchElapsedMs(seconds * 1000);
+    }
+  }
+
+  async function finishWorkoutEarly() {
+    if (!workout || saving) return;
+    setSaving(true);
+    setError("");
+    setSaveState("");
+    try {
+      await flushPendingSetWrites();
+      const remainingPending = await countPendingSetWrites(workout.id);
+      setPendingCount(remainingPending);
+      if (remainingPending) {
+        throw new Error("Sync the pending set before finishing this workout.");
+      }
+      const payload = await apiRequest<CompleteWorkoutResponse>(
+        `/api/v1/workouts/${encodeURIComponent(workout.id)}/complete`,
+        { method: "POST" },
+      );
+      setCompletedSets(payload.completedSets);
+      setSkippedSets(payload.skippedSets);
+      setRestEndsAt(null);
+      setSecondsRemaining(0);
+      setStopwatchStartedAt(null);
+      setShowFinishEarly(false);
+      setShowFullProgress(false);
+      setWorkoutCompleted(true);
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "The workout could not be completed early.",
+      );
+      setShowFinishEarly(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   if (loading && !workout) return <LoadingView label="Restoring your workout…" />;
   if (!workout) {
     return (
@@ -299,6 +410,14 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
         totalSets={workout.totalSets}
         exercises={exerciseProgress}
         onClose={() => setShowFullProgress(false)}
+      />
+      <FinishWorkoutModal
+        visible={showFinishEarly}
+        completedSets={completedOrSkipped}
+        remainingSets={Math.max(0, workout.totalSets - completedOrSkipped)}
+        saving={saving}
+        onCancel={() => setShowFinishEarly(false)}
+        onConfirm={() => void finishWorkoutEarly()}
       />
 
       {pendingCount ? (
@@ -369,6 +488,15 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
 
           <Card>
             <Eyebrow>Log this set</Eyebrow>
+            {currentSet.targetUnit === "seconds" ? (
+              <SetStopwatch
+                elapsedMs={stopwatchElapsedMs}
+                running={stopwatchStartedAt !== null}
+                onStart={startStopwatch}
+                onPause={pauseStopwatch}
+                onReset={resetStopwatch}
+              />
+            ) : null}
             <StepperField
               label={loadLabel(currentSet.loadType)}
               value={weight}
@@ -380,10 +508,15 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
             <StepperField
               label={currentSet.targetUnit === "seconds" ? "Seconds completed" : "Reps completed"}
               value={result}
-              onChangeText={setResult}
+              onChangeText={
+                currentSet.targetUnit === "seconds"
+                  ? updateDurationResult
+                  : setResult
+              }
               keyboardType="number-pad"
               placeholder="0"
               selectTextOnFocus
+              editable={currentSet.targetUnit !== "seconds" || stopwatchStartedAt === null}
             />
             <Button
               title={saving ? "Saving…" : "Complete set →"}
@@ -418,7 +551,80 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
       ) : (
         <Message>There are no remaining sets, but this workout has not been finalized.</Message>
       )}
+      <View style={styles.finishEarlyAction}>
+        <Button
+          title="Finish workout early"
+          variant="ghost"
+          disabled={saving}
+          onPress={() => setShowFinishEarly(true)}
+        />
+        <Text style={styles.finishEarlyHint}>
+          Saves completed work and marks every remaining set as skipped.
+        </Text>
+      </View>
     </Screen>
+  );
+}
+
+function SetStopwatch({
+  elapsedMs,
+  running,
+  onStart,
+  onPause,
+  onReset,
+}: {
+  elapsedMs: number;
+  running: boolean;
+  onStart: () => void;
+  onPause: () => void;
+  onReset: () => void;
+}) {
+  return (
+    <View style={styles.stopwatch}>
+      <View style={styles.stopwatchTopline}>
+        <View>
+          <Text style={styles.stopwatchLabel}>Built-in stopwatch</Text>
+          <Text style={styles.stopwatchHint}>
+            Time is copied into seconds completed.
+          </Text>
+        </View>
+        <View style={[styles.stopwatchLiveDot, running && styles.stopwatchLiveDotRunning]} />
+      </View>
+      <Text
+        accessibilityLabel={`${getStopwatchSeconds(elapsedMs)} seconds elapsed`}
+        style={styles.stopwatchTime}
+      >
+        {formatStopwatch(elapsedMs)}
+      </Text>
+      <View style={styles.stopwatchControls}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={running ? "Pause stopwatch" : "Start stopwatch"}
+          onPress={running ? onPause : onStart}
+          style={({ pressed }) => [
+            styles.stopwatchPrimary,
+            pressed && styles.stopwatchControlPressed,
+          ]}
+        >
+          <Text style={styles.stopwatchPrimaryText}>
+            {running ? "Pause" : elapsedMs ? "Resume" : "Start"}
+          </Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Reset stopwatch"
+          disabled={!elapsedMs && !running}
+          onPress={onReset}
+          style={({ pressed }) => [
+            styles.stopwatchSecondary,
+            !elapsedMs && !running && styles.stopwatchControlDisabled,
+            pressed && styles.stopwatchControlPressed,
+          ]}
+        >
+          <Text style={styles.stopwatchSecondaryText}>Reset</Text>
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
@@ -526,6 +732,69 @@ function WorkoutProgressModal({
               />
             ))}
           </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function FinishWorkoutModal({
+  visible,
+  completedSets,
+  remainingSets,
+  saving,
+  onCancel,
+  onConfirm,
+}: {
+  visible: boolean;
+  completedSets: number;
+  remainingSets: number;
+  saving: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      statusBarTranslucent
+      onRequestClose={onCancel}
+    >
+      <View style={styles.modalOverlay}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Keep workout in progress"
+          disabled={saving}
+          onPress={onCancel}
+          style={styles.modalBackdrop}
+        />
+        <View accessibilityViewIsModal style={styles.finishEarlySheet}>
+          <Eyebrow>Finish early</Eyebrow>
+          <Heading size="medium">End this workout now?</Heading>
+          <Body muted>
+            {completedSets} sets are already logged. The remaining {remainingSets}{" "}
+            {remainingSets === 1 ? "set" : "sets"} will be marked skipped, and this
+            workout cannot be resumed.
+          </Body>
+          <View style={styles.finishEarlyButtons}>
+            <Button
+              title={
+                saving
+                  ? "Finishing…"
+                  : `Finish and skip ${remainingSets} ${remainingSets === 1 ? "set" : "sets"}`
+              }
+              variant="danger"
+              loading={saving}
+              onPress={onConfirm}
+            />
+            <Button
+              title="Keep training"
+              variant="secondary"
+              disabled={saving}
+              onPress={onCancel}
+            />
+          </View>
         </View>
       </View>
     </Modal>
@@ -764,6 +1033,99 @@ const styles = StyleSheet.create({
   progressStatusTextDone: { color: colors.success },
   progressStatusTextCurrent: { color: colors.background },
   progressStatusTextInProgress: { color: colors.warning },
+  stopwatch: {
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.background,
+  },
+  stopwatchTopline: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: spacing.md,
+  },
+  stopwatchLabel: {
+    color: colors.text,
+    fontSize: 12,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.7,
+  },
+  stopwatchHint: { color: colors.textDim, fontSize: 11, marginTop: 2 },
+  stopwatchLiveDot: {
+    width: 8,
+    height: 8,
+    borderRadius: radii.pill,
+    backgroundColor: colors.textDim,
+    marginTop: spacing.xs,
+  },
+  stopwatchLiveDotRunning: { backgroundColor: colors.accent },
+  stopwatchTime: {
+    color: colors.text,
+    fontSize: 52,
+    lineHeight: 60,
+    fontWeight: "800",
+    fontVariant: ["tabular-nums"],
+    letterSpacing: -2,
+    textAlign: "center",
+  },
+  stopwatchControls: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    gap: spacing.sm,
+  },
+  stopwatchPrimary: {
+    flex: 2,
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.md,
+    backgroundColor: colors.accent,
+    borderWidth: 1,
+    borderColor: colors.accent,
+  },
+  stopwatchSecondary: {
+    flex: 1,
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.md,
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+  },
+  stopwatchPrimaryText: { color: colors.background, fontSize: 14, fontWeight: "800" },
+  stopwatchSecondaryText: { color: colors.text, fontSize: 14, fontWeight: "800" },
+  stopwatchControlPressed: { opacity: 0.74 },
+  stopwatchControlDisabled: { opacity: 0.4 },
+  finishEarlyAction: {
+    alignItems: "stretch",
+    gap: spacing.xs,
+    paddingTop: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+  },
+  finishEarlyHint: {
+    color: colors.textDim,
+    fontSize: 11,
+    lineHeight: 16,
+    textAlign: "center",
+  },
+  finishEarlySheet: {
+    width: "100%",
+    maxWidth: 520,
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radii.lg,
+    borderTopRightRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    padding: spacing.xl,
+    gap: spacing.lg,
+  },
+  finishEarlyButtons: { gap: spacing.sm },
   restLayout: { gap: spacing.lg },
   timerCard: { alignItems: "stretch", paddingVertical: spacing.xl },
   timer: { color: colors.text, fontSize: 72, lineHeight: 80, fontWeight: "800", textAlign: "center", fontVariant: ["tabular-nums"], letterSpacing: -3 },

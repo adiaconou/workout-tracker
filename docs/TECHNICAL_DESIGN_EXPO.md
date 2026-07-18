@@ -193,6 +193,7 @@ owner-scoped.
 - `POST /api/v1/workouts/:workoutId/sets`
 - `PATCH /api/v1/workouts/:workoutId/sets/:setId`
 - `POST /api/v1/workouts/:workoutId/rest/skip`
+- `POST /api/v1/workouts/:workoutId/complete`
 
 ### Error contract
 

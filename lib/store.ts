@@ -715,3 +715,140 @@ export async function skipWorkoutRest(ownerEmail: string, sessionId: string) {
   await d1.batch(statements);
   return { skipped: true };
 }
+
+export async function completeWorkoutEarly(ownerEmail: string, sessionId: string) {
+  const session = await getRawWorkoutSession(ownerEmail, sessionId);
+  if (!session) return null;
+  if (session.status === "Completed") {
+    return {
+      completedSets: Number(session.completedSets),
+      skippedSets: Number(session.skippedSets),
+      remainingSetsSkipped: 0,
+      workoutCompleted: true,
+      endedEarly: false,
+    };
+  }
+  if (session.status !== "In Progress") {
+    throw new Error("This workout is no longer in progress.");
+  }
+
+  const routine = JSON.parse(session.snapshotJson) as Routine;
+  const sets = buildGuidedSets(routine);
+  const currentIndex = Math.max(
+    0,
+    Math.min(sets.length, Number(session.currentSet) - 1),
+  );
+  const remainingSets = sets.slice(currentIndex);
+  const now = new Date().toISOString();
+  const d1 = db();
+  const statements: D1PreparedStatement[] = remainingSets.map((set) =>
+    d1
+      .prepare(`INSERT INTO set_performances (
+        id, owner_email, session_id, prescribed_set_id, exercise_id, exercise_order,
+        exercise_name, set_order, set_type, target_display, target_rest_sec, rest_rule,
+        actual_reps, actual_duration_sec, actual_weight, weight_unit, status,
+        performed_at, rest_skipped, notes, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, 'Skipped',
+        ?, 0, '', ?, ?)
+      ON CONFLICT(id) DO NOTHING`)
+      .bind(
+        `${sessionId}::${set.id}`,
+        ownerEmail,
+        sessionId,
+        set.id,
+        set.exerciseId,
+        set.exerciseOrder,
+        set.exerciseName,
+        set.globalIndex + 1,
+        set.setType,
+        set.target,
+        set.restSeconds,
+        set.restRule,
+        set.weightUnit,
+        now,
+        now,
+        now,
+      ),
+  );
+
+  statements.push(
+    d1
+      .prepare(`UPDATE workout_sets SET status = 'skipped', actual_reps = NULL,
+        actual_duration_sec = NULL, actual_weight = NULL, completed_at = ?,
+        rest_started_at = NULL, rest_ended_at = NULL, updated_at = ?
+        WHERE workout_id = ? AND owner_email = ? AND status = 'planned'`)
+      .bind(now, now, sessionId, ownerEmail),
+  );
+  if (session.lastPerformanceId && session.restEndsAt) {
+    statements.push(
+      d1
+        .prepare(`UPDATE set_performances SET rest_skipped = 1, updated_at = ?
+          WHERE id = ? AND owner_email = ?`)
+        .bind(now, session.lastPerformanceId, ownerEmail),
+    );
+    statements.push(
+      d1
+        .prepare(`UPDATE workout_sets SET rest_skipped = 1,
+          actual_rest_sec = MAX(0, CAST((julianday(?) - julianday(completed_at)) * 86400 AS INTEGER)),
+          rest_ended_at = ?, updated_at = ? WHERE workout_id = ? AND prescribed_set_id = (
+            SELECT prescribed_set_id FROM set_performances WHERE id = ? AND owner_email = ?
+          ) AND owner_email = ?`)
+        .bind(
+          now,
+          now,
+          now,
+          sessionId,
+          session.lastPerformanceId,
+          ownerEmail,
+          ownerEmail,
+        ),
+    );
+  }
+  await d1.batch(statements);
+
+  const counts = await d1
+    .prepare(`SELECT
+      SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) AS completedSets,
+      SUM(CASE WHEN status = 'Skipped' THEN 1 ELSE 0 END) AS skippedSets
+      FROM set_performances WHERE session_id = ? AND owner_email = ?`)
+    .bind(sessionId, ownerEmail)
+    .first<{ completedSets: number | null; skippedSets: number | null }>();
+  const completedSets = Number(counts?.completedSets ?? 0);
+  const skippedSets = Number(counts?.skippedSets ?? 0);
+
+  await d1.batch([
+    d1
+      .prepare(`UPDATE workout_sessions SET status = 'Completed',
+        current_set = ?, completed_sets = ?, skipped_sets = ?,
+        rest_ends_at = NULL, completed_at = ?, updated_at = ?
+        WHERE id = ? AND owner_email = ?`)
+      .bind(
+        sets.length + 1,
+        completedSets,
+        skippedSets,
+        now,
+        now,
+        sessionId,
+        ownerEmail,
+      ),
+    d1
+      .prepare(`UPDATE workout_exercises SET status = CASE
+        WHEN EXISTS (
+          SELECT 1 FROM workout_sets ws
+          WHERE ws.workout_exercise_id = workout_exercises.id
+            AND ws.status = 'completed'
+        ) THEN 'completed'
+        ELSE 'skipped'
+        END, updated_at = ?
+        WHERE workout_id = ? AND owner_email = ?`)
+      .bind(now, sessionId, ownerEmail),
+  ]);
+
+  return {
+    completedSets,
+    skippedSets,
+    remainingSetsSkipped: remainingSets.length,
+    workoutCompleted: true,
+    endedEarly: true,
+  };
+}

@@ -67,6 +67,7 @@ immutable version.
 - `POST /api/v1/workouts/:workoutId/sets`
 - `PATCH /api/v1/workouts/:workoutId/sets/:setId`
 - `POST /api/v1/workouts/:workoutId/rest/skip`
+- `POST /api/v1/workouts/:workoutId/complete`
 
 Starting a workout materializes its ordered exercises and prescribed sets.
 Actual reps, duration, weight, RIR, and rest remain separate from the planned
