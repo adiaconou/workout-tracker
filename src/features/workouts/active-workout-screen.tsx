@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   Vibration,
@@ -28,6 +30,10 @@ import {
 } from "../../components/ui";
 import { colors, radii, spacing } from "../../theme/tokens";
 import { formatPreviousSetPerformance } from "./previous-performance";
+import {
+  buildWorkoutExerciseProgress,
+  type ExerciseProgress,
+} from "./workout-progress";
 
 type RecordSetResponse = {
   performanceId: string;
@@ -55,6 +61,7 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   const [error, setError] = useState("");
   const [pendingCount, setPendingCount] = useState(0);
   const [workoutCompleted, setWorkoutCompleted] = useState(false);
+  const [showFullProgress, setShowFullProgress] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -104,6 +111,10 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   const previousExerciseSets = currentSet
     ? workout?.previousPerformanceByExercise[currentSet.exerciseOrder]?.sets ?? []
     : [];
+  const exerciseProgress = useMemo(
+    () => buildWorkoutExerciseProgress(workout?.sets ?? [], currentIndex),
+    [currentIndex, workout?.sets],
+  );
 
   useEffect(() => {
     if (!currentSet) return;
@@ -266,6 +277,29 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
       >
         <View style={[styles.progressValue, { width: `${progress * 100}%` }]} />
       </View>
+      <View style={styles.progressActions}>
+        <Text style={styles.progressCaption}>
+          {exerciseProgress.filter((exercise) => exercise.status === "completed").length} of{" "}
+          {exerciseProgress.length} exercises done
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="View full workout progress"
+          onPress={() => setShowFullProgress(true)}
+          hitSlop={8}
+        >
+          <Text style={styles.progressLink}>View full workout →</Text>
+        </Pressable>
+      </View>
+
+      <WorkoutProgressModal
+        visible={showFullProgress}
+        routineCode={workout.routineCode}
+        completedSets={completedOrSkipped}
+        totalSets={workout.totalSets}
+        exercises={exerciseProgress}
+        onClose={() => setShowFullProgress(false)}
+      />
 
       {pendingCount ? (
         <Message tone="warning">
@@ -428,6 +462,151 @@ function PreviousPerformance({
   );
 }
 
+function WorkoutProgressModal({
+  visible,
+  routineCode,
+  completedSets,
+  totalSets,
+  exercises,
+  onClose,
+}: {
+  visible: boolean;
+  routineCode: string;
+  completedSets: number;
+  totalSets: number;
+  exercises: ExerciseProgress[];
+  onClose: () => void;
+}) {
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      statusBarTranslucent
+      onRequestClose={onClose}
+    >
+      <View style={styles.modalOverlay}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Close full workout progress"
+          onPress={onClose}
+          style={styles.modalBackdrop}
+        />
+        <View accessibilityViewIsModal style={styles.progressSheet}>
+          <View style={styles.progressSheetHeader}>
+            <View style={styles.progressSheetTitle}>
+              <Eyebrow>Routine {routineCode}</Eyebrow>
+              <Heading size="medium">Full workout</Heading>
+              <Body muted>
+                {completedSets} of {totalSets} sets logged
+              </Body>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close full workout progress"
+              onPress={onClose}
+              hitSlop={10}
+              style={({ pressed }) => [
+                styles.modalClose,
+                pressed && styles.modalClosePressed,
+              ]}
+            >
+              <Text style={styles.modalCloseText}>×</Text>
+            </Pressable>
+          </View>
+          <ScrollView
+            style={styles.progressList}
+            contentContainerStyle={styles.progressListContent}
+            showsVerticalScrollIndicator={false}
+          >
+            {exercises.map((exercise) => (
+              <ExerciseProgressRow
+                key={exercise.exerciseOrder}
+                exercise={exercise}
+              />
+            ))}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function ExerciseProgressRow({ exercise }: { exercise: ExerciseProgress }) {
+  const statusLabel =
+    exercise.status === "completed"
+      ? "Done"
+      : exercise.status === "current"
+        ? "Current"
+        : exercise.status === "in_progress"
+          ? "In progress"
+          : "Upcoming";
+  return (
+    <View
+      style={[
+        styles.progressExercise,
+        exercise.status === "completed" && styles.progressExerciseCompleted,
+        exercise.status === "current" && styles.progressExerciseCurrent,
+      ]}
+    >
+      <View
+        style={[
+          styles.progressExerciseOrder,
+          exercise.status === "completed" && styles.progressExerciseOrderDone,
+          exercise.status === "current" && styles.progressExerciseOrderCurrent,
+        ]}
+      >
+        <Text
+          style={[
+            styles.progressExerciseOrderText,
+            exercise.status === "completed" && styles.progressExerciseOrderTextDone,
+            exercise.status === "current" && styles.progressExerciseOrderTextCurrent,
+          ]}
+        >
+          {exercise.status === "completed" ? "✓" : exercise.exerciseOrder}
+        </Text>
+      </View>
+      <View style={styles.progressExerciseCopy}>
+        <Text
+          numberOfLines={1}
+          style={[
+            styles.progressExerciseName,
+            exercise.status === "completed" && styles.progressExerciseNameDone,
+          ]}
+        >
+          {exercise.exerciseName}
+        </Text>
+        <Text style={styles.progressExerciseMeta}>
+          {exercise.completedSets}/{exercise.totalSets} sets
+          {exercise.remainingSets ? ` · ${exercise.remainingSets} left` : " · complete"}
+        </Text>
+        <Text numberOfLines={1} style={styles.progressExerciseRest}>
+          {exercise.restLabel}
+        </Text>
+      </View>
+      <View
+        style={[
+          styles.progressStatus,
+          exercise.status === "completed" && styles.progressStatusDone,
+          exercise.status === "current" && styles.progressStatusCurrent,
+          exercise.status === "in_progress" && styles.progressStatusInProgress,
+        ]}
+      >
+        <Text
+          style={[
+            styles.progressStatusText,
+            exercise.status === "completed" && styles.progressStatusTextDone,
+            exercise.status === "current" && styles.progressStatusTextCurrent,
+            exercise.status === "in_progress" && styles.progressStatusTextInProgress,
+          ]}
+        >
+          {statusLabel}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
 function formatTimer(seconds: number) {
   const minutes = Math.floor(seconds / 60);
   const remainder = seconds % 60;
@@ -465,6 +644,126 @@ const styles = StyleSheet.create({
   setCounter: { color: colors.text, fontSize: 12, fontWeight: "800", fontVariant: ["tabular-nums"] },
   progressTrack: { height: 5, borderRadius: radii.pill, backgroundColor: colors.surfaceRaised, overflow: "hidden" },
   progressValue: { height: "100%", backgroundColor: colors.accent, borderRadius: radii.pill },
+  progressActions: {
+    minHeight: 28,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.md,
+  },
+  progressCaption: { color: colors.textDim, fontSize: 11 },
+  progressLink: { color: colors.accent, fontSize: 12, fontWeight: "800" },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: "flex-end",
+    alignItems: "center",
+    backgroundColor: colors.overlay,
+    paddingTop: spacing.xl,
+  },
+  modalBackdrop: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+  },
+  progressSheet: {
+    width: "100%",
+    maxWidth: 680,
+    maxHeight: "88%",
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radii.lg,
+    borderTopRightRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    paddingTop: spacing.lg,
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.xl,
+    gap: spacing.md,
+  },
+  progressSheetHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: spacing.lg,
+  },
+  progressSheetTitle: { flex: 1, gap: spacing.xs },
+  modalClose: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.pill,
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  modalClosePressed: { opacity: 0.72 },
+  modalCloseText: {
+    color: colors.text,
+    fontSize: 25,
+    lineHeight: 27,
+    fontWeight: "500",
+  },
+  progressList: { flexShrink: 1 },
+  progressListContent: { gap: spacing.sm, paddingBottom: spacing.sm },
+  progressExercise: {
+    minHeight: 70,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.background,
+  },
+  progressExerciseCompleted: { opacity: 0.72 },
+  progressExerciseCurrent: {
+    borderColor: colors.accent,
+    backgroundColor: colors.accentDark,
+  },
+  progressExerciseOrder: {
+    width: 30,
+    height: 30,
+    borderRadius: radii.pill,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.surfaceRaised,
+  },
+  progressExerciseOrderDone: { backgroundColor: colors.successSurface },
+  progressExerciseOrderCurrent: { backgroundColor: colors.accent },
+  progressExerciseOrderText: {
+    color: colors.textMuted,
+    fontSize: 12,
+    fontWeight: "800",
+    fontVariant: ["tabular-nums"],
+  },
+  progressExerciseOrderTextDone: { color: colors.success },
+  progressExerciseOrderTextCurrent: { color: colors.background },
+  progressExerciseCopy: { flex: 1, minWidth: 0, gap: 2 },
+  progressExerciseName: { color: colors.text, fontSize: 14, fontWeight: "800" },
+  progressExerciseNameDone: { color: colors.textMuted },
+  progressExerciseMeta: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontVariant: ["tabular-nums"],
+  },
+  progressExerciseRest: { color: colors.textDim, fontSize: 11 },
+  progressStatus: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderRadius: radii.pill,
+    backgroundColor: colors.surfaceRaised,
+  },
+  progressStatusDone: { backgroundColor: colors.successSurface },
+  progressStatusCurrent: { backgroundColor: colors.accent },
+  progressStatusInProgress: { backgroundColor: colors.warningSurface },
+  progressStatusText: { color: colors.textDim, fontSize: 9, fontWeight: "800" },
+  progressStatusTextDone: { color: colors.success },
+  progressStatusTextCurrent: { color: colors.background },
+  progressStatusTextInProgress: { color: colors.warning },
   restLayout: { gap: spacing.lg },
   timerCard: { alignItems: "stretch", paddingVertical: spacing.xl },
   timer: { color: colors.text, fontSize: 72, lineHeight: 80, fontWeight: "800", textAlign: "center", fontVariant: ["tabular-nums"], letterSpacing: -3 },
