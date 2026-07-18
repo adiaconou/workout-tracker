@@ -6,11 +6,21 @@ import type {
   RoutineVersion,
   RoutineVersionInput,
   Workout,
+  WorkoutHistoryPage,
   WorkoutSetCorrection,
 } from "../entities";
 
 export type ExerciseQuery = { includeArchived?: boolean; search?: string };
 export type WorkoutQuery = { includeArchived?: boolean; status?: string };
+export type WorkoutHistoryQuery = {
+  from?: string;
+  to?: string;
+  routineCode?: string;
+  status?: string;
+  exerciseSearch?: string;
+  limit?: number;
+  offset?: number;
+};
 
 export interface ExerciseRepository {
   listExercises(ownerEmail: string, query?: ExerciseQuery): Promise<Exercise[]>;
@@ -35,6 +45,7 @@ export interface RoutineRepository {
 
 export interface WorkoutRepository {
   listWorkouts(ownerEmail: string, query?: WorkoutQuery): Promise<Workout[]>;
+  listWorkoutHistory(ownerEmail: string, query?: WorkoutHistoryQuery): Promise<WorkoutHistoryPage>;
   getWorkout(ownerEmail: string, id: string): Promise<Workout | null>;
   updateWorkout(ownerEmail: string, id: string, input: { bodyWeight?: number | null; notes?: string; status?: string }): Promise<Workout | null>;
   archiveWorkout(ownerEmail: string, id: string): Promise<boolean>;

@@ -1,6 +1,15 @@
-import type { Exercise } from "../../domain/entities";
+import type {
+  Exercise,
+  Workout,
+  WorkoutHistoryPage,
+} from "../../domain/entities";
 import type { RecommendationResult } from "../../lib/recommendations";
-import type { Routine, RoutineSummary, WorkoutView } from "../../lib/store";
+import type {
+  PreviousExercisePerformance,
+  Routine,
+  RoutineSummary,
+  WorkoutView,
+} from "../../lib/store";
 
 export type SessionUser = {
   id: string;
@@ -22,7 +31,15 @@ export type BootstrapPayload = {
   activeWorkout: WorkoutView | null;
 };
 
-export type { Exercise, Routine, RoutineSummary, WorkoutView };
+export type {
+  Exercise,
+  PreviousExercisePerformance,
+  Routine,
+  RoutineSummary,
+  Workout,
+  WorkoutHistoryPage,
+  WorkoutView,
+};
 
 export type ApiErrorPayload = {
   error?: {

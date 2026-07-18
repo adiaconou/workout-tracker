@@ -171,6 +171,18 @@ test("D1 entity repository seeds, versions, publishes, materializes, and archive
     assert.equal(workout?.exercises.length, 1);
     assert.equal(workout?.exercises[0].sets[0].plannedTargetMin, 8);
 
+    const completedHistory = await repository.listWorkoutHistory(owner, {
+      exerciseSearch: "goblet",
+      limit: 10,
+    });
+    assert.equal(completedHistory.workouts.length, 1);
+    assert.equal(completedHistory.workouts[0].id, previousWorkoutId);
+    assert.equal(completedHistory.workouts[0].status, "Completed");
+    assert.equal(completedHistory.workouts[0].completedSets, 1);
+    assert.equal(completedHistory.workouts[0].exerciseNames[0], "Test goblet squat");
+    assert.equal(completedHistory.stats.workoutCount, 1);
+    assert.equal(completedHistory.stats.completedSets, 1);
+
     assert.equal(await repository.archiveWorkout(owner, workoutId), true);
     assert.equal((await repository.listWorkouts(owner)).some((item) => item.id === workoutId), false);
     assert.equal((await repository.listWorkouts(owner, { includeArchived: true })).some((item) => item.id === workoutId), true);

@@ -1,6 +1,7 @@
 import type {
   EntityRepository,
   ExerciseQuery,
+  WorkoutHistoryQuery,
   WorkoutQuery,
 } from "../../domain/repositories/entity-repository";
 import type {
@@ -17,6 +18,8 @@ import type {
   SideMode,
   Workout,
   WorkoutExercise,
+  WorkoutHistoryPage,
+  WorkoutHistorySummary,
   WorkoutItemStatus,
   WorkoutSet,
   WorkoutSetCorrection,
@@ -507,6 +510,131 @@ export class D1EntityRepository implements EntityRepository {
     return Promise.all(rows.results.map((row) => this.workoutFromRow(ownerEmail, row)));
   }
 
+  async listWorkoutHistory(
+    ownerEmail: string,
+    query: WorkoutHistoryQuery = {},
+  ): Promise<WorkoutHistoryPage> {
+    await this.ready(ownerEmail);
+    const clauses = [
+      "ws.owner_email = ?",
+      "ws.status <> 'In Progress'",
+      "ws.is_archived = 0",
+    ];
+    const values: unknown[] = [ownerEmail];
+    if (query.from) {
+      clauses.push("ws.started_at >= ?");
+      values.push(query.from);
+    }
+    if (query.to) {
+      clauses.push("ws.started_at < ?");
+      values.push(query.to);
+    }
+    if (query.routineCode?.trim()) {
+      clauses.push("ws.routine_code = ?");
+      values.push(query.routineCode.trim().toUpperCase());
+    }
+    if (query.status) {
+      clauses.push("ws.status = ?");
+      values.push(query.status);
+    }
+    if (query.exerciseSearch?.trim()) {
+      clauses.push(`EXISTS (
+        SELECT 1 FROM workout_exercises filtered_exercise
+        WHERE filtered_exercise.workout_id = ws.id
+          AND filtered_exercise.owner_email = ws.owner_email
+          AND LOWER(filtered_exercise.exercise_name_snapshot) LIKE ?
+      )`);
+      values.push(`%${query.exerciseSearch.trim().toLowerCase()}%`);
+    }
+
+    const where = clauses.join(" AND ");
+    const requestedLimit = Number(query.limit ?? 20);
+    const requestedOffset = Number(query.offset ?? 0);
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.min(50, Math.max(1, Math.round(requestedLimit)))
+      : 20;
+    const offset = Number.isFinite(requestedOffset)
+      ? Math.max(0, Math.round(requestedOffset))
+      : 0;
+    const rows = await this.d1
+      .prepare(`SELECT ws.id, ws.routine_code AS routineCode, ws.status,
+        ws.started_at AS startedAt, ws.completed_at AS completedAt,
+        ws.completed_sets AS completedSets, ws.skipped_sets AS skippedSets,
+        ws.total_sets AS totalSets,
+        (SELECT COUNT(*) FROM workout_exercises count_exercise
+          WHERE count_exercise.workout_id = ws.id
+            AND count_exercise.owner_email = ws.owner_email) AS exerciseCount,
+        (SELECT GROUP_CONCAT(DISTINCT name_exercise.exercise_name_snapshot)
+          FROM workout_exercises name_exercise
+          WHERE name_exercise.workout_id = ws.id
+            AND name_exercise.owner_email = ws.owner_email) AS exerciseNames,
+        (SELECT GROUP_CONCAT(DISTINCT exercise_muscles.muscle_group)
+          FROM workout_exercises muscle_exercise
+          INNER JOIN exercise_muscles
+            ON exercise_muscles.exercise_id = muscle_exercise.exercise_id
+          WHERE muscle_exercise.workout_id = ws.id
+            AND muscle_exercise.owner_email = ws.owner_email
+            AND exercise_muscles.role = 'primary') AS muscleGroups
+        FROM workout_sessions ws
+        WHERE ${where}
+        ORDER BY ws.started_at DESC
+        LIMIT ? OFFSET ?`)
+      .bind(...values, limit + 1, offset)
+      .all<Row>();
+    const pageRows = rows.results.slice(0, limit);
+    const workouts = pageRows.map((row): WorkoutHistorySummary => {
+      const startedAt = String(row.startedAt);
+      const completedAt = row.completedAt === null ? null : String(row.completedAt);
+      const elapsed = completedAt
+        ? Math.max(
+          0,
+          Math.round(
+            (new Date(completedAt).getTime() - new Date(startedAt).getTime()) /
+              1000,
+          ),
+        )
+        : 0;
+      return {
+        id: String(row.id),
+        routineCode: String(row.routineCode),
+        status: String(row.status) as WorkoutHistorySummary["status"],
+        startedAt,
+        completedAt,
+        durationSeconds: elapsed,
+        completedSets: Number(row.completedSets),
+        skippedSets: Number(row.skippedSets),
+        totalSets: Number(row.totalSets),
+        exerciseCount: Number(row.exerciseCount),
+        exerciseNames: String(row.exerciseNames ?? "").split(",").filter(Boolean),
+        muscleGroups: String(row.muscleGroups ?? "").split(",").filter(Boolean),
+      };
+    });
+    const stats = await this.d1
+      .prepare(`SELECT COUNT(*) AS workoutCount,
+        COALESCE(SUM(ws.completed_sets), 0) AS completedSets,
+        COALESCE(SUM(
+          CASE WHEN ws.completed_at IS NULL THEN 0
+          ELSE MAX(0, CAST(
+            (julianday(ws.completed_at) - julianday(ws.started_at)) * 86400
+            AS INTEGER
+          )) END
+        ), 0) AS durationSeconds
+        FROM workout_sessions ws WHERE ${where}`)
+      .bind(...values)
+      .first<Row>();
+
+    return {
+      workouts,
+      stats: {
+        workoutCount: Number(stats?.workoutCount ?? 0),
+        completedSets: Number(stats?.completedSets ?? 0),
+        durationSeconds: Number(stats?.durationSeconds ?? 0),
+      },
+      hasMore: rows.results.length > limit,
+      offset,
+    };
+  }
+
   async getWorkout(ownerEmail: string, id: string) {
     await this.ready(ownerEmail);
     const row = await this.d1.prepare(`${this.workoutSelect()} WHERE owner_email = ? AND id = ?`).bind(ownerEmail, id).first<Row>();
@@ -567,6 +695,38 @@ export class D1EntityRepository implements EntityRepository {
           value(input.actualWeight, existing.actualWeight), Number(value(input.restSkipped, bool(existing.restSkipped))),
           value(input.notes, existing.notes), status === "completed" ? "Completed" : status === "skipped" ? "Skipped" : "Planned",
           now, workoutId, existing.prescribedSetId, ownerEmail),
+    ]);
+    const counts = await this.d1.prepare(`SELECT
+      SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completedSets,
+      SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) AS skippedSets
+      FROM workout_sets WHERE workout_id = ? AND owner_email = ?`)
+      .bind(workoutId, ownerEmail)
+      .first<Row>();
+    await this.d1.batch([
+      this.d1.prepare(`UPDATE workout_sessions SET completed_sets = ?,
+        skipped_sets = ?, updated_at = ? WHERE id = ? AND owner_email = ?`)
+        .bind(
+          Number(counts?.completedSets ?? 0),
+          Number(counts?.skippedSets ?? 0),
+          now,
+          workoutId,
+          ownerEmail,
+        ),
+      this.d1.prepare(`UPDATE workout_exercises SET status = CASE
+        WHEN EXISTS (
+          SELECT 1 FROM workout_sets ws
+          WHERE ws.workout_exercise_id = workout_exercises.id
+            AND ws.status = 'completed'
+        ) THEN 'completed'
+        WHEN EXISTS (
+          SELECT 1 FROM workout_sets ws
+          WHERE ws.workout_exercise_id = workout_exercises.id
+            AND ws.status = 'skipped'
+        ) THEN 'skipped'
+        ELSE 'planned'
+        END, updated_at = ?
+        WHERE workout_id = ? AND owner_email = ?`)
+        .bind(now, workoutId, ownerEmail),
     ]);
     return this.getWorkout(ownerEmail, workoutId);
   }

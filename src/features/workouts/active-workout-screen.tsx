@@ -92,7 +92,7 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
       setCurrentIndex(next.currentSetIndex);
       setCompletedSets(next.completedSets);
       setSkippedSets(next.skippedSets);
-      setWorkoutCompleted(next.status === "Completed");
+      setWorkoutCompleted(next.status === "Completed" || next.status === "Partial");
       setRestEndsAt(next.restEndsAt);
       setRestDuration(next.currentRestSeconds);
       setSecondsRemaining(

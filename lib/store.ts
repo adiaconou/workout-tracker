@@ -555,7 +555,8 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
         nextSetIndex: Math.max(0, Number(session.currentSet) - 1),
         restSeconds: 0,
         restEndsAt: null,
-        workoutCompleted: session.status === "Completed",
+        workoutCompleted:
+          session.status === "Completed" || session.status === "Partial",
       };
     }
     throw new Error("This workout is no longer in progress.");
@@ -719,13 +720,13 @@ export async function skipWorkoutRest(ownerEmail: string, sessionId: string) {
 export async function completeWorkoutEarly(ownerEmail: string, sessionId: string) {
   const session = await getRawWorkoutSession(ownerEmail, sessionId);
   if (!session) return null;
-  if (session.status === "Completed") {
+  if (session.status === "Completed" || session.status === "Partial") {
     return {
       completedSets: Number(session.completedSets),
       skippedSets: Number(session.skippedSets),
       remainingSetsSkipped: 0,
       workoutCompleted: true,
-      endedEarly: false,
+      endedEarly: session.status === "Partial",
     };
   }
   if (session.status !== "In Progress") {
@@ -818,7 +819,7 @@ export async function completeWorkoutEarly(ownerEmail: string, sessionId: string
 
   await d1.batch([
     d1
-      .prepare(`UPDATE workout_sessions SET status = 'Completed',
+      .prepare(`UPDATE workout_sessions SET status = 'Partial',
         current_set = ?, completed_sets = ?, skipped_sets = ?,
         rest_ends_at = NULL, completed_at = ?, updated_at = ?
         WHERE id = ? AND owner_email = ?`)

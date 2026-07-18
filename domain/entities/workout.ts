@@ -4,6 +4,34 @@ import type { RestRule, RoutineSetType, TargetType } from "./routine";
 export type WorkoutStatus = "In Progress" | "Completed" | "Partial" | "Abandoned";
 export type WorkoutItemStatus = "planned" | "started" | "completed" | "skipped";
 
+export type WorkoutHistorySummary = {
+  id: string;
+  routineCode: string;
+  status: Exclude<WorkoutStatus, "In Progress">;
+  startedAt: string;
+  completedAt: string | null;
+  durationSeconds: number;
+  completedSets: number;
+  skippedSets: number;
+  totalSets: number;
+  exerciseCount: number;
+  exerciseNames: string[];
+  muscleGroups: string[];
+};
+
+export type WorkoutHistoryStats = {
+  workoutCount: number;
+  completedSets: number;
+  durationSeconds: number;
+};
+
+export type WorkoutHistoryPage = {
+  workouts: WorkoutHistorySummary[];
+  stats: WorkoutHistoryStats;
+  hasMore: boolean;
+  offset: number;
+};
+
 export type WorkoutSet = {
   id: string;
   ownerEmail: string;
@@ -77,4 +105,3 @@ export type WorkoutSetCorrection = Partial<Pick<WorkoutSet,
   "actualReps" | "actualRepsLeft" | "actualRepsRight" | "actualDurationSec" |
   "actualWeight" | "actualRir" | "actualRestSec" | "restSkipped" | "notes" | "status"
 >>;
-

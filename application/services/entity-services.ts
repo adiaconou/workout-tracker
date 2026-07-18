@@ -1,6 +1,7 @@
 import type {
   EntityRepository,
   ExerciseQuery,
+  WorkoutHistoryQuery,
   WorkoutQuery,
 } from "../../domain/repositories/entity-repository";
 import type {
@@ -132,6 +133,15 @@ export class RoutineService {
 export class WorkoutService {
   constructor(private readonly repository: EntityRepository) {}
   list(ownerEmail: string, query?: WorkoutQuery) { return this.repository.listWorkouts(ownerEmail, query); }
+  history(ownerEmail: string, query?: WorkoutHistoryQuery) {
+    if (
+      query?.status &&
+      !["Completed", "Partial", "Abandoned"].includes(query.status)
+    ) {
+      throw new Error("Workout history status is invalid.");
+    }
+    return this.repository.listWorkoutHistory(ownerEmail, query);
+  }
   get(ownerEmail: string, id: string) { return this.repository.getWorkout(ownerEmail, id); }
   update(ownerEmail: string, id: string, input: { bodyWeight?: number | null; notes?: string; status?: string }) {
     assertNonNegative(input.bodyWeight, "Body weight");

@@ -30,6 +30,13 @@ export default function TabsLayout() {
           tabBarLabel: ({ focused }) => <TabLabel title="Exercises" focused={focused} />,
         }}
       />
+      <Tabs.Screen
+        name="history"
+        options={{
+          title: "History",
+          tabBarLabel: ({ focused }) => <TabLabel title="History" focused={focused} />,
+        }}
+      />
     </Tabs>
   );
 }

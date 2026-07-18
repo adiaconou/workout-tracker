@@ -14,6 +14,8 @@ test("uses one Expo Router application for Android and hosted web", async () => 
     routineDetail,
     exerciseLibrary,
     exerciseDetail,
+    history,
+    historyDetail,
     activeWorkout,
     authContext,
     pendingWrites,
@@ -29,6 +31,8 @@ test("uses one Expo Router application for Android and hosted web", async () => 
     readFile(new URL("src/features/routines/routine-detail-screen.tsx", root), "utf8"),
     readFile(new URL("src/features/exercises/exercise-library-screen.tsx", root), "utf8"),
     readFile(new URL("src/features/exercises/exercise-detail-screen.tsx", root), "utf8"),
+    readFile(new URL("src/features/history/history-screen.tsx", root), "utf8"),
+    readFile(new URL("src/features/history/workout-history-detail-screen.tsx", root), "utf8"),
     readFile(new URL("src/features/workouts/active-workout-screen.tsx", root), "utf8"),
     readFile(new URL("src/auth/auth-context.tsx", root), "utf8"),
     readFile(new URL("src/api/pending-writes.ts", root), "utf8"),
@@ -46,6 +50,7 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(rootLayout, /serviceWorker\.register/);
   assert.match(tabs, /Routines/);
   assert.match(tabs, /Exercises/);
+  assert.match(tabs, /History/);
   assert.match(routines, /Best today/);
   assert.match(routines, /A → B → C → D/);
   assert.match(routineDetail, /Start workout/);
@@ -54,6 +59,15 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(exerciseLibrary, /onChangeText=\{setQuery\}/);
   assert.match(exerciseLibrary, /minHeight: 46/);
   assert.match(exerciseDetail, /Used in routines/);
+  assert.match(history, /Workout history/);
+  assert.match(history, /Finished early/);
+  assert.match(history, /Show more workouts/);
+  assert.match(history, /Filter/);
+  assert.match(historyDetail, /Workout review/);
+  assert.match(historyDetail, /Previous:/);
+  assert.match(historyDetail, /Save notes/);
+  assert.match(historyDetail, /Repeat Routine/);
+  assert.match(historyDetail, /Save changes/);
   assert.match(activeWorkout, /Complete set/);
   assert.match(activeWorkout, /Skip this set/);
   assert.match(activeWorkout, /Skip rest/);

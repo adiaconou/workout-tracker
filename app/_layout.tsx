@@ -57,6 +57,7 @@ function AuthenticatedNavigator() {
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="routines/[routineId]" />
         <Stack.Screen name="exercises/[exerciseId]" />
+        <Stack.Screen name="history/[workoutId]" />
         <Stack.Screen name="workouts/[sessionId]" options={{ gestureEnabled: false }} />
       </Stack.Protected>
     </Stack>

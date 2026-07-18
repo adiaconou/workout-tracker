@@ -318,6 +318,28 @@ async function handleWorkouts({ request, user, segments }: RouteContext) {
   if (!workoutId) {
     if (request.method === "GET") {
       const url = new URL(request.url);
+      if (url.searchParams.get("view") === "history") {
+        try {
+          return apiResponse(request, {
+            history: await service.history(user.email, {
+              from: url.searchParams.get("from") ?? undefined,
+              to: url.searchParams.get("to") ?? undefined,
+              routineCode: url.searchParams.get("routineCode") ?? undefined,
+              status: url.searchParams.get("status") ?? undefined,
+              exerciseSearch: url.searchParams.get("exercise") ?? undefined,
+              limit: Number(url.searchParams.get("limit") ?? 20),
+              offset: Number(url.searchParams.get("offset") ?? 0),
+            }),
+          });
+        } catch (error) {
+          return apiError(
+            request,
+            400,
+            "workout_history_invalid",
+            errorMessage(error, "Workout history could not be loaded."),
+          );
+        }
+      }
       return apiResponse(request, {
         workouts: await service.list(user.email, {
           includeArchived: url.searchParams.get("includeArchived") === "true",
@@ -339,6 +361,18 @@ async function handleWorkouts({ request, user, segments }: RouteContext) {
         return apiError(request, 400, "workout_start_failed", errorMessage(error, "The workout could not be started."));
       }
     }
+  } else if (child === "history" && !childId && request.method === "GET") {
+    const [workout, session] = await Promise.all([
+      service.get(user.email, workoutId),
+      getWorkoutSession(user.email, workoutId),
+    ]);
+    return workout
+      ? apiResponse(request, {
+        workout,
+        previousPerformanceByExercise:
+          session?.previousPerformanceByExercise ?? {},
+      })
+      : apiError(request, 404, "workout_not_found", "Workout not found.");
   } else if (child === "sets" && !childId && request.method === "POST") {
     try {
       const result = await recordWorkoutSet(user.email, workoutId, await readJson(request));

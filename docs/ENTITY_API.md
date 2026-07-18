@@ -60,8 +60,10 @@ immutable version.
 ## Workouts
 
 - `GET /api/v1/workouts?status=&includeArchived=false`
+- `GET /api/v1/workouts?view=history&from=&to=&routineCode=&status=&exercise=&limit=&offset=`
 - `POST /api/v1/workouts`
 - `GET /api/v1/workouts/:workoutId`
+- `GET /api/v1/workouts/:workoutId/history`
 - `PATCH /api/v1/workouts/:workoutId`
 - `DELETE /api/v1/workouts/:workoutId`
 - `POST /api/v1/workouts/:workoutId/sets`

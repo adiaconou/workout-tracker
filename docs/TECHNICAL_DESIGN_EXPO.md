@@ -189,7 +189,9 @@ owner-scoped.
 ### Workouts
 
 - `GET|POST /api/v1/workouts`
+- `GET /api/v1/workouts?view=history&from=&to=&routineCode=&status=&exercise=&limit=&offset=`
 - `GET|PATCH|DELETE /api/v1/workouts/:workoutId`
+- `GET /api/v1/workouts/:workoutId/history`
 - `POST /api/v1/workouts/:workoutId/sets`
 - `PATCH /api/v1/workouts/:workoutId/sets/:setId`
 - `POST /api/v1/workouts/:workoutId/rest/skip`
