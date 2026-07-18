@@ -49,6 +49,9 @@
     "typescript": "~6.0.3",
     "wrangler": "4.92.0"
   },
+  "overrides": {
+    "ws": "8.21.0"
+  },
   "type": "module",
   "main": "expo-router/entry"
 }
