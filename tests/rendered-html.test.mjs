@@ -65,6 +65,9 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(history, /Filter/);
   assert.match(historyDetail, /Workout review/);
   assert.match(historyDetail, /Previous:/);
+  assert.match(historyDetail, /expandedExerciseIds/);
+  assert.match(historyDetail, /accessibilityState=\{\{ expanded \}\}/);
+  assert.match(historyDetail, /Collapse.*Expand|Expand.*Collapse/);
   assert.match(historyDetail, /Save notes/);
   assert.match(historyDetail, /Repeat Routine/);
   assert.match(historyDetail, /Save changes/);

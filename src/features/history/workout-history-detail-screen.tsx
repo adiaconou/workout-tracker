@@ -54,6 +54,9 @@ export function WorkoutHistoryDetailScreen({
   const [data, setData] = useState<HistoryDetailPayload | null>(null);
   const [notes, setNotes] = useState("");
   const [editing, setEditing] = useState<EditableSet | null>(null);
+  const [expandedExerciseIds, setExpandedExerciseIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [loading, setLoading] = useState(true);
   const [savingNotes, setSavingNotes] = useState(false);
   const [error, setError] = useState("");
@@ -141,6 +144,15 @@ export function WorkoutHistoryDetailScreen({
     await load();
   }
 
+  function toggleExercise(exerciseId: string) {
+    setExpandedExerciseIds((current) => {
+      const next = new Set(current);
+      if (next.has(exerciseId)) next.delete(exerciseId);
+      else next.add(exerciseId);
+      return next;
+    });
+  }
+
   if (loading && !data) return <LoadingView label="Loading workout review…" />;
   if (!data) {
     return (
@@ -215,61 +227,86 @@ export function WorkoutHistoryDetailScreen({
 
       {workout.exercises.map((exercise) => {
         const previous = previousPerformanceByExercise[exercise.position];
+        const expanded = expandedExerciseIds.has(exercise.id);
+        const exerciseCompletedSets = exercise.sets.filter(
+          (set) => set.status === "completed",
+        ).length;
         return (
           <Card key={exercise.id} style={styles.exerciseCard}>
-            <View style={styles.exerciseHeader}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${exercise.exerciseNameSnapshot}`}
+              accessibilityState={{ expanded }}
+              onPress={() => toggleExercise(exercise.id)}
+              style={({ pressed }) => [
+                styles.exerciseHeader,
+                pressed && styles.exerciseHeaderPressed,
+              ]}
+            >
               <View style={styles.exerciseOrder}>
                 <Text style={styles.exerciseOrderText}>{exercise.position}</Text>
               </View>
               <View style={styles.exerciseCopy}>
                 <Heading size="small">{exercise.exerciseNameSnapshot}</Heading>
                 <Body muted>
-                  {exercise.sets.filter((set) => set.status === "completed").length}/
-                  {exercise.sets.length} sets completed
+                  {exerciseCompletedSets}/{exercise.sets.length} sets completed
                 </Body>
               </View>
-            </View>
-            <View style={styles.setList}>
-              {exercise.sets.map((set, index) => (
-                <Pressable
-                  key={set.id}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Edit ${exercise.exerciseNameSnapshot} set ${index + 1}`}
-                  onPress={() => setEditing({
-                    set,
-                    exerciseName: exercise.exerciseNameSnapshot,
-                    loadType: exercise.loadTypeSnapshot,
-                  })}
-                  style={({ pressed }) => [
-                    styles.setRow,
-                    pressed && styles.setRowPressed,
-                  ]}
-                >
-                  <View style={styles.setNumber}>
-                    <Text style={styles.setNumberText}>{index + 1}</Text>
-                  </View>
-                  <View style={styles.setCopy}>
-                    <View style={styles.setTopline}>
-                      <Text style={styles.setResult}>
-                        {formatSetResult(set, exercise.loadTypeSnapshot)}
+              <View style={[
+                styles.expander,
+                expanded && styles.expanderExpanded,
+              ]}>
+                <Text style={[
+                  styles.expanderText,
+                  expanded && styles.expanderTextExpanded,
+                ]}>
+                  {expanded ? "⌄" : "›"}
+                </Text>
+              </View>
+            </Pressable>
+            {expanded ? (
+              <View style={styles.setList}>
+                {exercise.sets.map((set, index) => (
+                  <Pressable
+                    key={set.id}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Edit ${exercise.exerciseNameSnapshot} set ${index + 1}`}
+                    onPress={() => setEditing({
+                      set,
+                      exerciseName: exercise.exerciseNameSnapshot,
+                      loadType: exercise.loadTypeSnapshot,
+                    })}
+                    style={({ pressed }) => [
+                      styles.setRow,
+                      pressed && styles.setRowPressed,
+                    ]}
+                  >
+                    <View style={styles.setNumber}>
+                      <Text style={styles.setNumberText}>{index + 1}</Text>
+                    </View>
+                    <View style={styles.setCopy}>
+                      <View style={styles.setTopline}>
+                        <Text style={styles.setResult}>
+                          {formatSetResult(set, exercise.loadTypeSnapshot)}
+                        </Text>
+                        <Text style={styles.setRest}>
+                          {set.status === "skipped"
+                            ? "—"
+                            : `${set.actualRestSec ?? set.plannedRestSec} sec rest`}
+                        </Text>
+                      </View>
+                      <Text numberOfLines={1} style={styles.setTarget}>
+                        Target {set.plannedTargetDisplay} · {set.setType}
                       </Text>
-                      <Text style={styles.setRest}>
-                        {set.status === "skipped"
-                          ? "—"
-                          : `${set.actualRestSec ?? set.plannedRestSec} sec rest`}
+                      <Text numberOfLines={1} style={styles.setPrevious}>
+                        Previous: {formatPreviousSetPerformance(previous?.sets[index])}
                       </Text>
                     </View>
-                    <Text numberOfLines={1} style={styles.setTarget}>
-                      Target {set.plannedTargetDisplay} · {set.setType}
-                    </Text>
-                    <Text numberOfLines={1} style={styles.setPrevious}>
-                      Previous: {formatPreviousSetPerformance(previous?.sets[index])}
-                    </Text>
-                  </View>
-                  <Text style={styles.edit}>Edit</Text>
-                </Pressable>
-              ))}
-            </View>
+                    <Text style={styles.edit}>Edit</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
           </Card>
         );
       })}
@@ -562,12 +599,14 @@ const styles = StyleSheet.create({
   refreshing: { color: colors.textDim, fontSize: 11 },
   exerciseCard: { padding: 0, overflow: "hidden", gap: 0 },
   exerciseHeader: {
+    minHeight: 68,
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
     padding: spacing.md,
     backgroundColor: colors.surfaceRaised,
   },
+  exerciseHeaderPressed: { opacity: 0.76 },
   exerciseOrder: {
     width: 32,
     height: 32,
@@ -578,6 +617,27 @@ const styles = StyleSheet.create({
   },
   exerciseOrderText: { color: colors.accent, fontSize: 12, fontWeight: "900" },
   exerciseCopy: { flex: 1, minWidth: 0 },
+  expander: {
+    width: 30,
+    height: 30,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.background,
+  },
+  expanderExpanded: {
+    borderColor: colors.accent,
+    backgroundColor: colors.accentDark,
+  },
+  expanderText: {
+    color: colors.textMuted,
+    fontSize: 23,
+    lineHeight: 25,
+    fontWeight: "600",
+  },
+  expanderTextExpanded: { color: colors.accent },
   setList: { gap: 0 },
   setRow: {
     minHeight: 76,
