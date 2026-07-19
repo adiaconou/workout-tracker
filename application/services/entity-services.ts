@@ -154,6 +154,7 @@ export class WorkoutService {
     return this.repository.updateWorkout(ownerEmail, id, { ...input, notes: input.notes === undefined ? undefined : cleanOptional(input.notes, 2000) });
   }
   archive(ownerEmail: string, id: string) { return this.repository.archiveWorkout(ownerEmail, id); }
+  discard(ownerEmail: string, id: string) { return this.repository.discardWorkout(ownerEmail, id); }
   correctSet(ownerEmail: string, workoutId: string, setId: string, input: WorkoutSetCorrection) {
     assertNonNegative(input.actualReps, "Reps");
     assertNonNegative(input.actualRepsLeft, "Left reps");

@@ -426,6 +426,19 @@ async function handleWorkouts({ request, user, segments }: RouteContext) {
         errorMessage(error, "The workout could not be completed early."),
       );
     }
+  } else if (child === "discard" && !childId && request.method === "DELETE") {
+    const result = await service.discard(user.email, workoutId);
+    if (result === "discarded") {
+      return apiResponse(request, { discarded: true, workoutId });
+    }
+    return result === "not_in_progress"
+      ? apiError(
+        request,
+        409,
+        "workout_not_in_progress",
+        "Only a workout in progress can be discarded.",
+      )
+      : apiError(request, 404, "workout_not_found", "Workout not found.");
   } else if (!child) {
     if (request.method === "GET") {
       const workout = await getWorkoutSession(user.email, workoutId);

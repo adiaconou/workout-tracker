@@ -72,7 +72,7 @@ const singleSetRoutine = (exerciseId: string, focus: string): RoutineVersionInpu
   }],
 });
 
-test("D1 entity repository seeds, versions, publishes, materializes, and archives normalized entities", async () => {
+test("D1 entity repository seeds, versions, publishes, materializes, discards, and archives normalized entities", async () => {
   const directory = await mkdtemp(join(tmpdir(), "workout-d1-repository-"));
   const database = join(directory, "repository.sqlite");
   const d1 = new SqliteD1(database) as unknown as D1Database;
@@ -163,6 +163,23 @@ test("D1 entity repository seeds, versions, publishes, materializes, and archive
     ) VALUES (?, ?, 'E', 2, 'In Progress', ?, 1, 1, 0, 0, 1, ?, ?)`)
       .bind(workoutId, owner, JSON.stringify(snapshot), startedAt, startedAt).run();
     await materializeWorkoutFromSnapshot(d1, owner, workoutId);
+    await d1.prepare(`INSERT INTO set_performances (
+      id, owner_email, session_id, prescribed_set_id, exercise_id, exercise_order,
+      exercise_name, set_order, set_type, target_display, target_rest_sec, rest_rule,
+      weight_unit, status, performed_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 1, ?, 1, 'regular', '8–10 reps', 90, 'standard',
+      'lb', 'Completed', ?, ?, ?)`)
+      .bind(
+        "legacy-performance",
+        owner,
+        workoutId,
+        `${owner}::set::E::1::regular::1`,
+        exercise.id,
+        exercise.name,
+        startedAt,
+        startedAt,
+        startedAt,
+      ).run();
     const previousPerformance = await getPreviousPerformanceByExercise(
       d1,
       owner,
@@ -189,9 +206,46 @@ test("D1 entity repository seeds, versions, publishes, materializes, and archive
     assert.equal(completedHistory.stats.workoutCount, 1);
     assert.equal(completedHistory.stats.completedSets, 1);
 
-    assert.equal(await repository.archiveWorkout(owner, workoutId), true);
-    assert.equal((await repository.listWorkouts(owner)).some((item) => item.id === workoutId), false);
-    assert.equal((await repository.listWorkouts(owner, { includeArchived: true })).some((item) => item.id === workoutId), true);
+    assert.equal(
+      await repository.discardWorkout(owner, previousWorkoutId),
+      "not_in_progress",
+    );
+    assert.equal(
+      await repository.discardWorkout("other@example.com", workoutId),
+      "not_found",
+    );
+    assert.equal(await repository.discardWorkout(owner, workoutId), "discarded");
+    assert.equal(await repository.getWorkout(owner, workoutId), null);
+    assert.equal(
+      (await d1.prepare("SELECT COUNT(*) AS count FROM workout_sets WHERE workout_id = ?")
+        .bind(workoutId).first<{ count: number }>())?.count,
+      0,
+    );
+    assert.equal(
+      (await d1.prepare("SELECT COUNT(*) AS count FROM workout_exercises WHERE workout_id = ?")
+        .bind(workoutId).first<{ count: number }>())?.count,
+      0,
+    );
+    assert.equal(
+      (await d1.prepare("SELECT COUNT(*) AS count FROM set_performances WHERE session_id = ?")
+        .bind(workoutId).first<{ count: number }>())?.count,
+      0,
+    );
+    assert.equal(await repository.discardWorkout(owner, workoutId), "not_found");
+
+    assert.equal(await repository.archiveWorkout(owner, previousWorkoutId), true);
+    assert.equal(
+      (await repository.listWorkouts(owner)).some(
+        (item) => item.id === previousWorkoutId,
+      ),
+      false,
+    );
+    assert.equal(
+      (await repository.listWorkouts(owner, { includeArchived: true })).some(
+        (item) => item.id === previousWorkoutId,
+      ),
+      true,
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

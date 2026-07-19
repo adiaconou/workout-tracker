@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { apiRequest } from "../../api/client";
+import { removePendingSetWritesForWorkout } from "../../api/pending-writes";
 import type { BootstrapPayload } from "../../api/types";
 import { useAuth } from "../../auth/auth-context";
 import {
@@ -16,12 +17,15 @@ import {
   Screen,
 } from "../../components/ui";
 import { colors, radii, spacing } from "../../theme/tokens";
+import { DiscardWorkoutModal } from "../workouts/discard-workout-modal";
 
 export function RoutinesScreen() {
   const { signOut } = useAuth();
   const [data, setData] = useState<BootstrapPayload | null>(null);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const [showDiscardWorkout, setShowDiscardWorkout] = useState(false);
+  const [discardingWorkout, setDiscardingWorkout] = useState(false);
 
   const load = useCallback(async () => {
     setRefreshing(true);
@@ -38,6 +42,38 @@ export function RoutinesScreen() {
   useFocusEffect(useCallback(() => {
     void load();
   }, [load]));
+
+  async function discardActiveWorkout() {
+    const activeWorkout = data?.activeWorkout;
+    if (!activeWorkout || discardingWorkout) return;
+    setDiscardingWorkout(true);
+    setError("");
+    try {
+      await apiRequest(
+        `/api/v1/workouts/${encodeURIComponent(activeWorkout.id)}/discard`,
+        { method: "DELETE" },
+      );
+      setShowDiscardWorkout(false);
+      setData((current) => current
+        ? { ...current, activeWorkout: null }
+        : current);
+      try {
+        await removePendingSetWritesForWorkout(activeWorkout.id);
+      } catch {
+        // The server deletion is authoritative; do not restore the discarded card.
+      }
+      await load();
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "The workout could not be discarded.",
+      );
+      setShowDiscardWorkout(false);
+    } finally {
+      setDiscardingWorkout(false);
+    }
+  }
 
   if (!data && refreshing) return <LoadingView label="Loading your program…" />;
 
@@ -70,18 +106,43 @@ export function RoutinesScreen() {
       ) : null}
 
       {data?.activeWorkout ? (
-        <Card style={styles.resumeCard}>
-          <Eyebrow>Workout in progress</Eyebrow>
-          <Heading size="small">Routine {data.activeWorkout.routineCode}</Heading>
-          <Body muted>
-            {data.activeWorkout.completedSets + data.activeWorkout.skippedSets} of{" "}
-            {data.activeWorkout.totalSets} sets recorded
-          </Body>
-          <Button
-            title="Resume workout →"
-            onPress={() => router.push(`/workouts/${data.activeWorkout!.id}`)}
+        <>
+          <Card style={styles.resumeCard}>
+            <Eyebrow>Workout in progress</Eyebrow>
+            <Heading size="small">Routine {data.activeWorkout.routineCode}</Heading>
+            <Body muted>
+              {data.activeWorkout.completedSets + data.activeWorkout.skippedSets} of{" "}
+              {data.activeWorkout.totalSets} sets recorded
+            </Body>
+            <Button
+              title="Resume workout →"
+              disabled={discardingWorkout}
+              onPress={() => router.push(`/workouts/${data.activeWorkout!.id}`)}
+            />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Discard Routine ${data.activeWorkout.routineCode} workout`}
+              disabled={discardingWorkout}
+              onPress={() => setShowDiscardWorkout(true)}
+              style={({ pressed }) => [
+                styles.discardAction,
+                pressed && styles.discardActionPressed,
+              ]}
+            >
+              <Text style={styles.discardActionText}>Discard workout</Text>
+            </Pressable>
+          </Card>
+          <DiscardWorkoutModal
+            visible={showDiscardWorkout}
+            routineCode={data.activeWorkout.routineCode}
+            recordedSets={
+              data.activeWorkout.completedSets + data.activeWorkout.skippedSets
+            }
+            discarding={discardingWorkout}
+            onCancel={() => setShowDiscardWorkout(false)}
+            onConfirm={() => void discardActiveWorkout()}
           />
-        </Card>
+        </>
       ) : null}
 
       <Card style={styles.todayCard}>
@@ -193,6 +254,9 @@ const styles = StyleSheet.create({
   headerCopy: { flex: 1, gap: spacing.sm },
   signOut: { color: colors.textMuted, fontSize: 13, fontWeight: "700", paddingTop: 2 },
   resumeCard: { borderColor: colors.accent },
+  discardAction: { minHeight: 44, alignItems: "center", justifyContent: "center", borderRadius: radii.md },
+  discardActionPressed: { backgroundColor: colors.dangerSurface },
+  discardActionText: { color: colors.danger, fontSize: 13, fontWeight: "800" },
   todayCard: { backgroundColor: colors.surfaceRaised, gap: spacing.lg },
   todayTopline: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md },
   badge: { backgroundColor: colors.successSurface, borderColor: colors.success, borderWidth: 1, borderRadius: radii.pill, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },

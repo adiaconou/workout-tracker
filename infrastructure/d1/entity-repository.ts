@@ -691,6 +691,44 @@ export class D1EntityRepository implements EntityRepository {
     return Number(result.meta.changes ?? 0) > 0;
   }
 
+  async discardWorkout(ownerEmail: string, id: string) {
+    await this.ready(ownerEmail);
+    const existing = await this.d1.prepare(
+      "SELECT status FROM workout_sessions WHERE id = ? AND owner_email = ?",
+    ).bind(id, ownerEmail).first<{ status: string }>();
+    if (!existing) return "not_found" as const;
+    if (existing.status !== "In Progress") return "not_in_progress" as const;
+
+    await this.d1.batch([
+      this.d1.prepare(`DELETE FROM set_performances
+        WHERE owner_email = ? AND session_id = ?
+        AND EXISTS (
+          SELECT 1 FROM workout_sessions ws
+          WHERE ws.id = ? AND ws.owner_email = ? AND ws.status = 'In Progress'
+        )`).bind(ownerEmail, id, id, ownerEmail),
+      this.d1.prepare(`DELETE FROM workout_sets
+        WHERE owner_email = ? AND workout_id = ?
+        AND EXISTS (
+          SELECT 1 FROM workout_sessions ws
+          WHERE ws.id = ? AND ws.owner_email = ? AND ws.status = 'In Progress'
+        )`).bind(ownerEmail, id, id, ownerEmail),
+      this.d1.prepare(`DELETE FROM workout_exercises
+        WHERE owner_email = ? AND workout_id = ?
+        AND EXISTS (
+          SELECT 1 FROM workout_sessions ws
+          WHERE ws.id = ? AND ws.owner_email = ? AND ws.status = 'In Progress'
+        )`).bind(ownerEmail, id, id, ownerEmail),
+      this.d1.prepare(`DELETE FROM workout_sessions
+        WHERE id = ? AND owner_email = ? AND status = 'In Progress'`)
+        .bind(id, ownerEmail),
+    ]);
+
+    const remaining = await this.d1.prepare(
+      "SELECT status FROM workout_sessions WHERE id = ? AND owner_email = ?",
+    ).bind(id, ownerEmail).first<{ status: string }>();
+    return remaining ? "not_in_progress" as const : "discarded" as const;
+  }
+
   async correctWorkoutSet(ownerEmail: string, workoutId: string, setId: string, input: WorkoutSetCorrection) {
     await this.ready(ownerEmail);
     const existing = await this.d1.prepare(`SELECT prescribed_set_id AS prescribedSetId, actual_reps AS actualReps,

@@ -23,6 +23,9 @@ test("exposes owner-scoped CRUD through the versioned Worker API", async () => {
   assert.match(api, /correctSet/);
   assert.match(api, /completeWorkoutEarly/);
   assert.match(api, /child === "complete"/);
+  assert.match(api, /child === "discard"/);
+  assert.match(api, /service\.discard/);
+  assert.match(api, /workout_not_in_progress/);
   assert.match(api, /view.*history/is);
   assert.match(api, /previousPerformanceByExercise/);
   assert.match(api, /google.*exchange/is);
@@ -47,6 +50,9 @@ test("keeps published versions immutable and materializes normalized workout row
   assert.match(repository, /Published routine versions are immutable/);
   assert.match(repository, /is_active = 0/);
   assert.match(repository, /listWorkoutHistory/);
+  assert.match(repository, /discardWorkout/);
+  assert.match(repository, /DELETE FROM workout_sessions/);
+  assert.match(repository, /status = 'In Progress'/);
   assert.match(schema, /materializeWorkoutFromSnapshot/);
   assert.match(schema, /exercise_muscles/);
   assert.match(schema, /auth_sessions/);

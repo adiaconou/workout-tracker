@@ -12,6 +12,7 @@ import type {
 
 export type ExerciseQuery = { includeArchived?: boolean; search?: string };
 export type WorkoutQuery = { includeArchived?: boolean; status?: string };
+export type WorkoutDiscardResult = "discarded" | "not_found" | "not_in_progress";
 export type WorkoutHistoryQuery = {
   from?: string;
   to?: string;
@@ -50,6 +51,7 @@ export interface WorkoutRepository {
   getWorkout(ownerEmail: string, id: string): Promise<Workout | null>;
   updateWorkout(ownerEmail: string, id: string, input: { bodyWeight?: number | null; notes?: string; status?: string }): Promise<Workout | null>;
   archiveWorkout(ownerEmail: string, id: string): Promise<boolean>;
+  discardWorkout(ownerEmail: string, id: string): Promise<WorkoutDiscardResult>;
   correctWorkoutSet(ownerEmail: string, workoutId: string, setId: string, input: WorkoutSetCorrection): Promise<Workout | null>;
 }
 

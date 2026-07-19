@@ -68,6 +68,11 @@ export async function removePendingSetWrite(operationId: string) {
   await writeQueue(queue.filter((item) => item.operationId !== operationId));
 }
 
+export async function removePendingSetWritesForWorkout(workoutId: string) {
+  const queue = await readQueue();
+  await writeQueue(queue.filter((item) => item.workoutId !== workoutId));
+}
+
 export async function countPendingSetWrites(workoutId?: string) {
   const queue = await readQueue();
   return workoutId ? queue.filter((item) => item.workoutId === workoutId).length : queue.length;

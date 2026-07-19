@@ -17,6 +17,7 @@ test("uses one Expo Router application for Android and hosted web", async () => 
     history,
     historyDetail,
     activeWorkout,
+    discardWorkoutModal,
     authContext,
     pendingWrites,
     worker,
@@ -34,6 +35,7 @@ test("uses one Expo Router application for Android and hosted web", async () => 
     readFile(new URL("src/features/history/history-screen.tsx", root), "utf8"),
     readFile(new URL("src/features/history/workout-history-detail-screen.tsx", root), "utf8"),
     readFile(new URL("src/features/workouts/active-workout-screen.tsx", root), "utf8"),
+    readFile(new URL("src/features/workouts/discard-workout-modal.tsx", root), "utf8"),
     readFile(new URL("src/auth/auth-context.tsx", root), "utf8"),
     readFile(new URL("src/api/pending-writes.ts", root), "utf8"),
     readFile(new URL("worker/index.ts", root), "utf8"),
@@ -57,6 +59,8 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(tabs, /Math\.max\(insets\.bottom, 8\)/);
   assert.match(routines, /Best today/);
   assert.match(routines, /A → B → C → D/);
+  assert.match(routines, /Discard workout/);
+  assert.match(routines, /DiscardWorkoutModal/);
   assert.match(routineDetail, /Start workout/);
   assert.match(routineDetail, /Edit routine/);
   assert.match(routineDetail, /Abandon and start Routine/);
@@ -91,11 +95,17 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(activeWorkout, /Built-in stopwatch/);
   assert.match(activeWorkout, /Finish workout early/);
   assert.match(activeWorkout, /\/complete/);
+  assert.match(activeWorkout, /Discard workout/);
+  assert.match(activeWorkout, /\/discard/);
+  assert.match(activeWorkout, /removePendingSetWritesForWorkout/);
   assert.match(activeWorkout, /accessibilityRole="progressbar"/);
+  assert.match(discardWorkoutModal, /Discard this workout/);
+  assert.match(discardWorkoutModal, /cannot\s+be undone/);
   assert.match(authContext, /SecureStore|session-storage/);
   assert.match(authContext, /google\/exchange/);
   assert.match(pendingWrites, /AsyncStorage/);
   assert.match(pendingWrites, /x-idempotency-key/);
+  assert.match(pendingWrites, /removePendingSetWritesForWorkout/);
   assert.match(worker, /handleApiRequest/);
   assert.match(worker, /index\.html/);
   assert.match(buildScript, /expo/);

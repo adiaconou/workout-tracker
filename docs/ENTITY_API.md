@@ -73,12 +73,16 @@ immutable version.
 - `PATCH /api/v1/workouts/:workoutId/sets/:setId`
 - `POST /api/v1/workouts/:workoutId/rest/skip`
 - `POST /api/v1/workouts/:workoutId/complete`
+- `DELETE /api/v1/workouts/:workoutId/discard`
 
 Starting a workout materializes its ordered exercises and prescribed sets.
 Actual reps, duration, weight, RIR, and rest remain separate from the planned
 snapshot. Completing or skipping a set accepts `x-idempotency-key`; a retry of
 an already-recorded prescribed set returns the current workout instead of
-creating a duplicate.
+creating a duplicate. Discarding is restricted to workouts still in progress
+and permanently removes the session, its exercise/set rows, and legacy set
+performance rows. Completed or partial workouts cannot be discarded through
+this endpoint.
 
 ## Errors
 

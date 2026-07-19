@@ -15,6 +15,7 @@ import {
   enqueueSetWrite,
   flushPendingSetWrites,
   removePendingSetWrite,
+  removePendingSetWritesForWorkout,
 } from "../../api/pending-writes";
 import type { WorkoutView } from "../../api/types";
 import {
@@ -39,6 +40,7 @@ import {
   getStopwatchElapsedMs,
   getStopwatchSeconds,
 } from "./stopwatch";
+import { DiscardWorkoutModal } from "./discard-workout-modal";
 
 type RecordSetResponse = {
   performanceId: string;
@@ -76,6 +78,7 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   const [workoutCompleted, setWorkoutCompleted] = useState(false);
   const [showFullProgress, setShowFullProgress] = useState(false);
   const [showFinishEarly, setShowFinishEarly] = useState(false);
+  const [showDiscardWorkout, setShowDiscardWorkout] = useState(false);
   const [stopwatchStartedAt, setStopwatchStartedAt] = useState<number | null>(null);
   const [stopwatchElapsedMs, setStopwatchElapsedMs] = useState(0);
 
@@ -347,6 +350,40 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
     }
   }
 
+  async function discardWorkout() {
+    if (!workout || saving) return;
+    setSaving(true);
+    setError("");
+    setSaveState("");
+    try {
+      await apiRequest(
+        `/api/v1/workouts/${encodeURIComponent(workout.id)}/discard`,
+        { method: "DELETE" },
+      );
+      setRestEndsAt(null);
+      setSecondsRemaining(0);
+      setStopwatchStartedAt(null);
+      setShowDiscardWorkout(false);
+      setShowFinishEarly(false);
+      setShowFullProgress(false);
+      try {
+        await removePendingSetWritesForWorkout(workout.id);
+      } catch {
+        // The remote workout is gone, so local cleanup must not block navigation.
+      }
+      router.replace("/routines");
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "The workout could not be discarded.",
+      );
+      setShowDiscardWorkout(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   if (loading && !workout) return <LoadingView label="Restoring your workout…" />;
   if (!workout) {
     return (
@@ -418,6 +455,14 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
         saving={saving}
         onCancel={() => setShowFinishEarly(false)}
         onConfirm={() => void finishWorkoutEarly()}
+      />
+      <DiscardWorkoutModal
+        visible={showDiscardWorkout}
+        routineCode={workout.routineCode}
+        recordedSets={completedOrSkipped}
+        discarding={saving}
+        onCancel={() => setShowDiscardWorkout(false)}
+        onConfirm={() => void discardWorkout()}
       />
 
       {pendingCount ? (
@@ -560,6 +605,23 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
         />
         <Text style={styles.finishEarlyHint}>
           Saves completed work and marks every remaining set as skipped.
+        </Text>
+      </View>
+      <View style={styles.discardWorkoutAction}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Discard this workout permanently"
+          disabled={saving}
+          onPress={() => setShowDiscardWorkout(true)}
+          style={({ pressed }) => [
+            styles.discardWorkoutButton,
+            pressed && styles.discardWorkoutButtonPressed,
+          ]}
+        >
+          <Text style={styles.discardWorkoutButtonText}>Discard workout</Text>
+        </Pressable>
+        <Text style={styles.discardWorkoutHint}>
+          Permanently deletes this in-progress workout instead of saving it to history.
         </Text>
       </View>
     </Screen>
@@ -1109,6 +1171,24 @@ const styles = StyleSheet.create({
     borderTopColor: colors.border,
   },
   finishEarlyHint: {
+    color: colors.textDim,
+    fontSize: 11,
+    lineHeight: 16,
+    textAlign: "center",
+  },
+  discardWorkoutAction: {
+    alignItems: "stretch",
+    gap: spacing.xs,
+  },
+  discardWorkoutButton: {
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.md,
+  },
+  discardWorkoutButtonPressed: { backgroundColor: colors.dangerSurface },
+  discardWorkoutButtonText: { color: colors.danger, fontSize: 13, fontWeight: "800" },
+  discardWorkoutHint: {
     color: colors.textDim,
     fontSize: 11,
     lineHeight: 16,
