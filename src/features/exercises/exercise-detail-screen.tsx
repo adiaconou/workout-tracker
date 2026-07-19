@@ -15,12 +15,13 @@ import {
   RowLink,
   Screen,
 } from "../../components/ui";
-import { colors, spacing } from "../../theme/tokens";
+import { colors, radii, spacing } from "../../theme/tokens";
 
 export function ExerciseDetailScreen({ exerciseId }: { exerciseId: string }) {
   const [exercise, setExercise] = useState<Exercise | null>(null);
   const [usedIn, setUsedIn] = useState<RoutineAggregate[]>([]);
   const [loading, setLoading] = useState(true);
+  const [savingFavorite, setSavingFavorite] = useState(false);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -48,6 +49,29 @@ export function ExerciseDetailScreen({ exerciseId }: { exerciseId: string }) {
     void load();
   }, [load]);
 
+  async function toggleFavorite() {
+    if (!exercise || savingFavorite) return;
+    const previous = exercise;
+    const nextFavorite = !exercise.isFavorite;
+    setSavingFavorite(true);
+    setError("");
+    setExercise({ ...exercise, isFavorite: nextFavorite });
+    try {
+      const payload = await apiRequest<{ exercise: Exercise }>(
+        `/api/v1/exercises/${encodeURIComponent(exercise.id)}/favorite`,
+        { method: nextFavorite ? "PUT" : "DELETE" },
+      );
+      setExercise(payload.exercise);
+    } catch (caught) {
+      setExercise(previous);
+      setError(
+        caught instanceof Error ? caught.message : "Favorite could not be saved.",
+      );
+    } finally {
+      setSavingFavorite(false);
+    }
+  }
+
   if (loading) return <LoadingView label="Loading exercise…" />;
   if (!exercise) {
     return (
@@ -69,8 +93,35 @@ export function ExerciseDetailScreen({ exerciseId }: { exerciseId: string }) {
           <Eyebrow>Exercise</Eyebrow>
           <Heading>{exercise.name}</Heading>
         </View>
-        <Text style={styles.active}>Active</Text>
+        <View style={styles.titleActions}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`${exercise.isFavorite ? "Remove" : "Add"} ${exercise.name} ${exercise.isFavorite ? "from" : "to"} favorites`}
+            accessibilityState={{
+              selected: exercise.isFavorite,
+              disabled: savingFavorite,
+            }}
+            disabled={savingFavorite}
+            onPress={() => void toggleFavorite()}
+            style={({ pressed }) => [
+              styles.favoriteButton,
+              exercise.isFavorite && styles.favoriteButtonSelected,
+              pressed && styles.favoriteButtonPressed,
+              savingFavorite && styles.favoriteButtonDisabled,
+            ]}
+          >
+            <Text style={[
+              styles.favoriteIcon,
+              exercise.isFavorite && styles.favoriteIconSelected,
+            ]}>
+              {exercise.isFavorite ? "★" : "☆"}
+            </Text>
+          </Pressable>
+          <Text style={styles.active}>Active</Text>
+        </View>
       </View>
+
+      {error ? <Message>{error}</Message> : null}
 
       <Card style={styles.factGrid}>
         <Fact label="Equipment" value={label(exercise.equipment)} />
@@ -139,6 +190,13 @@ const styles = StyleSheet.create({
   back: { color: colors.textMuted, fontSize: 13, fontWeight: "700" },
   title: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: spacing.md },
   titleCopy: { flex: 1, gap: spacing.sm },
+  titleActions: { alignItems: "center", gap: spacing.xs },
+  favoriteButton: { width: 46, height: 46, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radii.md, backgroundColor: colors.surface },
+  favoriteButtonSelected: { borderColor: colors.warning, backgroundColor: colors.warningSurface },
+  favoriteButtonPressed: { opacity: 0.72 },
+  favoriteButtonDisabled: { opacity: 0.55 },
+  favoriteIcon: { color: colors.textDim, fontSize: 25, lineHeight: 28 },
+  favoriteIconSelected: { color: colors.warning },
   active: { color: colors.success, fontSize: 10, fontWeight: "800", textTransform: "uppercase" },
   factGrid: { flexDirection: "row", flexWrap: "wrap" },
   fact: { flexGrow: 1, flexBasis: 130, gap: spacing.xs, paddingVertical: spacing.sm },

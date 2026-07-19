@@ -32,13 +32,16 @@ and the optional active workout in one request.
 - `GET /api/v1/exercises/:exerciseId`
 - `PATCH /api/v1/exercises/:exerciseId`
 - `DELETE /api/v1/exercises/:exerciseId`
+- `PUT /api/v1/exercises/:exerciseId/favorite`
+- `DELETE /api/v1/exercises/:exerciseId/favorite`
 
 Exercise bodies support `name`, `equipment`, `movementPattern`,
 `trackingType`, `defaultLoadType`, `sideMode`, `instructions`, and
 `muscles[]`, whose entries contain `muscleGroup`, `role`, and `weight`.
 
 Deletes archive durable exercises rather than destroying referenced workout
-history.
+history. Favorites are stored separately from the exercise catalog and are
+scoped to the authenticated owner. The favorite endpoints are idempotent.
 
 ## Routines
 

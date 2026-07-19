@@ -103,6 +103,9 @@ export class ExerciseService {
       muscles: input.muscles ?? existing.muscles,
     }));
   }
+  setFavorite(ownerEmail: string, id: string, isFavorite: boolean) {
+    return this.repository.setExerciseFavorite(ownerEmail, id, isFavorite);
+  }
   archive(ownerEmail: string, id: string) { return this.repository.archiveExercise(ownerEmail, id); }
 }
 

@@ -62,7 +62,11 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(routineDetail, /Abandon and start Routine/);
   assert.match(exerciseLibrary, /onChangeText=\{setQuery\}/);
   assert.match(exerciseLibrary, /minHeight: 46/);
+  assert.match(exerciseLibrary, /toggleFavorite/);
+  assert.match(exerciseLibrary, /isFavorite \? "★" : "☆"/);
   assert.match(exerciseDetail, /Used in routines/);
+  assert.match(exerciseDetail, /toggleFavorite/);
+  assert.match(exerciseDetail, /isFavorite \? "★" : "☆"/);
   assert.match(history, /Workout history/);
   assert.match(history, /Finished early/);
   assert.match(history, /Show more workouts/);

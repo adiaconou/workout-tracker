@@ -124,6 +124,19 @@ export const exerciseCatalog = sqliteTable(
   ],
 );
 
+export const exerciseFavorites = sqliteTable(
+  "exercise_favorites",
+  {
+    ownerEmail: text("owner_email").notNull(),
+    exerciseId: text("exercise_id").notNull().references(() => exerciseCatalog.id, { onDelete: "cascade" }),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.ownerEmail, table.exerciseId] }),
+    index("exercise_favorites_exercise_idx").on(table.exerciseId),
+  ],
+);
+
 export const exerciseMuscles = sqliteTable(
   "exercise_muscles",
   {

@@ -156,6 +156,7 @@ async function handleBootstrap({ request, user }: RouteContext) {
 async function handleExercises({ request, user, segments }: RouteContext) {
   const service = getEntityServices().exercises;
   const exerciseId = segments[1];
+  const action = segments[2];
   if (!exerciseId) {
     if (request.method === "GET") {
       const url = new URL(request.url);
@@ -173,6 +174,17 @@ async function handleExercises({ request, user, segments }: RouteContext) {
       } catch (error) {
         return apiError(request, 400, "exercise_invalid", errorMessage(error, "Exercise could not be created."));
       }
+    }
+  } else if (action === "favorite") {
+    if (request.method === "PUT" || request.method === "DELETE") {
+      const exercise = await service.setFavorite(
+        user.email,
+        exerciseId,
+        request.method === "PUT",
+      );
+      return exercise
+        ? apiResponse(request, { exercise })
+        : apiError(request, 404, "exercise_not_found", "Exercise not found.");
     }
   } else {
     if (request.method === "GET") {

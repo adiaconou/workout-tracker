@@ -27,6 +27,7 @@ export type Exercise = {
   sideMode: SideMode;
   instructions: string;
   muscles: ExerciseMuscle[];
+  isFavorite: boolean;
   isActive: boolean;
   createdAt: string;
   updatedAt: string;

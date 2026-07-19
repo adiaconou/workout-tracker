@@ -74,6 +74,13 @@ const createStatements = [
   )`,
   "CREATE UNIQUE INDEX IF NOT EXISTS exercise_catalog_owner_name_idx ON exercise_catalog(owner_email, normalized_name)",
   "CREATE INDEX IF NOT EXISTS exercise_catalog_owner_active_idx ON exercise_catalog(owner_email, is_active)",
+  `CREATE TABLE IF NOT EXISTS exercise_favorites (
+    owner_email TEXT NOT NULL,
+    exercise_id TEXT NOT NULL REFERENCES exercise_catalog(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (owner_email, exercise_id)
+  )`,
+  "CREATE INDEX IF NOT EXISTS exercise_favorites_exercise_idx ON exercise_favorites(exercise_id)",
   `CREATE TABLE IF NOT EXISTS exercise_muscles (
     exercise_id TEXT NOT NULL REFERENCES exercise_catalog(id) ON DELETE RESTRICT,
     muscle_group TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'primary',

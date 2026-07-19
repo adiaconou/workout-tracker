@@ -66,15 +66,21 @@ export class D1EntityRepository implements EntityRepository {
       movementPattern: String(row.movementPattern), trackingType: String(row.trackingType) as Exercise["trackingType"],
       defaultLoadType: String(row.defaultLoadType) as LoadType, sideMode: String(row.sideMode) as SideMode,
       instructions: String(row.instructions), muscles: muscles.results.map((muscle) => ({ ...muscle, weight: Number(muscle.weight) })),
+      isFavorite: bool(row.isFavorite),
       isActive: bool(row.isActive), createdAt: String(row.createdAt), updatedAt: String(row.updatedAt),
     };
   }
 
   private exerciseSelect() {
-    return `SELECT id, owner_email AS ownerEmail, name, normalized_name AS normalizedName,
+    return `SELECT ec.id, ec.owner_email AS ownerEmail, ec.name, ec.normalized_name AS normalizedName,
       equipment, movement_pattern AS movementPattern, tracking_type AS trackingType,
       default_load_type AS defaultLoadType, side_mode AS sideMode, instructions,
-      is_active AS isActive, created_at AS createdAt, updated_at AS updatedAt FROM exercise_catalog`;
+      is_active AS isActive, created_at AS createdAt, updated_at AS updatedAt,
+      EXISTS (
+        SELECT 1 FROM exercise_favorites ef
+        WHERE ef.owner_email = ec.owner_email AND ef.exercise_id = ec.id
+      ) AS isFavorite
+      FROM exercise_catalog ec`;
   }
 
   async listExercises(ownerEmail: string, query: ExerciseQuery = {}) {
@@ -140,6 +146,25 @@ export class D1EntityRepository implements EntityRepository {
         .bind(id, muscle.muscleGroup, muscle.role, muscle.weight));
     }
     await this.d1.batch(statements);
+    return this.getExercise(ownerEmail, id);
+  }
+
+  async setExerciseFavorite(ownerEmail: string, id: string, isFavorite: boolean) {
+    await this.ready(ownerEmail);
+    const owned = await this.d1.prepare(
+      "SELECT id FROM exercise_catalog WHERE id = ? AND owner_email = ?",
+    ).bind(id, ownerEmail).first<{ id: string }>();
+    if (!owned) return null;
+
+    if (isFavorite) {
+      await this.d1.prepare(
+        "INSERT OR IGNORE INTO exercise_favorites (owner_email, exercise_id, created_at) VALUES (?, ?, ?)",
+      ).bind(ownerEmail, id, new Date().toISOString()).run();
+    } else {
+      await this.d1.prepare(
+        "DELETE FROM exercise_favorites WHERE owner_email = ? AND exercise_id = ?",
+      ).bind(ownerEmail, id).run();
+    }
     return this.getExercise(ownerEmail, id);
   }
 

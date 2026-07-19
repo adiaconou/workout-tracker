@@ -16,6 +16,7 @@ test("applies the complete migration chain and creates the normalized entity mod
       "drizzle/0001_windy_timeslip.sql",
       "drizzle/0002_workable_whizzer.sql",
       "drizzle/0003_faulty_sandman.sql",
+      "drizzle/0004_nebulous_lila_cheney.sql",
     ];
     const sql = (await Promise.all(filenames.map((filename) => readFile(new URL(filename, root), "utf8"))))
       .join("\n").replaceAll("--> statement-breakpoint", "\n");
@@ -29,7 +30,7 @@ test("applies the complete migration chain and creates the normalized entity mod
       PRAGMA foreign_key_list(workout_sets);`;
     const inspected = spawnSync("/usr/bin/sqlite3", [database], { input: query, encoding: "utf8" });
     assert.equal(inspected.status, 0, inspected.stderr);
-    for (const table of ["app_users", "auth_identities", "auth_sessions", "exercise_catalog", "exercise_muscles", "routine_versions", "routine_version_exercises", "routine_set_templates", "workout_exercises", "workout_sets"]) {
+    for (const table of ["app_users", "auth_identities", "auth_sessions", "exercise_catalog", "exercise_favorites", "exercise_muscles", "routine_versions", "routine_version_exercises", "routine_set_templates", "workout_exercises", "workout_sets"]) {
       assert.match(inspected.stdout, new RegExp(`(^|\\n)${table}(\\n|$)`));
     }
     assert.match(inspected.stdout, /current_version_id/);

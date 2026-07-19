@@ -88,10 +88,16 @@ test("D1 entity repository seeds, versions, publishes, materializes, and archive
     assert.ok(seededExercises.some((exercise) => exercise.name === "Machine chest press"));
     assert.ok(seededExercises.some((exercise) => exercise.name === "Kettlebell Turkish get-up"));
     assert.ok(seededExercises.some((exercise) => exercise.name === "EZ-bar biceps curl"));
+    assert.ok(seededExercises.every((exercise) => !exercise.isFavorite));
     assert.equal(seededRoutines.length, 4);
     assert.ok(seededRoutines.every((routine) => routine.currentVersion?.status === "published"));
 
     const machinePress = seededExercises.find((exercise) => exercise.name === "Machine chest press")!;
+    assert.equal((await repository.setExerciseFavorite(owner, machinePress.id, true))?.isFavorite, true);
+    assert.equal((await repository.getExercise(owner, machinePress.id))?.isFavorite, true);
+    assert.equal((await repository.setExerciseFavorite(owner, machinePress.id, true))?.isFavorite, true);
+    assert.equal((await repository.setExerciseFavorite(owner, machinePress.id, false))?.isFavorite, false);
+    assert.equal(await repository.setExerciseFavorite("other@example.com", machinePress.id, true), null);
     await repository.updateExercise(owner, machinePress.id, { name: "My machine press" });
     await ensureEntityData(d1, owner);
     assert.equal((await repository.listExercises(owner)).length, seededExercises.length);

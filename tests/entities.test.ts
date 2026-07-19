@@ -90,8 +90,13 @@ test("exercise service performs catalog CRUD through the repository boundary", a
         equipment: input.equipment ?? "other", movementPattern: input.movementPattern ?? "other",
         trackingType: input.trackingType ?? "reps", defaultLoadType: input.defaultLoadType ?? "external",
         sideMode: input.sideMode ?? "bilateral", instructions: input.instructions ?? "",
-        muscles: input.muscles ?? [], isActive: true, createdAt: "now", updatedAt: "now",
+        muscles: input.muscles ?? [], isFavorite: false, isActive: true, createdAt: "now", updatedAt: "now",
       };
+      return stored;
+    },
+    async setExerciseFavorite(_ownerEmail: string, id: string, isFavorite: boolean) {
+      if (!stored || stored.id !== id) return null;
+      stored = { ...stored, isFavorite };
       return stored;
     },
     async getExercise(_ownerEmail: string, id: string) { return stored?.id === id ? stored : null; },
@@ -113,6 +118,7 @@ test("exercise service performs catalog CRUD through the repository boundary", a
   assert.equal(created.name, "Barbell Bench Press");
   assert.equal((await service.list("owner@example.com")).length, 1);
   assert.equal((await service.update("owner@example.com", created.id, { instructions: "Pause on the chest." }))?.instructions, "Pause on the chest.");
+  assert.equal((await service.setFavorite("owner@example.com", created.id, true))?.isFavorite, true);
   assert.equal(await service.archive("owner@example.com", created.id), true);
   assert.equal((await service.get("owner@example.com", created.id))?.isActive, false);
 });
