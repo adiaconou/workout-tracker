@@ -57,8 +57,12 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(tabs, /tabBarActiveBackgroundColor/);
   assert.match(tabs, /TabGlyph/);
   assert.match(tabs, /Math\.max\(insets\.bottom, 8\)/);
-  assert.match(routines, /Best today/);
-  assert.match(routines, /A → B → C → D/);
+  assert.match(routines, /Recommended today/);
+  assert.match(routines, /Why this recommendation/);
+  assert.match(routines, /How availability works/);
+  assert.match(routines, /accessibilityRole="progressbar"/);
+  assert.doesNotMatch(routines, /A → B → C → D/);
+  assert.doesNotMatch(routines, /Install the Android APK/);
   assert.match(routines, /Discard workout/);
   assert.match(routines, /DiscardWorkoutModal/);
   assert.match(routineDetail, /Start workout/);
