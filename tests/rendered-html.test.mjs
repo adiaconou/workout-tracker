@@ -68,6 +68,13 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(routineDetail, /Start workout/);
   assert.match(routineDetail, /Edit routine/);
   assert.match(routineDetail, /Add exercise from library/);
+  assert.match(routineDetail, /expandedExerciseIds/);
+  assert.match(routineDetail, /accessibilityState=\{\{ expanded \}\}/);
+  assert.match(routineDetail, /expanded \? "Collapse" : "Expand"/);
+  assert.ok(
+    routineDetail.indexOf("<Heading size=\"small\">Add another exercise</Heading>") <
+      routineDetail.indexOf("{(editing ? draft : routine).exercises.map"),
+  );
   assert.match(routineDetail, /Move up/);
   assert.match(routineDetail, /Move down/);
   assert.match(routineDetail, /Remove/);

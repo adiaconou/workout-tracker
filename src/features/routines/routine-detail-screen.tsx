@@ -51,6 +51,9 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [libraryError, setLibraryError] = useState("");
   const [libraryQuery, setLibraryQuery] = useState("");
+  const [expandedExerciseIds, setExpandedExerciseIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [activeRoutineCode, setActiveRoutineCode] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -64,6 +67,9 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
       );
       setRoutine(payload.routine);
       setDraft(cloneRoutine(payload.routine));
+      setExpandedExerciseIds(
+        new Set(payload.routine.exercises.map((exercise) => exercise.id)),
+      );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Routine could not be loaded.");
     } finally {
@@ -133,6 +139,9 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
       );
       setRoutine(payload.routine);
       setDraft(cloneRoutine(payload.routine));
+      setExpandedExerciseIds(
+        new Set(payload.routine.exercises.map((exercise) => exercise.id)),
+      );
       setEditing(false);
       setMessage(`Routine ${payload.routine.code} saved as version ${payload.routine.version}.`);
     } catch (caught) {
@@ -171,13 +180,33 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
       : current);
   }
 
+  function toggleExercise(exerciseId: string) {
+    setExpandedExerciseIds((current) => {
+      const next = new Set(current);
+      if (next.has(exerciseId)) {
+        next.delete(exerciseId);
+      } else {
+        next.add(exerciseId);
+      }
+      return next;
+    });
+  }
+
   function removeExercise(index: number) {
+    const exerciseId = draft?.exercises[index]?.id;
     setDraft((current) => current
       ? {
           ...current,
           exercises: removeRoutineExercise(current.exercises, index),
         }
       : current);
+    if (exerciseId) {
+      setExpandedExerciseIds((current) => {
+        const next = new Set(current);
+        next.delete(exerciseId);
+        return next;
+      });
+    }
   }
 
   async function loadExerciseLibrary() {
@@ -209,6 +238,10 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
   }
 
   function addExercise(exercise: Exercise) {
+    const routineExercise = createRoutineExerciseFromLibrary(
+      exercise,
+      (draft?.exercises.length ?? 0) + 1,
+    );
     setDraft((current) => {
       if (
         !current ||
@@ -222,13 +255,11 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
         ...current,
         exercises: [
           ...current.exercises,
-          createRoutineExerciseFromLibrary(
-            exercise,
-            current.exercises.length + 1,
-          ),
+          routineExercise,
         ],
       };
     });
+    setExpandedExerciseIds((current) => new Set(current).add(routineExercise.id));
     setShowExerciseLibrary(false);
     setLibraryQuery("");
   }
@@ -319,6 +350,9 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
               disabled={saving}
               onPress={() => {
                 setDraft(cloneRoutine(routine));
+                setExpandedExerciseIds(
+                  new Set(routine.exercises.map((exercise) => exercise.id)),
+                );
                 setShowExerciseLibrary(false);
                 setEditing(false);
               }}
@@ -338,20 +372,48 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
         )}
       </View>
 
-      {(editing ? draft : routine).exercises.map((exercise, index) => (
-        <Card key={exercise.id}>
-          <View style={styles.exerciseTitle}>
-            <View style={styles.order}>
-              <Text style={styles.orderText}>{String(index + 1).padStart(2, "0")}</Text>
-            </View>
-            <View style={styles.exerciseTitleCopy}>
-              <Heading size="small">{exercise.name}</Heading>
-              {!editing ? <Body muted>{exercise.purpose}</Body> : null}
-            </View>
+      {editing ? (
+        <Card style={styles.addExerciseCard}>
+          <View style={styles.addExerciseCopy}>
+            <Heading size="small">Add another exercise</Heading>
+            <Body muted>
+              Choose from your exercise library, then adjust its sets and target.
+            </Body>
           </View>
+          <Button
+            title="Add exercise from library"
+            variant="secondary"
+            disabled={saving}
+            onPress={openExerciseLibrary}
+          />
+        </Card>
+      ) : null}
 
-          {editing ? (
-            <View style={styles.editGrid}>
+      {(editing ? draft : routine).exercises.map((exercise, index) => {
+        const expanded = expandedExerciseIds.has(exercise.id);
+        return (
+          <Card key={exercise.id}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${exercise.name}`}
+              accessibilityState={{ expanded }}
+              hitSlop={6}
+              style={styles.exerciseHeader}
+              onPress={() => toggleExercise(exercise.id)}
+            >
+              <View style={styles.exerciseTitle}>
+                <View style={styles.order}>
+                  <Text style={styles.orderText}>{String(index + 1).padStart(2, "0")}</Text>
+                </View>
+                <View style={styles.exerciseTitleCopy}>
+                  <Heading size="small">{exercise.name}</Heading>
+                  {!editing && expanded ? <Body muted>{exercise.purpose}</Body> : null}
+                </View>
+              </View>
+              <Text style={styles.disclosureText}>{expanded ? "Collapse" : "Expand"}</Text>
+            </Pressable>
+
+            {editing ? (
               <View style={styles.exerciseActions}>
                 <Button
                   title="Move up"
@@ -377,71 +439,59 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
                   onPress={() => removeExercise(index)}
                 />
               </View>
-              <Field
-                label="Exercise name"
-                value={exercise.name}
-                onChangeText={(value) => updateExercise(index, "name", value)}
-              />
-              <View style={styles.countRow}>
-                {([
-                  ["warmupSets", "Warm-up"],
-                  ["regularSets", "Regular"],
-                  ["failureSets", "Failure"],
-                  ["dropSets", "Drop"],
-                ] as const).map(([field, label]) => (
-                  <View style={styles.countField} key={field}>
-                    <Field
-                      label={label}
-                      keyboardType="number-pad"
-                      value={String(exercise[field])}
-                      onChangeText={(value) => updateExercise(index, field, Number(value) || 0)}
-                    />
-                  </View>
-                ))}
-              </View>
-              <Field
-                label="Warm-up prescription"
-                value={exercise.warmup}
-                onChangeText={(value) => updateExercise(index, "warmup", value)}
-              />
-              <Field label="Target" value={exercise.target} onChangeText={(value) => updateExercise(index, "target", value)} />
-              <Field label="Rest" value={exercise.rest} onChangeText={(value) => updateExercise(index, "rest", value)} />
-              <Field label="Effort" value={exercise.effort} onChangeText={(value) => updateExercise(index, "effort", value)} />
-              <Field
-                label="Why it is included"
-                value={exercise.purpose}
-                multiline
-                onChangeText={(value) => updateExercise(index, "purpose", value)}
-              />
-            </View>
-          ) : (
-            <View style={styles.facts}>
-              <Fact label="Sets" value={setSummary(exercise)} />
-              <Fact label="Target" value={exercise.target} />
-              <Fact label="Rest" value={exercise.rest} />
-              <Fact label="Effort" value={exercise.effort} />
-              <Fact label="Warm-up" value={exercise.warmup} />
-            </View>
-          )}
-        </Card>
-      ))}
+            ) : null}
 
-      {editing ? (
-        <Card style={styles.addExerciseCard}>
-          <View style={styles.addExerciseCopy}>
-            <Heading size="small">Add another exercise</Heading>
-            <Body muted>
-              Choose from your exercise library, then adjust its sets and target.
-            </Body>
-          </View>
-          <Button
-            title="Add exercise from library"
-            variant="secondary"
-            disabled={saving}
-            onPress={openExerciseLibrary}
-          />
-        </Card>
-      ) : null}
+            {expanded && editing ? (
+              <View style={styles.editGrid}>
+                <Field
+                  label="Exercise name"
+                  value={exercise.name}
+                  onChangeText={(value) => updateExercise(index, "name", value)}
+                />
+                <View style={styles.countRow}>
+                  {([
+                    ["warmupSets", "Warm-up"],
+                    ["regularSets", "Regular"],
+                    ["failureSets", "Failure"],
+                    ["dropSets", "Drop"],
+                  ] as const).map(([field, label]) => (
+                    <View style={styles.countField} key={field}>
+                      <Field
+                        label={label}
+                        keyboardType="number-pad"
+                        value={String(exercise[field])}
+                        onChangeText={(value) => updateExercise(index, field, Number(value) || 0)}
+                      />
+                    </View>
+                  ))}
+                </View>
+                <Field
+                  label="Warm-up prescription"
+                  value={exercise.warmup}
+                  onChangeText={(value) => updateExercise(index, "warmup", value)}
+                />
+                <Field label="Target" value={exercise.target} onChangeText={(value) => updateExercise(index, "target", value)} />
+                <Field label="Rest" value={exercise.rest} onChangeText={(value) => updateExercise(index, "rest", value)} />
+                <Field label="Effort" value={exercise.effort} onChangeText={(value) => updateExercise(index, "effort", value)} />
+                <Field
+                  label="Why it is included"
+                  value={exercise.purpose}
+                  multiline
+                  onChangeText={(value) => updateExercise(index, "purpose", value)}
+                />
+              </View>
+            ) : expanded ? (
+              <View style={styles.facts}>
+                <Fact label="Sets" value={setSummary(exercise)} />
+                <Fact label="Target" value={exercise.target} />
+                <Fact label="Rest" value={exercise.rest} />
+                <Fact label="Effort" value={exercise.effort} />
+                <Fact label="Warm-up" value={exercise.warmup} />
+              </View>
+            ) : null}
+          </Card>
+        );
+      })}
 
       <Body muted style={styles.safety}>
         Stop or modify an exercise if pain develops. Routine edits affect future workouts only;
@@ -612,10 +662,12 @@ const styles = StyleSheet.create({
   snapshotNote: { fontSize: 12, textAlign: "center" },
   sectionHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md },
   inlineActions: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  exerciseTitle: { flexDirection: "row", alignItems: "flex-start", gap: spacing.md },
+  exerciseHeader: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: spacing.md },
+  exerciseTitle: { flex: 1, flexDirection: "row", alignItems: "flex-start", gap: spacing.md },
   order: { width: 34, height: 34, alignItems: "center", justifyContent: "center", borderRadius: radii.sm, backgroundColor: colors.accentDark },
   orderText: { color: colors.accent, fontSize: 11, fontWeight: "800", fontVariant: ["tabular-nums"] },
   exerciseTitleCopy: { flex: 1, gap: spacing.xs },
+  disclosureText: { color: colors.accent, fontSize: 11, fontWeight: "800", textTransform: "uppercase" },
   exerciseActions: { flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: spacing.xs },
   facts: { gap: 0 },
   fact: { flexDirection: "row", gap: spacing.lg, paddingVertical: spacing.sm, borderTopColor: colors.border, borderTopWidth: StyleSheet.hairlineWidth },
