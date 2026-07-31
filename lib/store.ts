@@ -82,6 +82,10 @@ export type WorkoutView = Omit<RawWorkoutSession, "snapshotJson"> & {
   currentSetIndex: number;
   currentRestSeconds: number;
   previousPerformanceByExercise: Record<number, PreviousExercisePerformance>;
+  lastCompletedSetByExercise: Record<number, {
+    actualWeight: number;
+    actualReps: number | null;
+  }>;
 };
 
 function db(): D1Database {
@@ -504,6 +508,26 @@ export async function getWorkoutSession(ownerEmail: string, sessionId: string): 
     sessionId,
     session.startedAt,
   );
+  const completedSetRows = await db()
+    .prepare(`SELECT exercise_order AS exerciseOrder,
+      actual_weight AS actualWeight, actual_reps AS actualReps
+      FROM set_performances
+      WHERE session_id = ? AND owner_email = ? AND status = 'Completed'
+      ORDER BY set_order`)
+    .bind(sessionId, ownerEmail)
+    .all<{
+      exerciseOrder: number;
+      actualWeight: number | null;
+      actualReps: number | null;
+    }>();
+  const lastCompletedSetByExercise: WorkoutView["lastCompletedSetByExercise"] = {};
+  for (const row of completedSetRows.results) {
+    if (row.actualWeight === null) continue;
+    lastCompletedSetByExercise[Number(row.exerciseOrder)] = {
+      actualWeight: Number(row.actualWeight),
+      actualReps: row.actualReps === null ? null : Number(row.actualReps),
+    };
+  }
 
   return {
     ...session,
@@ -519,6 +543,7 @@ export async function getWorkoutSession(ownerEmail: string, sessionId: string): 
     currentSetIndex: Math.max(0, Math.min(sets.length, Number(session.currentSet) - 1)),
     currentRestSeconds,
     previousPerformanceByExercise,
+    lastCompletedSetByExercise,
   };
 }
 

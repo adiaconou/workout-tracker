@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Modal,
   Pressable,
@@ -40,6 +40,10 @@ import {
   getStopwatchElapsedMs,
   getStopwatchSeconds,
 } from "./stopwatch";
+import {
+  getSetInputDefaults,
+  type CompletedSetInput,
+} from "./set-input-defaults";
 import { DiscardWorkoutModal } from "./discard-workout-modal";
 
 type RecordSetResponse = {
@@ -81,6 +85,7 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   const [showDiscardWorkout, setShowDiscardWorkout] = useState(false);
   const [stopwatchStartedAt, setStopwatchStartedAt] = useState<number | null>(null);
   const [stopwatchElapsedMs, setStopwatchElapsedMs] = useState(0);
+  const completedSetInputs = useRef<Record<string, CompletedSetInput>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -137,14 +142,18 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
 
   useEffect(() => {
     if (!currentSet) return;
-    const startsAtZero = currentSet.loadType === "bodyweight" || currentSet.loadType === "added";
-    setWeight(startsAtZero ? "0" : "");
-    setResult("");
+    const defaults = getSetInputDefaults(
+      currentSet,
+      completedSetInputs.current[`${sessionId}:${currentSet.exerciseId}`] ??
+        workout?.lastCompletedSetByExercise[currentSet.exerciseOrder],
+    );
+    setWeight(defaults.weight);
+    setResult(defaults.result);
     setError("");
     setSaveState("");
     setStopwatchStartedAt(null);
     setStopwatchElapsedMs(0);
-  }, [currentIndex, currentSet?.id]);
+  }, [currentIndex, currentSet?.id, sessionId, workout?.id]);
 
   useEffect(() => {
     if (stopwatchStartedAt === null) return;
@@ -236,6 +245,13 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
       setCompletedSets(payload.completedSets);
       setSkippedSets(payload.skippedSets);
       setSaveState("Saved");
+      if (status === "Completed") {
+        completedSetInputs.current[`${sessionId}:${currentSet.exerciseId}`] = {
+          actualWeight: numericWeight,
+          actualReps:
+            currentSet.targetUnit === "reps" ? numericResult : null,
+        };
+      }
       if (payload.workoutCompleted) {
         setWorkoutCompleted(true);
         setRestEndsAt(null);
