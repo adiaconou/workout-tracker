@@ -4,6 +4,9 @@ export type WorkerEnv = {
   OWNER_EMAIL?: string;
   AUTH_SESSION_SECRET?: string;
   GOOGLE_WEB_CLIENT_ID?: string;
+  OPENAI_API_KEY?: string;
+  OPENAI_DEFAULT_MODEL?: string;
+  OPENAI_API_BASE_URL?: string;
 };
 
 export type ApiUser = {

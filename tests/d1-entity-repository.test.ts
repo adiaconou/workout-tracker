@@ -2,44 +2,38 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { D1EntityRepository } from "../infrastructure/d1/entity-repository";
 import { ensureEntityData, ensureEntitySchema, materializeWorkoutFromSnapshot } from "../infrastructure/d1/entity-schema";
 import { getPreviousPerformanceByExercise } from "../infrastructure/d1/previous-performance";
 import type { RoutineVersionInput } from "../domain/entities";
 
-function literal(value: unknown) {
-  if (value === null || value === undefined) return "NULL";
-  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "NULL";
-  if (typeof value === "boolean") return value ? "1" : "0";
-  return `'${String(value).replaceAll("'", "''")}'`;
-}
+type SqliteValue = null | number | bigint | string | Uint8Array;
 
-function bindSql(sql: string, values: unknown[]) {
-  let index = 0;
-  return sql.replaceAll("?", () => literal(values[index++]));
+function sqliteValue(value: unknown): SqliteValue {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "boolean") return value ? 1 : 0;
+  if (typeof value === "number" || typeof value === "bigint" || typeof value === "string" || value instanceof Uint8Array) return value;
+  return String(value);
 }
 
 class SqliteStatement {
-  constructor(private database: string, private sql: string, private values: unknown[] = []) {}
+  constructor(private database: DatabaseSync, private sql: string, private values: unknown[] = []) {}
   bind(...values: unknown[]) { return new SqliteStatement(this.database, this.sql, values); }
-  private execute(extra = "") {
-    const command = `${bindSql(this.sql, this.values)};${extra}`;
-    const result = spawnSync("/usr/bin/sqlite3", ["-json", this.database, command], { encoding: "utf8" });
-    if (result.status !== 0) throw new Error(result.stderr || `SQLite failed: ${command}`);
-    return result.stdout.trim() ? JSON.parse(result.stdout) as Array<Record<string, unknown>> : [];
+  private boundValues() {
+    return this.values.map(sqliteValue);
   }
   async run() {
-    const rows = this.execute("SELECT changes() AS changes;");
-    return { success: true, meta: { changes: Number(rows.at(-1)?.changes ?? 0) } };
+    const result = this.database.prepare(this.sql).run(...this.boundValues());
+    return { success: true, meta: { changes: Number(result.changes) } };
   }
-  async all<T>() { return { success: true, results: this.execute() as T[] }; }
-  async first<T>() { return (this.execute()[0] as T | undefined) ?? null; }
+  async all<T>() { return { success: true, results: this.database.prepare(this.sql).all(...this.boundValues()) as T[] }; }
+  async first<T>() { return (this.database.prepare(this.sql).get(...this.boundValues()) as T | undefined) ?? null; }
 }
 
 class SqliteD1 {
-  constructor(private database: string) {}
+  constructor(private database: DatabaseSync) {}
   prepare(sql: string) { return new SqliteStatement(this.database, sql); }
   async batch(statements: SqliteStatement[]) { return Promise.all(statements.map((statement) => statement.run())); }
 }
@@ -75,7 +69,8 @@ const singleSetRoutine = (exerciseId: string, focus: string): RoutineVersionInpu
 test("D1 entity repository seeds, versions, publishes, materializes, discards, and archives normalized entities", async () => {
   const directory = await mkdtemp(join(tmpdir(), "workout-d1-repository-"));
   const database = join(directory, "repository.sqlite");
-  const d1 = new SqliteD1(database) as unknown as D1Database;
+  const sqlite = new DatabaseSync(database);
+  const d1 = new SqliteD1(sqlite) as unknown as D1Database;
   const owner = "owner@example.com";
   try {
     await ensureEntitySchema(d1);
@@ -247,6 +242,7 @@ test("D1 entity repository seeds, versions, publishes, materializes, discards, a
       true,
     );
   } finally {
+    sqlite.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

@@ -346,3 +346,110 @@ export const setPerformances = sqliteTable(
     ),
   ],
 );
+
+export const coachProfiles = sqliteTable(
+  "coach_profiles",
+  {
+    ownerEmail: text("owner_email").primaryKey(),
+    primaryGoal: text("primary_goal").notNull().default("general fitness"),
+    trainingDaysPerWeek: integer("training_days_per_week").notNull().default(4),
+    sessionDurationMin: integer("session_duration_min").notNull().default(60),
+    equipment: text("equipment").notNull().default(""),
+    limitations: text("limitations").notNull().default(""),
+    preferences: text("preferences").notNull().default(""),
+    model: text("model").notNull().default("gpt-5.6-terra"),
+    reasoningEffort: text("reasoning_effort").notNull().default("medium"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+);
+
+export const assistantThreads = sqliteTable(
+  "assistant_threads",
+  {
+    id: text("id").primaryKey(),
+    ownerEmail: text("owner_email").notNull(),
+    title: text("title").notNull().default("New coaching conversation"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    index("assistant_threads_owner_updated_idx").on(table.ownerEmail, table.updatedAt),
+  ],
+);
+
+export const assistantMessages = sqliteTable(
+  "assistant_messages",
+  {
+    id: text("id").primaryKey(),
+    ownerEmail: text("owner_email").notNull(),
+    threadId: text("thread_id").notNull().references(() => assistantThreads.id, { onDelete: "cascade" }),
+    role: text("role").notNull(),
+    content: text("content").notNull(),
+    model: text("model"),
+    reasoningEffort: text("reasoning_effort"),
+    responseId: text("response_id"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    index("assistant_messages_thread_created_idx").on(table.threadId, table.createdAt),
+  ],
+);
+
+export const coachCheckIns = sqliteTable(
+  "coach_check_ins",
+  {
+    id: text("id").primaryKey(),
+    ownerEmail: text("owner_email").notNull(),
+    energy: integer("energy").notNull(),
+    soreness: integer("soreness").notNull(),
+    sleepQuality: integer("sleep_quality").notNull(),
+    availableMinutes: integer("available_minutes"),
+    notes: text("notes").notNull().default(""),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    index("coach_check_ins_owner_created_idx").on(table.ownerEmail, table.createdAt),
+  ],
+);
+
+export const assistantChangePlans = sqliteTable(
+  "assistant_change_plans",
+  {
+    id: text("id").primaryKey(),
+    ownerEmail: text("owner_email").notNull(),
+    threadId: text("thread_id").notNull().references(() => assistantThreads.id, { onDelete: "cascade" }),
+    routineId: text("routine_id").notNull(),
+    routineCode: text("routine_code").notNull(),
+    baseVersionId: text("base_version_id"),
+    proposedInputJson: text("proposed_input_json").notNull(),
+    summary: text("summary").notNull(),
+    rationale: text("rationale").notNull(),
+    diffJson: text("diff_json").notNull(),
+    status: text("status").notNull().default("pending"),
+    appliedVersionId: text("applied_version_id"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    index("assistant_change_plans_owner_status_idx").on(table.ownerEmail, table.status),
+    index("assistant_change_plans_thread_created_idx").on(table.threadId, table.createdAt),
+  ],
+);
+
+export const assistantToolCalls = sqliteTable(
+  "assistant_tool_calls",
+  {
+    id: text("id").primaryKey(),
+    ownerEmail: text("owner_email").notNull(),
+    threadId: text("thread_id").notNull().references(() => assistantThreads.id, { onDelete: "cascade" }),
+    toolName: text("tool_name").notNull(),
+    argumentsJson: text("arguments_json").notNull(),
+    outputJson: text("output_json").notNull(),
+    status: text("status").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    index("assistant_tool_calls_thread_created_idx").on(table.threadId, table.createdAt),
+  ],
+);

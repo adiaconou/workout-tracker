@@ -17,6 +17,7 @@ test("uses one Expo Router application for Android and hosted web", async () => 
     history,
     historyDetail,
     activeWorkout,
+    coach,
     discardWorkoutModal,
     authContext,
     pendingWrites,
@@ -35,6 +36,7 @@ test("uses one Expo Router application for Android and hosted web", async () => 
     readFile(new URL("src/features/history/history-screen.tsx", root), "utf8"),
     readFile(new URL("src/features/history/workout-history-detail-screen.tsx", root), "utf8"),
     readFile(new URL("src/features/workouts/active-workout-screen.tsx", root), "utf8"),
+    readFile(new URL("src/features/coach/coach-screen.tsx", root), "utf8"),
     readFile(new URL("src/features/workouts/discard-workout-modal.tsx", root), "utf8"),
     readFile(new URL("src/auth/auth-context.tsx", root), "utf8"),
     readFile(new URL("src/api/pending-writes.ts", root), "utf8"),
@@ -53,6 +55,7 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(tabs, /Routines/);
   assert.match(tabs, /Exercises/);
   assert.match(tabs, /History/);
+  assert.match(tabs, /Coach/);
   assert.match(tabs, /useSafeAreaInsets/);
   assert.match(tabs, /tabBarActiveBackgroundColor/);
   assert.match(tabs, /TabGlyph/);
@@ -115,6 +118,13 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(activeWorkout, /\/discard/);
   assert.match(activeWorkout, /removePendingSetWritesForWorkout/);
   assert.match(activeWorkout, /accessibilityRole="progressbar"/);
+  assert.match(coach, /Reasoning effort/);
+  assert.match(coach, /Save model settings/);
+  assert.match(coach, /\/api\/v1\/assistant\/models/);
+  assert.match(coach, /Approve & publish/);
+  assert.match(coach, /Save draft/);
+  assert.match(coach, /readiness check-in/i);
+  assert.match(coach, /Coaching profile/);
   assert.match(discardWorkoutModal, /Discard this workout/);
   assert.match(discardWorkoutModal, /cannot\s+be undone/);
   assert.match(authContext, /SecureStore|session-storage/);

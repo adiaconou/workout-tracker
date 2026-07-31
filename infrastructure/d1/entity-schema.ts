@@ -147,6 +147,51 @@ const createStatements = [
   "CREATE UNIQUE INDEX IF NOT EXISTS workout_sets_prescribed_idx ON workout_sets(workout_id, prescribed_set_id)",
   "CREATE UNIQUE INDEX IF NOT EXISTS workout_sets_position_idx ON workout_sets(workout_id, position)",
   "CREATE INDEX IF NOT EXISTS workout_sets_exercise_idx ON workout_sets(workout_exercise_id)",
+  `CREATE TABLE IF NOT EXISTS coach_profiles (
+    owner_email TEXT PRIMARY KEY, primary_goal TEXT NOT NULL DEFAULT 'general fitness',
+    training_days_per_week INTEGER NOT NULL DEFAULT 4,
+    session_duration_min INTEGER NOT NULL DEFAULT 60,
+    equipment TEXT NOT NULL DEFAULT '', limitations TEXT NOT NULL DEFAULT '',
+    preferences TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT 'gpt-5.6-terra',
+    reasoning_effort TEXT NOT NULL DEFAULT 'medium',
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS assistant_threads (
+    id TEXT PRIMARY KEY, owner_email TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT 'New coaching conversation',
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS assistant_threads_owner_updated_idx ON assistant_threads(owner_email, updated_at)",
+  `CREATE TABLE IF NOT EXISTS assistant_messages (
+    id TEXT PRIMARY KEY, owner_email TEXT NOT NULL,
+    thread_id TEXT NOT NULL REFERENCES assistant_threads(id) ON DELETE CASCADE,
+    role TEXT NOT NULL, content TEXT NOT NULL, model TEXT, reasoning_effort TEXT,
+    response_id TEXT, created_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS assistant_messages_thread_created_idx ON assistant_messages(thread_id, created_at)",
+  `CREATE TABLE IF NOT EXISTS coach_check_ins (
+    id TEXT PRIMARY KEY, owner_email TEXT NOT NULL, energy INTEGER NOT NULL,
+    soreness INTEGER NOT NULL, sleep_quality INTEGER NOT NULL,
+    available_minutes INTEGER, notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS coach_check_ins_owner_created_idx ON coach_check_ins(owner_email, created_at)",
+  `CREATE TABLE IF NOT EXISTS assistant_change_plans (
+    id TEXT PRIMARY KEY, owner_email TEXT NOT NULL,
+    thread_id TEXT NOT NULL REFERENCES assistant_threads(id) ON DELETE CASCADE,
+    routine_id TEXT NOT NULL, routine_code TEXT NOT NULL, base_version_id TEXT,
+    proposed_input_json TEXT NOT NULL, summary TEXT NOT NULL, rationale TEXT NOT NULL,
+    diff_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', applied_version_id TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS assistant_change_plans_owner_status_idx ON assistant_change_plans(owner_email, status)",
+  "CREATE INDEX IF NOT EXISTS assistant_change_plans_thread_created_idx ON assistant_change_plans(thread_id, created_at)",
+  `CREATE TABLE IF NOT EXISTS assistant_tool_calls (
+    id TEXT PRIMARY KEY, owner_email TEXT NOT NULL,
+    thread_id TEXT NOT NULL REFERENCES assistant_threads(id) ON DELETE CASCADE,
+    tool_name TEXT NOT NULL, arguments_json TEXT NOT NULL, output_json TEXT NOT NULL,
+    status TEXT NOT NULL, created_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS assistant_tool_calls_thread_created_idx ON assistant_tool_calls(thread_id, created_at)",
 ];
 
 const additiveColumns: Record<string, Record<string, string>> = {

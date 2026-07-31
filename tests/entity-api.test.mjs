@@ -65,3 +65,29 @@ test("keeps published versions immutable and materializes normalized workout row
   assert.match(store, /status = 'skipped'/);
   assert.match(store, /status = 'Partial'/);
 });
+
+test("runs an owner-scoped coaching assistant with strict tools and approval-gated writes", async () => {
+  const [api, assistant, models, types] = await Promise.all([
+    readFile(new URL("server/api.ts", root), "utf8"),
+    readFile(new URL("server/assistant.ts", root), "utf8"),
+    readFile(new URL("server/assistant-models.ts", root), "utf8"),
+    readFile(new URL("server/types.ts", root), "utf8"),
+  ]);
+
+  assert.match(api, /handleAssistantRequest/);
+  assert.match(assistant, /\/models/);
+  assert.match(assistant, /\/responses/);
+  assert.match(assistant, /parallel_tool_calls: false/);
+  assert.match(assistant, /strict: true/);
+  assert.match(assistant, /propose_routine_change/);
+  assert.match(assistant, /status = 'pending'/);
+  assert.match(assistant, /routine\.currentVersionId !== plan\.baseVersionId/);
+  assert.match(assistant, /createVersion/);
+  assert.match(assistant, /services\.routines\.publish/);
+  assert.match(assistant, /assistant_tool_calls/);
+  assert.match(models, /gpt-5\.6-terra/);
+  assert.match(models, /Number\(minorVersion\) >= 6/);
+  assert.match(models, /isCompatibleAssistantModel/);
+  assert.match(types, /OPENAI_API_KEY/);
+  assert.match(types, /OPENAI_DEFAULT_MODEL/);
+});

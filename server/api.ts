@@ -26,6 +26,7 @@ import {
 } from "./http";
 import type { ApiUser, WorkerEnv } from "./types";
 import { verifyGoogleIdToken } from "./google";
+import { handleAssistantRequest } from "./assistant";
 
 type RouteContext = {
   request: Request;
@@ -66,6 +67,7 @@ export async function handleApiRequest(request: Request, env: WorkerEnv) {
     if (segments[0] === "exercises") return handleExercises(context);
     if (segments[0] === "routines") return handleRoutines(context);
     if (segments[0] === "workouts") return handleWorkouts(context);
+    if (segments[0] === "assistant") return handleAssistantRequest(context);
 
     return apiError(request, 404, "route_not_found", "API route not found.");
   } catch (error) {
