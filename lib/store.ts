@@ -25,6 +25,7 @@ export type {
 
 export type RoutineExercise = {
   id: string;
+  exerciseId: string;
   exerciseOrder: number;
   name: string;
   warmup: string;
@@ -335,6 +336,13 @@ export async function getRoutine(ownerEmail: string, code: string): Promise<Rout
       FROM exercises WHERE owner_email = ? AND routine_code = ? ORDER BY exercise_order`)
     .bind(ownerEmail, code.toUpperCase())
     .all<RoutineExercise>();
+  const aggregate = await getEntityServices().routines.get(ownerEmail, code);
+  const catalogExerciseIdByPosition = new Map(
+    aggregate?.currentVersion?.exercises.map((exercise) => [
+      exercise.position,
+      exercise.exerciseId,
+    ]) ?? [],
+  );
 
   return {
     ...routine,
@@ -342,6 +350,9 @@ export async function getRoutine(ownerEmail: string, code: string): Promise<Rout
     durationMin: Number(routine.durationMin),
     exercises: exercises.results.map((exercise) => ({
       ...exercise,
+      exerciseId:
+        catalogExerciseIdByPosition.get(Number(exercise.exerciseOrder)) ??
+        exercise.id,
       exerciseOrder: Number(exercise.exerciseOrder),
       warmupSets: Number(exercise.warmupSets),
       regularSets: Number(exercise.regularSets),
@@ -364,19 +375,40 @@ function cleanCount(value: unknown, max = 20) {
 export async function updateRoutine(ownerEmail: string, code: string, input: EditableRoutine) {
   const current = await getRoutine(ownerEmail, code);
   if (!current) return null;
-  if (!Array.isArray(input.exercises) || input.exercises.length !== current.exercises.length) {
-    throw new Error("Every exercise must be included when saving a routine.");
+  if (!Array.isArray(input.exercises) || input.exercises.length === 0) {
+    throw new Error("A routine needs at least one exercise.");
+  }
+  const exerciseIds = input.exercises.map((exercise) => cleanText(exercise.exerciseId));
+  if (
+    exerciseIds.some((exerciseId) => !exerciseId) ||
+    new Set(exerciseIds).size !== exerciseIds.length
+  ) {
+    throw new Error("Each routine exercise must be a unique exercise from your library.");
   }
 
   const services = getEntityServices();
   const aggregate = await services.routines.get(ownerEmail, code);
-  if (!aggregate?.currentVersion || aggregate.currentVersion.exercises.length !== input.exercises.length) {
+  if (!aggregate?.currentVersion) {
     throw new Error("The routine entity version is unavailable.");
   }
-  for (const [index, exercise] of input.exercises.entries()) {
-    const placement = aggregate.currentVersion.exercises[index];
-    const catalog = await services.exercises.get(ownerEmail, placement.exerciseId);
-    if (catalog && (cleanText(exercise.name, catalog.name) !== catalog.name || exercise.loadType !== catalog.defaultLoadType)) {
+  const priorPlacementByExerciseId = new Map(
+    aggregate.currentVersion.exercises.map((exercise) => [
+      exercise.exerciseId,
+      exercise,
+    ]),
+  );
+  const priorExerciseByExerciseId = new Map(
+    current.exercises.map((exercise) => [exercise.exerciseId, exercise]),
+  );
+  for (const exercise of input.exercises) {
+    const catalog = await services.exercises.get(ownerEmail, exercise.exerciseId);
+    if (!catalog) {
+      throw new Error("A routine references an unavailable exercise.");
+    }
+    if (
+      cleanText(exercise.name, catalog.name) !== catalog.name ||
+      exercise.loadType !== catalog.defaultLoadType
+    ) {
       await services.exercises.update(ownerEmail, catalog.id, {
         name: cleanText(exercise.name, catalog.name),
         defaultLoadType: exercise.loadType as typeof catalog.defaultLoadType,
@@ -388,22 +420,32 @@ export async function updateRoutine(ownerEmail: string, code: string, input: Edi
     summary: cleanText(input.summary, current.summary),
     durationMin: Math.min(180, Math.max(15, cleanCount(input.durationMin, 180))),
     exercises: input.exercises.map((exercise, index) => {
-      const priorPlacement = aggregate.currentVersion!.exercises[index];
+      const priorPlacement = priorPlacementByExerciseId.get(exercise.exerciseId);
+      const priorExercise = priorExerciseByExerciseId.get(exercise.exerciseId);
       return {
-        exerciseId: priorPlacement.exerciseId,
+        exerciseId: exercise.exerciseId,
         position: index + 1,
-        supersetGroup: priorPlacement.supersetGroup,
-        instructions: cleanText(exercise.effort, current.exercises[index].effort),
-        notes: cleanText(exercise.purpose, current.exercises[index].purpose),
+        supersetGroup: priorPlacement?.supersetGroup ?? null,
+        instructions: cleanText(
+          exercise.effort,
+          priorExercise?.effort ?? "2 RIR",
+        ),
+        notes: cleanText(exercise.purpose, priorExercise?.purpose ?? ""),
         sets: expandLegacyPrescription({
-          warmup: cleanText(exercise.warmup, "None"),
+          warmup: cleanText(exercise.warmup, priorExercise?.warmup ?? "None"),
           warmupSets: cleanCount(exercise.warmupSets),
           regularSets: cleanCount(exercise.regularSets),
           failureSets: cleanCount(exercise.failureSets),
           dropSets: cleanCount(exercise.dropSets),
-          target: cleanText(exercise.target, current.exercises[index].target),
-          rest: cleanText(exercise.rest, current.exercises[index].rest),
-          effort: cleanText(exercise.effort, current.exercises[index].effort),
+          target: cleanText(
+            exercise.target,
+            priorExercise?.target ?? "8-12 reps",
+          ),
+          rest: cleanText(exercise.rest, priorExercise?.rest ?? "90 sec"),
+          effort: cleanText(
+            exercise.effort,
+            priorExercise?.effort ?? "2 RIR",
+          ),
         }),
       };
     }),

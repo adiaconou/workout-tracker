@@ -67,6 +67,11 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(routines, /DiscardWorkoutModal/);
   assert.match(routineDetail, /Start workout/);
   assert.match(routineDetail, /Edit routine/);
+  assert.match(routineDetail, /Add exercise from library/);
+  assert.match(routineDetail, /Move up/);
+  assert.match(routineDetail, /Move down/);
+  assert.match(routineDetail, /Remove/);
+  assert.match(routineDetail, /\/api\/v1\/exercises/);
   assert.match(routineDetail, /Abandon and start Routine/);
   assert.match(exerciseLibrary, /onChangeText=\{setQuery\}/);
   assert.match(exerciseLibrary, /minHeight: 46/);
