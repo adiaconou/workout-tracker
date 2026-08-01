@@ -129,6 +129,9 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(coach, /Reasoning effort/);
   assert.match(coach, /\/api\/v1\/assistant\/models/);
   assert.match(coach, /Save draft/);
+  assert.match(coach, /title="Apply"/);
+  assert.match(coach, /title="Reject"/);
+  assert.match(coach, /\/plans\/\$\{encodeURIComponent\(planId\)\}\/\$\{action\}/);
   assert.match(coach, /OPENAI_API_KEY/);
   assert.match(coach, /<CoachMarkdown content=\{message\.content\} \/>/);
   assert.match(coachMarkdown, /EnrichedMarkdownText/);

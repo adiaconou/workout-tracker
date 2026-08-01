@@ -80,7 +80,18 @@ test("runs an owner-scoped coaching assistant with strict tools and approval-gat
   assert.match(assistant, /parallel_tool_calls: false/);
   assert.match(assistant, /strict: true/);
   assert.match(assistant, /propose_routine_change/);
+  assert.match(assistant, /Change-control policy \(always follow this policy\)/);
+  assert.match(assistant, /read-only tools to investigate/);
+  assert.match(assistant, /Never call a write tool in the same response where you first present its plan/);
+  assert.match(assistant, /explicit approval in a later message/);
+  assert.match(assistant, /initial request to make a change is not approval/);
+  assert.match(assistant, /Do not infer approval from silence or an ambiguous response/);
+  assert.match(assistant, /if the plan changes materially.*wait for approval again/is);
+  assert.match(assistant, /re-read the routine.*then and only then call propose_routine_change/is);
+  assert.match(assistant, /Only after the user explicitly approves a plan presented in an earlier assistant message/);
+  assert.match(assistant, /This does not apply or publish the change/);
   assert.match(assistant, /status = 'pending'/);
+  assert.match(assistant, /childAction === "apply" && request\.method === "POST"/);
   assert.match(assistant, /routine\.currentVersionId !== plan\.baseVersionId/);
   assert.match(assistant, /createVersion/);
   assert.match(assistant, /services\.routines\.publish/);
@@ -90,4 +101,18 @@ test("runs an owner-scoped coaching assistant with strict tools and approval-gat
   assert.match(models, /isCompatibleAssistantModel/);
   assert.match(types, /OPENAI_API_KEY/);
   assert.match(types, /OPENAI_DEFAULT_MODEL/);
+
+  const toolBlock = assistant.match(/const coachTools = \[([\s\S]*?)\n\];/)?.[1];
+  assert.ok(toolBlock, "Coach tool definitions should be discoverable");
+  const toolNames = [...toolBlock.matchAll(/functionTool\("([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(toolNames, [
+    "get_coaching_context",
+    "get_routine",
+    "list_routine_versions",
+    "search_exercises",
+    "get_workout_history",
+    "get_active_workout",
+    "propose_routine_change",
+  ]);
+  assert.doesNotMatch(toolBlock, /functionTool\("(?:apply|publish|create|update|delete|archive)_/);
 });
