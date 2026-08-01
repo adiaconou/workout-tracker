@@ -67,9 +67,10 @@ test("keeps published versions immutable and materializes normalized workout row
 });
 
 test("runs an owner-scoped coaching assistant with strict tools and approval-gated writes", async () => {
-  const [api, assistant, models, types] = await Promise.all([
+  const [api, assistant, toolLoop, models, types] = await Promise.all([
     readFile(new URL("server/api.ts", root), "utf8"),
     readFile(new URL("server/assistant.ts", root), "utf8"),
+    readFile(new URL("server/coach-tool-loop.ts", root), "utf8"),
     readFile(new URL("server/assistant-models.ts", root), "utf8"),
     readFile(new URL("server/types.ts", root), "utf8"),
   ]);
@@ -78,10 +79,26 @@ test("runs an owner-scoped coaching assistant with strict tools and approval-gat
   assert.match(assistant, /\/models/);
   assert.match(assistant, /\/responses/);
   assert.match(assistant, /parallel_tool_calls: false/);
+  assert.match(assistant, /tool_choice: input\.toolChoice/);
+  assert.match(assistant, /assistantReasoningOutputTokenBudget = 25_000/);
+  assert.match(assistant, /max_output_tokens: outputTokenBudget\(input\.model\)/);
+  assert.match(assistant, /listMessages\(env, user\.email, thread\.id, 50\)/);
+  assert.doesNotMatch(assistant, /turn\s*<\s*6/);
+  assert.doesNotMatch(assistant, /reached its tool-call limit/);
+  assert.match(toolLoop, /while \(true\)/);
+  assert.match(toolLoop, /defaultCoachRunDurationMs = 4 \* 60_000/);
+  assert.match(toolLoop, /canonicalJson/);
+  assert.match(toolLoop, /repeatedCallCount >= repeatedCallLimit/);
+  assert.match(assistant, /isWriteTool: \(name\) => name === "propose_routine_change"/);
+  assert.match(toolLoop, /forceFinalResponse \? "none" : "auto"/);
+  assert.match(toolLoop, /response\.status === "incomplete"/);
+  assert.match(toolLoop, /response\.status !== "completed"/);
+  assert.match(toolLoop, /reason === "max_output_tokens"/);
   assert.match(assistant, /strict: true/);
   assert.match(assistant, /propose_routine_change/);
   assert.match(assistant, /Change-control policy \(always follow this policy\)/);
   assert.match(assistant, /read-only tools to investigate/);
+  assert.match(assistant, /do not repeat an identical tool call unless the underlying data could have changed/);
   assert.match(assistant, /Never call a write tool in the same response where you first present its plan/);
   assert.match(assistant, /explicit approval in a later message/);
   assert.match(assistant, /initial request to make a change is not approval/);

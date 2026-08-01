@@ -6,6 +6,12 @@ import {
   isCompatibleAssistantModel,
   type AssistantModelOption,
 } from "./assistant-models";
+import {
+  CoachToolLoopError,
+  runCoachToolLoop,
+  type CoachResponse,
+  type CoachToolChoice,
+} from "./coach-tool-loop";
 import { apiError, apiResponse, errorMessage, readJson } from "./http";
 import type { ApiUser, WorkerEnv } from "./types";
 
@@ -74,22 +80,9 @@ type ChangePlanRow = {
   updatedAt: string;
 };
 
-type OpenAIResponseItem = {
-  type?: string;
-  name?: string;
-  arguments?: string;
-  call_id?: string;
-  content?: Array<{ type?: string; text?: string }>;
-  [key: string]: unknown;
-};
-
-type OpenAIResponse = {
-  id: string;
-  output?: OpenAIResponseItem[];
-  error?: { message?: string };
-};
-
 const assistantApiTimeoutMs = 55_000;
+const assistantReasoningOutputTokenBudget = 25_000;
+const assistantStandardOutputTokenBudget = 8_000;
 let modelCache: { expiresAt: number; models: AssistantModelOption[] } | null = null;
 
 class OpenAIRequestError extends Error {
@@ -286,7 +279,7 @@ async function createAssistantMessage({ request, env, user }: AssistantContext) 
         WHERE owner_email = ?`).bind(model, reasoningEffort, now, user.email),
     ]);
 
-    const history = await listMessages(env, user.email, thread.id, 24);
+    const history = await listMessages(env, user.email, thread.id, 50);
     const checkIns = await listCheckIns(env, user.email);
     const result = await runCoach({
       env,
@@ -337,7 +330,7 @@ async function createAssistantMessage({ request, env, user }: AssistantContext) 
       status,
       error instanceof OpenAIRequestError ? "coach_model_request_failed" : "coach_message_invalid",
       errorMessage(error, "The coach could not respond."),
-      status >= 500,
+      status === 429 || status >= 500,
     );
   }
 }
@@ -408,47 +401,42 @@ async function runCoach(input: {
   model: string;
   reasoningEffort: string;
 }) {
-  const conversation: unknown[] = input.history.map((message) => ({ role: message.role, content: message.content }));
-  let responseId = "";
-
-  for (let turn = 0; turn < 6; turn += 1) {
-    const response = await createOpenAIResponse(input.env, {
-      model: input.model,
-      reasoningEffort: input.reasoningEffort,
-      safetyIdentifier: input.user.id,
-      instructions: coachInstructions(input.profile, input.checkIns),
-      input: conversation,
-      tools: coachTools,
+  try {
+    return await runCoachToolLoop({
+      conversation: input.history.map((message) => ({ role: message.role, content: message.content })),
+      createResponse: (conversation, toolChoice) => createOpenAIResponse(input.env, {
+        model: input.model,
+        reasoningEffort: input.reasoningEffort,
+        safetyIdentifier: input.user.id,
+        instructions: coachInstructions(input.profile, input.checkIns),
+        input: conversation,
+        tools: coachTools,
+        toolChoice,
+      }),
+      executeTool: ({ name, argumentsValue }) => executeCoachTool({
+        env: input.env,
+        user: input.user,
+        thread: input.thread,
+        name,
+        argumentsValue,
+      }),
+      recordToolCall: ({ name, argumentsValue, output, status }) => recordToolCall(
+        input.env,
+        input.user.email,
+        input.thread.id,
+        name,
+        argumentsValue,
+        output,
+        status,
+      ),
+      formatError: errorMessage,
+      isWriteTool: (name) => name === "propose_routine_change",
+      reportAuditError: (error) => console.error("Coach tool-call audit failed", error),
     });
-    responseId = response.id;
-    const output = response.output ?? [];
-    conversation.push(...output);
-    const calls = output.filter((item) => item.type === "function_call");
-    if (!calls.length) {
-      const text = outputText(output);
-      if (!text) throw new OpenAIRequestError("The selected model returned no coaching response.");
-      return { text, responseId };
-    }
-
-    for (const call of calls) {
-      const callId = call.call_id;
-      const name = call.name;
-      if (!callId || !name) continue;
-      let argumentsValue: Record<string, unknown> = {};
-      let toolOutput: unknown;
-      let status = "succeeded";
-      try {
-        argumentsValue = JSON.parse(call.arguments ?? "{}") as Record<string, unknown>;
-        toolOutput = await executeCoachTool({ env: input.env, user: input.user, thread: input.thread, name, argumentsValue });
-      } catch (error) {
-        status = "failed";
-        toolOutput = { error: errorMessage(error, "The tool call failed.") };
-      }
-      await recordToolCall(input.env, input.user.email, input.thread.id, name, argumentsValue, toolOutput, status);
-      conversation.push({ type: "function_call_output", call_id: callId, output: JSON.stringify(toolOutput) });
-    }
+  } catch (error) {
+    if (error instanceof CoachToolLoopError) throw new OpenAIRequestError(error.message);
+    throw error;
   }
-  throw new OpenAIRequestError("The coach reached its tool-call limit. Try a narrower request.");
 }
 
 async function createOpenAIResponse(
@@ -460,6 +448,7 @@ async function createOpenAIResponse(
     instructions: string;
     input: unknown[];
     tools: unknown[];
+    toolChoice: CoachToolChoice;
   },
 ) {
   const controller = new AbortController();
@@ -474,19 +463,20 @@ async function createOpenAIResponse(
         instructions: input.instructions,
         input: input.input,
         tools: input.tools,
-        tool_choice: "auto",
+        tool_choice: input.toolChoice,
         parallel_tool_calls: false,
         reasoning,
         text: { verbosity: "medium" },
-        max_output_tokens: 2_400,
+        max_output_tokens: outputTokenBudget(input.model),
         safety_identifier: input.safetyIdentifier,
         store: false,
       }),
       signal: controller.signal,
     });
-    const payload = await response.json().catch(() => ({})) as OpenAIResponse;
+    const payload = await response.json().catch(() => ({})) as CoachResponse;
     if (!response.ok) {
-      throw new OpenAIRequestError(payload.error?.message ?? `OpenAI returned status ${response.status}.`, response.status >= 500 ? 502 : 400);
+      const status = response.status === 429 ? 429 : response.status >= 500 ? 502 : 400;
+      throw new OpenAIRequestError(payload.error?.message ?? `OpenAI returned status ${response.status}.`, status);
     }
     return payload;
   } catch (error) {
@@ -648,7 +638,7 @@ ${JSON.stringify({
   latestCheckIn: checkIns[0] ?? null,
 })}
 
-Use tools to inspect current routines, exercise library, workout history, and active workout before making data-dependent claims. Keep recommendations specific and explain the tradeoff in plain language.
+Use tools to inspect current routines, exercise library, workout history, and active workout before making data-dependent claims. Reuse tool results within the same response cycle; do not repeat an identical tool call unless the underlying data could have changed. Keep recommendations specific and explain the tradeoff in plain language.
 
 Change-control policy (always follow this policy):
 - You may use read-only tools to investigate, verify current state, and prepare recommendations.
@@ -904,16 +894,6 @@ async function recordToolCall(
   ).run();
 }
 
-function outputText(output: OpenAIResponseItem[]) {
-  return output
-    .filter((item) => item.type === "message")
-    .flatMap((item) => item.content ?? [])
-    .filter((content) => content.type === "output_text")
-    .map((content) => content.text ?? "")
-    .join("\n")
-    .trim();
-}
-
 function cleanCoachProfile(input: Partial<CoachProfile>) {
   const trainingDaysPerWeek = boundedInteger(input.trainingDaysPerWeek, 1, 7, "Training days");
   const sessionDurationMin = boundedInteger(input.sessionDurationMin, 10, 300, "Session duration");
@@ -928,6 +908,12 @@ function cleanCoachProfile(input: Partial<CoachProfile>) {
     model: cleanModel(input.model ?? "gpt-5.6-terra"),
     reasoningEffort: cleanText(input.reasoningEffort, 20) || "auto",
   } as CoachProfile;
+}
+
+function outputTokenBudget(model: string) {
+  return /^(?:gpt-5(?:[.-]|$)|o\d(?:[.-]|$))/u.test(model)
+    ? assistantReasoningOutputTokenBudget
+    : assistantStandardOutputTokenBudget;
 }
 
 function cleanModel(value: unknown) {
