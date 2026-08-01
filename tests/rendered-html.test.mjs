@@ -129,7 +129,11 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(coach, /Reasoning effort/);
   assert.match(coach, /\/api\/v1\/assistant\/models/);
   assert.match(coach, /Save draft/);
-  assert.match(coach, /title="Apply"/);
+  assert.match(coach, /exerciseApplyLabel/);
+  assert.match(coach, /plan\.kind === "routine"/);
+  assert.match(coach, /plan\.kind === "exercise"/);
+  assert.match(coach, /plan\.kind === "exercise" \? plan\.diff : plan\.diff\.slice\(0, 4\)/);
+  assert.match(coach, /catch \(caught\) \{\s+const message = caught.*await load\(data\.thread\.id\);\s+setError\(message\);/s);
   assert.match(coach, /title="Reject"/);
   assert.match(coach, /\/plans\/\$\{encodeURIComponent\(planId\)\}\/\$\{action\}/);
   assert.match(coach, /OPENAI_API_KEY/);

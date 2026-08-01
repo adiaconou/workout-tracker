@@ -28,8 +28,16 @@ export interface ExerciseRepository {
   getExercise(ownerEmail: string, id: string): Promise<Exercise | null>;
   createExercise(ownerEmail: string, input: ExerciseInput): Promise<Exercise>;
   updateExercise(ownerEmail: string, id: string, input: Partial<ExerciseInput>): Promise<Exercise | null>;
+  updateExerciseIfUnchanged(
+    ownerEmail: string,
+    id: string,
+    expectedUpdatedAt: string,
+    mutationId: string,
+    input: ExerciseInput,
+  ): Promise<Exercise | null>;
   setExerciseFavorite(ownerEmail: string, id: string, isFavorite: boolean): Promise<Exercise | null>;
   archiveExercise(ownerEmail: string, id: string): Promise<boolean>;
+  archiveExerciseIfUnchanged(ownerEmail: string, id: string, expectedUpdatedAt: string): Promise<boolean>;
 }
 
 export interface RoutineRepository {

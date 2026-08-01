@@ -4,10 +4,12 @@ import type {
   WorkoutHistoryQuery,
   WorkoutQuery,
 } from "../../domain/repositories/entity-repository";
-import type {
-  ExerciseInput,
-  RoutineVersionInput,
-  WorkoutSetCorrection,
+import {
+  muscleGroups,
+  type ExerciseMuscle,
+  type ExerciseInput,
+  type RoutineVersionInput,
+  type WorkoutSetCorrection,
 } from "../../domain/entities";
 
 function cleanRequired(value: unknown, label: string, max = 200) {
@@ -32,7 +34,9 @@ export function validateExerciseInput(input: ExerciseInput): ExerciseInput {
   if (input.trackingType && !["reps", "duration", "rounds"].includes(input.trackingType)) throw new Error("Tracking type is invalid.");
   if (input.defaultLoadType && !["external", "bodyweight", "added", "assistance"].includes(input.defaultLoadType)) throw new Error("Load type is invalid.");
   if (input.sideMode && !["bilateral", "per_side", "per_leg", "left_right"].includes(input.sideMode)) throw new Error("Side mode is invalid.");
-  const muscles = (input.muscles ?? []).map((muscle) => {
+  const muscles = (input.muscles ?? []).map((muscle: ExerciseMuscle) => {
+    if (!muscleGroups.includes(muscle.muscleGroup)) throw new Error("Muscle group is invalid.");
+    if (!["primary", "secondary"].includes(muscle.role)) throw new Error("Muscle role is invalid.");
     if (!Number.isFinite(muscle.weight) || muscle.weight <= 0 || muscle.weight > 1) {
       throw new Error("Muscle weights must be greater than 0 and at most 1.");
     }
@@ -103,10 +107,28 @@ export class ExerciseService {
       muscles: input.muscles ?? existing.muscles,
     }));
   }
+  updateIfUnchanged(
+    ownerEmail: string,
+    id: string,
+    expectedUpdatedAt: string,
+    mutationId: string,
+    input: ExerciseInput,
+  ) {
+    return this.repository.updateExerciseIfUnchanged(
+      ownerEmail,
+      id,
+      expectedUpdatedAt,
+      mutationId,
+      validateExerciseInput(input),
+    );
+  }
   setFavorite(ownerEmail: string, id: string, isFavorite: boolean) {
     return this.repository.setExerciseFavorite(ownerEmail, id, isFavorite);
   }
   archive(ownerEmail: string, id: string) { return this.repository.archiveExercise(ownerEmail, id); }
+  archiveIfUnchanged(ownerEmail: string, id: string, expectedUpdatedAt: string) {
+    return this.repository.archiveExerciseIfUnchanged(ownerEmail, id, expectedUpdatedAt);
+  }
 }
 
 export class RoutineService {
@@ -117,7 +139,13 @@ export class RoutineService {
     return this.repository.createRoutine(ownerEmail, cleanRequired(code, "Routine code", 20).toUpperCase(), validateRoutineVersionInput(input));
   }
   updateIdentity(ownerEmail: string, idOrCode: string, input: { code?: string; isActive?: boolean }) {
-    return this.repository.updateRoutineIdentity(ownerEmail, idOrCode, input);
+    if (input.isActive !== undefined && typeof input.isActive !== "boolean") {
+      throw new Error("Routine active state must be a boolean.");
+    }
+    return this.repository.updateRoutineIdentity(ownerEmail, idOrCode, {
+      code: input.code === undefined ? undefined : cleanRequired(input.code, "Routine code", 20),
+      isActive: input.isActive,
+    });
   }
   archive(ownerEmail: string, idOrCode: string) { return this.repository.updateRoutineIdentity(ownerEmail, idOrCode, { isActive: false }); }
   listVersions(ownerEmail: string, idOrCode: string) { return this.repository.listRoutineVersions(ownerEmail, idOrCode); }

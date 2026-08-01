@@ -76,6 +76,10 @@ test("D1 entity repository seeds, versions, publishes, materializes, discards, a
     await ensureEntitySchema(d1);
     await ensureEntityData(d1, owner);
     const repository = new D1EntityRepository(d1);
+    const exercisePlanColumns = await d1.prepare("PRAGMA table_info(assistant_exercise_change_plans)")
+      .all<{ name: string }>();
+    assert.ok(exercisePlanColumns.results.some((column) => column.name === "base_updated_at"));
+    assert.ok(exercisePlanColumns.results.some((column) => column.name === "applied_exercise_id"));
 
     const seededExercises = await repository.listExercises(owner);
     const seededRoutines = await repository.listRoutineAggregates(owner);
@@ -111,6 +115,19 @@ test("D1 entity repository seeds, versions, publishes, materializes, discards, a
     const routine = await repository.createRoutine(owner, "E", singleSetRoutine(exercise.id, "Simple legs"));
     assert.equal(routine.currentVersion?.versionNumber, 1);
     assert.equal(routine.currentVersion?.exercises[0].sets[0].restAfterSec, 90);
+    await repository.updateExercise(owner, exercise.id, {
+      name: "Updated goblet squat",
+      defaultLoadType: "bodyweight",
+    });
+    const projectedExercise = await d1.prepare(`SELECT name, load_type AS loadType FROM exercises
+      WHERE owner_email = ? AND routine_code = 'E' AND exercise_order = 1`)
+      .bind(owner).first<{ name: string; loadType: string }>();
+    assert.equal(projectedExercise?.name, "Updated goblet squat");
+    assert.equal(projectedExercise?.loadType, "bodyweight");
+    assert.equal(
+      (await repository.getRoutineAggregate(owner, routine.id))?.currentVersion?.exercises[0].exerciseName,
+      "Updated goblet squat",
+    );
 
     const draft = await repository.createRoutineVersion(owner, routine.id, singleSetRoutine(exercise.id, "Updated legs"));
     const updatedDraft = await repository.updateRoutineVersion(owner, routine.id, draft.id, singleSetRoutine(exercise.id, "Updated legs again"));
@@ -239,6 +256,125 @@ test("D1 entity repository seeds, versions, publishes, materializes, discards, a
       (await repository.listWorkouts(owner, { includeArchived: true })).some(
         (item) => item.id === previousWorkoutId,
       ),
+      true,
+    );
+  } finally {
+    sqlite.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("D1 entity repository refuses to publish a draft that references an archived exercise", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "workout-d1-archived-draft-"));
+  const database = join(directory, "repository.sqlite");
+  const sqlite = new DatabaseSync(database);
+  const d1 = new SqliteD1(sqlite) as unknown as D1Database;
+  const owner = "owner@example.com";
+  try {
+    await ensureEntitySchema(d1);
+    await ensureEntityData(d1, owner);
+    const repository = new D1EntityRepository(d1);
+    const exercise = await repository.createExercise(owner, { name: "Draft-only press" });
+    const routine = await repository.createRoutine(owner, "ARCHIVE", singleSetRoutine(exercise.id, "Original"));
+    const draft = await repository.createRoutineVersion(owner, routine.id, singleSetRoutine(exercise.id, "Draft"));
+
+    await repository.updateRoutineIdentity(owner, routine.id, { isActive: false });
+    assert.equal(await repository.archiveExercise(owner, exercise.id), true);
+    await assert.rejects(
+      () => repository.publishRoutineVersion(owner, routine.id, draft.id),
+      /unavailable exercise/,
+    );
+    assert.equal((await repository.getRoutineAggregate(owner, routine.id))?.currentVersion?.versionNumber, 1);
+    assert.equal((await repository.getRoutineVersion(owner, routine.id, draft.id))?.status, "draft");
+    await assert.rejects(
+      () => repository.updateRoutineIdentity(owner, routine.id, { isActive: 1 as unknown as boolean }),
+      /must be a boolean/,
+    );
+    await assert.rejects(
+      () => repository.updateRoutineIdentity(owner, routine.id, { isActive: true }),
+      /unavailable exercise/,
+    );
+    assert.equal((await repository.getRoutineAggregate(owner, routine.id))?.isActive, false);
+  } finally {
+    sqlite.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("D1 entity repository applies Coach exercise updates and archives only at the expected revision", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "workout-d1-exercise-cas-"));
+  const database = join(directory, "repository.sqlite");
+  const sqlite = new DatabaseSync(database);
+  const d1 = new SqliteD1(sqlite) as unknown as D1Database;
+  const owner = "owner@example.com";
+  try {
+    await ensureEntitySchema(d1);
+    await ensureEntityData(d1, owner);
+    const repository = new D1EntityRepository(d1);
+    const created = await repository.createExercise(owner, {
+      name: "CAS press",
+      equipment: "machine",
+      muscles: [{ muscleGroup: "chest", role: "primary", weight: 1 }],
+    });
+    const routine = await repository.createRoutine(owner, "CAS", singleSetRoutine(created.id, "CAS routine"));
+    const intervening = await repository.updateExercise(owner, created.id, { instructions: "Intervening edit" });
+    assert.ok(intervening);
+    assert.notEqual(intervening.updatedAt, created.updatedAt);
+
+    const staleUpdate = await repository.updateExerciseIfUnchanged(
+      owner,
+      created.id,
+      created.updatedAt,
+      "stale-plan",
+      { ...intervening, name: "Stale overwrite", muscles: [] },
+    );
+    assert.equal(staleUpdate, null);
+    assert.equal((await repository.getExercise(owner, created.id))?.instructions, "Intervening edit");
+
+    const applied = await repository.updateExerciseIfUnchanged(
+      owner,
+      created.id,
+      intervening.updatedAt,
+      "fresh-plan",
+      {
+        name: "Updated CAS press",
+        equipment: "machine",
+        movementPattern: "push",
+        trackingType: "reps",
+        defaultLoadType: "bodyweight",
+        sideMode: "bilateral",
+        instructions: "Approved edit",
+        muscles: [{ muscleGroup: "triceps", role: "primary", weight: 0.8 }],
+      },
+    );
+    assert.equal(applied?.name, "Updated CAS press");
+    assert.deepEqual(applied?.muscles, [{ muscleGroup: "triceps", role: "primary", weight: 0.8 }]);
+    const projectedExercise = await d1.prepare(`SELECT name, load_type AS loadType FROM exercises
+      WHERE owner_email = ? AND routine_code = 'CAS' AND exercise_order = 1`)
+      .bind(owner).first<{ name: string; loadType: string }>();
+    assert.equal(projectedExercise?.name, "Updated CAS press");
+    assert.equal(projectedExercise?.loadType, "bodyweight");
+    assert.equal(await repository.archiveExerciseIfUnchanged(owner, created.id, intervening.updatedAt), false);
+    assert.equal(await repository.archiveExerciseIfUnchanged(owner, created.id, applied!.updatedAt), false);
+    await repository.updateRoutineIdentity(owner, routine.id, { isActive: false });
+    assert.equal(await repository.archiveExerciseIfUnchanged(owner, created.id, applied!.updatedAt), true);
+    assert.equal((await repository.getExercise(owner, created.id))?.isActive, false);
+
+    const currentExercise = await repository.createExercise(owner, { name: "Current routine movement" });
+    const draftExercise = await repository.createExercise(owner, { name: "Draft-only movement" });
+    const draftRoutine = await repository.createRoutine(owner, "DRAFT", singleSetRoutine(currentExercise.id, "Current"));
+    const draftVersion = await repository.createRoutineVersion(
+      owner,
+      draftRoutine.id,
+      singleSetRoutine(draftExercise.id, "Draft"),
+    );
+    assert.equal(
+      await repository.archiveExerciseIfUnchanged(owner, draftExercise.id, draftExercise.updatedAt),
+      false,
+    );
+    assert.equal(await repository.deleteRoutineVersion(owner, draftRoutine.id, draftVersion.id), true);
+    assert.equal(
+      await repository.archiveExerciseIfUnchanged(owner, draftExercise.id, draftExercise.updatedAt),
       true,
     );
   } finally {

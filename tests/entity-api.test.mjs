@@ -67,12 +67,15 @@ test("keeps published versions immutable and materializes normalized workout row
 });
 
 test("runs an owner-scoped coaching assistant with strict tools and approval-gated writes", async () => {
-  const [api, assistant, toolLoop, models, types] = await Promise.all([
+  const [api, assistant, toolLoop, models, types, schema, coachScreen, repository] = await Promise.all([
     readFile(new URL("server/api.ts", root), "utf8"),
     readFile(new URL("server/assistant.ts", root), "utf8"),
     readFile(new URL("server/coach-tool-loop.ts", root), "utf8"),
     readFile(new URL("server/assistant-models.ts", root), "utf8"),
     readFile(new URL("server/types.ts", root), "utf8"),
+    readFile(new URL("infrastructure/d1/entity-schema.ts", root), "utf8"),
+    readFile(new URL("src/features/coach/coach-screen.tsx", root), "utf8"),
+    readFile(new URL("infrastructure/d1/entity-repository.ts", root), "utf8"),
   ]);
 
   assert.match(api, /handleAssistantRequest/);
@@ -89,7 +92,7 @@ test("runs an owner-scoped coaching assistant with strict tools and approval-gat
   assert.match(toolLoop, /defaultCoachRunDurationMs = 4 \* 60_000/);
   assert.match(toolLoop, /canonicalJson/);
   assert.match(toolLoop, /repeatedCallCount >= repeatedCallLimit/);
-  assert.match(assistant, /isWriteTool: \(name\) => name === "propose_routine_change"/);
+  assert.match(assistant, /isWriteTool: \(name\) => \["propose_routine_change", "propose_exercise_change"\]\.includes\(name\)/);
   assert.match(toolLoop, /forceFinalResponse \? "none" : "auto"/);
   assert.match(toolLoop, /response\.status === "incomplete"/);
   assert.match(toolLoop, /response\.status !== "completed"/);
@@ -105,14 +108,32 @@ test("runs an owner-scoped coaching assistant with strict tools and approval-gat
   assert.match(assistant, /Do not infer approval from silence or an ambiguous response/);
   assert.match(assistant, /if the plan changes materially.*wait for approval again/is);
   assert.match(assistant, /re-read the routine.*then and only then call propose_routine_change/is);
+  assert.match(assistant, /re-read the target.*then and only then call propose_exercise_change/is);
   assert.match(assistant, /Only after the user explicitly approves a plan presented in an earlier assistant message/);
   assert.match(assistant, /This does not apply or publish the change/);
   assert.match(assistant, /status = 'pending'/);
   assert.match(assistant, /childAction === "apply" && request\.method === "POST"/);
   assert.match(assistant, /routine\.currentVersionId !== plan\.baseVersionId/);
+  assert.match(assistant, /current\.updatedAt !== plan\.baseUpdatedAt/);
+  assert.match(assistant, /assertExerciseCanBeArchived/);
+  assert.match(assistant, /status = 'stale'/);
   assert.match(assistant, /createVersion/);
   assert.match(assistant, /services\.routines\.publish/);
+  assert.match(assistant, /services\.exercises\.create/);
+  assert.match(assistant, /services\.exercises\.updateIfUnchanged/);
+  assert.match(assistant, /services\.exercises\.archiveIfUnchanged/);
+  assert.match(assistant, /return await applyExerciseChangePlan/);
+  assert.match(repository, /updated_at = \?.*is_active = 1 AND updated_at = \?/s);
+  assert.match(repository, /ec\.is_active <> 1/);
+  assert.match(repository, /rv\.status = 'draft'/);
+  assert.match(repository, /UPDATE exercises SET name = \?, load_type = \?, updated_at = \?/);
+  assert.match(repository, /typeof input\.isActive !== "boolean"/);
+  assert.doesNotMatch(repository, /Number\(input\.isActive\)/);
   assert.match(assistant, /assistant_tool_calls/);
+  assert.match(schema, /assistant_exercise_change_plans/);
+  assert.match(coachScreen, /kind: "routine"/);
+  assert.match(coachScreen, /kind: "exercise"/);
+  assert.match(coachScreen, /plan\.kind === "routine"/);
   assert.match(models, /gpt-5\.6-terra/);
   assert.match(models, /Number\(minorVersion\) >= 6/);
   assert.match(models, /isCompatibleAssistantModel/);
@@ -127,9 +148,11 @@ test("runs an owner-scoped coaching assistant with strict tools and approval-gat
     "get_routine",
     "list_routine_versions",
     "search_exercises",
+    "get_exercise",
     "get_workout_history",
     "get_active_workout",
     "propose_routine_change",
+    "propose_exercise_change",
   ]);
   assert.doesNotMatch(toolBlock, /functionTool\("(?:apply|publish|create|update|delete|archive)_/);
 });

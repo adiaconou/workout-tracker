@@ -18,6 +18,7 @@ test("applies the complete migration chain and creates the normalized entity mod
       "drizzle/0003_faulty_sandman.sql",
       "drizzle/0004_nebulous_lila_cheney.sql",
       "drizzle/0005_plain_rocket_raccoon.sql",
+      "drizzle/0006_freezing_betty_ross.sql",
     ];
     const sql = (await Promise.all(filenames.map((filename) => readFile(new URL(filename, root), "utf8"))))
       .join("\n").replaceAll("--> statement-breakpoint", "\n");
@@ -29,10 +30,13 @@ test("applies the complete migration chain and creates the normalized entity mod
       routines: sqlite.prepare("PRAGMA table_info(routines)").all(),
       workoutSessions: sqlite.prepare("PRAGMA table_info(workout_sessions)").all(),
       authSessions: sqlite.prepare("PRAGMA table_info(auth_sessions)").all(),
+      exercisePlans: sqlite.prepare("PRAGMA table_info(assistant_exercise_change_plans)").all(),
+      exercisePlanIndexes: sqlite.prepare("PRAGMA index_list(assistant_exercise_change_plans)").all(),
+      exercisePlanForeignKeys: sqlite.prepare("PRAGMA foreign_key_list(assistant_exercise_change_plans)").all(),
       workoutSetForeignKeys: sqlite.prepare("PRAGMA foreign_key_list(workout_sets)").all(),
     });
     sqlite.close();
-    for (const table of ["app_users", "auth_identities", "auth_sessions", "exercise_catalog", "exercise_favorites", "exercise_muscles", "routine_versions", "routine_version_exercises", "routine_set_templates", "workout_exercises", "workout_sets", "coach_profiles", "assistant_threads", "assistant_messages", "coach_check_ins", "assistant_change_plans", "assistant_tool_calls"]) {
+    for (const table of ["app_users", "auth_identities", "auth_sessions", "exercise_catalog", "exercise_favorites", "exercise_muscles", "routine_versions", "routine_version_exercises", "routine_set_templates", "workout_exercises", "workout_sets", "coach_profiles", "assistant_threads", "assistant_messages", "coach_check_ins", "assistant_change_plans", "assistant_exercise_change_plans", "assistant_tool_calls"]) {
       assert.match(inspected, new RegExp(`\\b${table}\\b`));
     }
     assert.match(inspected, /current_version_id/);
@@ -41,6 +45,11 @@ test("applies the complete migration chain and creates the normalized entity mod
     assert.match(inspected, /workout_exercises/);
     assert.match(inspected, /routine_set_templates/);
     assert.match(inspected, /refresh_token_hash/);
+    assert.match(inspected, /base_updated_at/);
+    assert.match(inspected, /base_input_json/);
+    assert.match(inspected, /applied_exercise_id/);
+    assert.match(inspected, /assistant_exercise_change_plans_owner_status_idx/);
+    assert.match(inspected, /assistant_exercise_change_plans_thread_created_idx/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

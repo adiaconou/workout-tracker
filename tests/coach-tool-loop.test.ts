@@ -153,49 +153,54 @@ test("forces a final response when the same tool call repeats without progress",
     .some((item) => item.type === "function_call_output" && item.call_id === "call-3"));
 });
 
-test("does not execute the same write tool twice", async () => {
-  const argumentVariants = [
-    '{"routineId":"routine-a","options":{"sets":3,"reps":8},"baseVersionId":"version-1"}',
-    '{"baseVersionId":"version-1","options":{"reps":8,"sets":3},"routineId":"routine-a"}',
-  ];
-  const responses: CoachResponse[] = [1, 2].map((index) => ({
-    id: `response-${index}`,
-    status: "completed",
-    output: [{
-      type: "function_call",
-      call_id: `call-${index}`,
-      name: "propose_routine_change",
-      arguments: argumentVariants[index - 1],
-    }],
-  }));
-  responses.push({
-    id: "response-final",
-    status: "completed",
-    output: [{ type: "message", content: [{ type: "output_text", text: "The plan is ready." }] }],
-  });
-  let executions = 0;
-  const statuses: string[] = [];
-  const result = await runCoachToolLoop({
-    conversation: [],
-    createResponse: async () => {
-      const response = responses.shift();
-      assert.ok(response);
-      return response;
-    },
-    executeTool: async () => {
-      executions += 1;
-      return { planId: "plan-1" };
-    },
-    recordToolCall: async ({ status }) => {
-      statuses.push(status);
-    },
-    formatError,
-    isWriteTool: (name) => name === "propose_routine_change",
-  });
+test("does not execute the same write tool twice", async (context) => {
+  const writeTools = ["propose_routine_change", "propose_exercise_change"];
+  for (const toolName of writeTools) {
+    await context.test(toolName, async () => {
+      const argumentVariants = [
+        '{"target":"item-a","options":{"sets":3,"reps":8}}',
+        '{"options":{"reps":8,"sets":3},"target":"item-a"}',
+      ];
+      const responses: CoachResponse[] = [1, 2].map((index) => ({
+        id: `response-${index}`,
+        status: "completed",
+        output: [{
+          type: "function_call",
+          call_id: `call-${index}`,
+          name: toolName,
+          arguments: argumentVariants[index - 1],
+        }],
+      }));
+      responses.push({
+        id: "response-final",
+        status: "completed",
+        output: [{ type: "message", content: [{ type: "output_text", text: "The plan is ready." }] }],
+      });
+      let executions = 0;
+      const statuses: string[] = [];
+      const result = await runCoachToolLoop({
+        conversation: [],
+        createResponse: async () => {
+          const response = responses.shift();
+          assert.ok(response);
+          return response;
+        },
+        executeTool: async () => {
+          executions += 1;
+          return { planId: "plan-1" };
+        },
+        recordToolCall: async ({ status }) => {
+          statuses.push(status);
+        },
+        formatError,
+        isWriteTool: (name) => writeTools.includes(name),
+      });
 
-  assert.equal(result.text, "The plan is ready.");
-  assert.equal(executions, 1);
-  assert.deepEqual(statuses, ["succeeded", "failed"]);
+      assert.equal(result.text, "The plan is ready.");
+      assert.equal(executions, 1);
+      assert.deepEqual(statuses, ["succeeded", "failed"]);
+    });
+  }
 });
 
 test("switches to final synthesis after the soft run-duration budget", async () => {

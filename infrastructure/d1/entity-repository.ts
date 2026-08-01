@@ -46,6 +46,11 @@ function formatRir(set: RoutineSet, fallback: string) {
     : `${set.targetRirMin} RIR`;
 }
 
+function nextTimestamp(previous: string) {
+  const previousTime = Date.parse(previous);
+  return new Date(Math.max(Date.now(), Number.isFinite(previousTime) ? previousTime + 1 : 0)).toISOString();
+}
+
 export class D1EntityRepository implements EntityRepository {
   private readyOwners = new Set<string>();
   constructor(private readonly d1: D1Database) {}
@@ -129,7 +134,7 @@ export class D1EntityRepository implements EntityRepository {
     await this.ready(ownerEmail);
     const existing = await this.getExercise(ownerEmail, id);
     if (!existing) return null;
-    const now = new Date().toISOString();
+    const now = nextTimestamp(existing.updatedAt);
     const muscles = input.muscles ?? existing.muscles;
     const statements: D1PreparedStatement[] = [
       this.d1.prepare(`UPDATE exercise_catalog SET name = ?, normalized_name = ?, equipment = ?,
@@ -145,7 +150,82 @@ export class D1EntityRepository implements EntityRepository {
       statements.push(this.d1.prepare("INSERT INTO exercise_muscles (exercise_id, muscle_group, role, weight) VALUES (?, ?, ?, ?)")
         .bind(id, muscle.muscleGroup, muscle.role, muscle.weight));
     }
+    statements.push(this.d1.prepare(`UPDATE exercises SET name = ?, load_type = ?, updated_at = ?
+      WHERE owner_email = ? AND EXISTS (
+        SELECT 1 FROM routines r
+        INNER JOIN routine_version_exercises rve
+          ON rve.routine_version_id = r.current_version_id AND rve.owner_email = r.owner_email
+        WHERE r.owner_email = ? AND r.code = exercises.routine_code
+          AND rve.position = exercises.exercise_order AND rve.exercise_id = ?
+      )`).bind(
+        input.name ?? existing.name,
+        input.defaultLoadType ?? existing.defaultLoadType,
+        now,
+        ownerEmail,
+        ownerEmail,
+        id,
+      ));
     await this.d1.batch(statements);
+    return this.getExercise(ownerEmail, id);
+  }
+
+  async updateExerciseIfUnchanged(
+    ownerEmail: string,
+    id: string,
+    expectedUpdatedAt: string,
+    mutationId: string,
+    input: ExerciseInput,
+  ) {
+    await this.ready(ownerEmail);
+    const now = nextTimestamp(expectedUpdatedAt);
+    const mutationMarker = `coach:${mutationId}`;
+    const statements: D1PreparedStatement[] = [
+      this.d1.prepare(`UPDATE exercise_catalog SET name = ?, normalized_name = ?, equipment = ?,
+        movement_pattern = ?, tracking_type = ?, default_load_type = ?, side_mode = ?,
+        instructions = ?, updated_at = ?
+        WHERE id = ? AND owner_email = ? AND is_active = 1 AND updated_at = ?`)
+        .bind(input.name, normalizeExerciseName(input.name), input.equipment ?? "other",
+          input.movementPattern ?? "other", input.trackingType ?? "reps",
+          input.defaultLoadType ?? "external", input.sideMode ?? "bilateral",
+          input.instructions ?? "", mutationMarker, id, ownerEmail, expectedUpdatedAt),
+      this.d1.prepare(`DELETE FROM exercise_muscles WHERE exercise_id = ? AND EXISTS (
+        SELECT 1 FROM exercise_catalog
+        WHERE id = ? AND owner_email = ? AND is_active = 1 AND updated_at = ?
+      )`).bind(id, id, ownerEmail, mutationMarker),
+    ];
+    for (const muscle of input.muscles ?? []) {
+      statements.push(this.d1.prepare(`INSERT INTO exercise_muscles (exercise_id, muscle_group, role, weight)
+        SELECT ?, ?, ?, ? WHERE EXISTS (
+          SELECT 1 FROM exercise_catalog
+          WHERE id = ? AND owner_email = ? AND is_active = 1 AND updated_at = ?
+        )`).bind(id, muscle.muscleGroup, muscle.role, muscle.weight, id, ownerEmail, mutationMarker));
+    }
+    statements.push(this.d1.prepare(`UPDATE exercises SET name = ?, load_type = ?, updated_at = ?
+      WHERE owner_email = ? AND EXISTS (
+        SELECT 1 FROM routines r
+        INNER JOIN routine_version_exercises rve
+          ON rve.routine_version_id = r.current_version_id AND rve.owner_email = r.owner_email
+        WHERE r.owner_email = ? AND r.code = exercises.routine_code
+          AND rve.position = exercises.exercise_order AND rve.exercise_id = ?
+      ) AND EXISTS (
+        SELECT 1 FROM exercise_catalog
+        WHERE id = ? AND owner_email = ? AND is_active = 1 AND updated_at = ?
+      )`).bind(
+        input.name,
+        input.defaultLoadType ?? "external",
+        now,
+        ownerEmail,
+        ownerEmail,
+        id,
+        id,
+        ownerEmail,
+        mutationMarker,
+      ));
+    statements.push(this.d1.prepare(`UPDATE exercise_catalog SET updated_at = ?
+      WHERE id = ? AND owner_email = ? AND is_active = 1 AND updated_at = ?`)
+      .bind(now, id, ownerEmail, mutationMarker));
+    const results = await this.d1.batch(statements);
+    if (Number(results[0]?.meta.changes ?? 0) !== 1) return null;
     return this.getExercise(ownerEmail, id);
   }
 
@@ -173,6 +253,22 @@ export class D1EntityRepository implements EntityRepository {
     const result = await this.d1.prepare("UPDATE exercise_catalog SET is_active = 0, updated_at = ? WHERE id = ? AND owner_email = ?")
       .bind(new Date().toISOString(), id, ownerEmail).run();
     return Number(result.meta.changes ?? 0) > 0;
+  }
+
+  async archiveExerciseIfUnchanged(ownerEmail: string, id: string, expectedUpdatedAt: string) {
+    await this.ready(ownerEmail);
+    const result = await this.d1.prepare(`UPDATE exercise_catalog SET is_active = 0, updated_at = ?
+      WHERE id = ? AND owner_email = ? AND is_active = 1 AND updated_at = ?
+      AND NOT EXISTS (
+        SELECT 1 FROM routines r
+        INNER JOIN routine_versions rv ON rv.routine_id = r.id AND rv.owner_email = r.owner_email
+        INNER JOIN routine_version_exercises rve
+          ON rve.routine_version_id = rv.id AND rve.owner_email = r.owner_email
+        WHERE r.owner_email = ? AND r.is_active = 1 AND rve.exercise_id = ?
+          AND (rv.id = r.current_version_id OR rv.status = 'draft')
+      )`)
+      .bind(new Date().toISOString(), id, ownerEmail, expectedUpdatedAt, ownerEmail, id).run();
+    return Number(result.meta.changes ?? 0) === 1;
   }
 
   private async routineRow(ownerEmail: string, idOrCode: string) {
@@ -315,16 +411,36 @@ export class D1EntityRepository implements EntityRepository {
 
   async updateRoutineIdentity(ownerEmail: string, idOrCode: string, input: { code?: string; isActive?: boolean }) {
     await this.ready(ownerEmail);
+    if (input.isActive !== undefined && typeof input.isActive !== "boolean") {
+      throw new Error("Routine active state must be a boolean.");
+    }
     const row = await this.routineRow(ownerEmail, idOrCode);
     if (!row) return null;
     const nextCode = input.code?.toUpperCase() ?? String(row.code);
+    const nextIsActive = input.isActive === undefined ? Number(row.isActive) : input.isActive ? 1 : 0;
     const now = new Date().toISOString();
-    await this.d1.batch([
-      this.d1.prepare("UPDATE routines SET code = ?, is_active = ?, updated_at = ? WHERE id = ? AND owner_email = ?")
-        .bind(nextCode, input.isActive === undefined ? Number(row.isActive) : Number(input.isActive), now, row.id, ownerEmail),
-      this.d1.prepare("UPDATE exercises SET routine_code = ?, updated_at = ? WHERE owner_email = ? AND routine_code = ?")
-        .bind(nextCode, now, ownerEmail, row.code),
+    const routineUpdate = input.isActive === true
+      ? this.d1.prepare(`UPDATE routines SET code = ?, is_active = 1, updated_at = ?
+          WHERE id = ? AND owner_email = ? AND NOT EXISTS (
+            SELECT 1 FROM routine_version_exercises rve
+            LEFT JOIN exercise_catalog ec ON ec.id = rve.exercise_id
+            WHERE rve.owner_email = routines.owner_email
+              AND rve.routine_version_id = routines.current_version_id
+              AND (ec.id IS NULL OR ec.owner_email <> routines.owner_email OR ec.is_active <> 1)
+          )`).bind(nextCode, now, row.id, ownerEmail)
+      : this.d1.prepare("UPDATE routines SET code = ?, is_active = ?, updated_at = ? WHERE id = ? AND owner_email = ?")
+        .bind(nextCode, nextIsActive, now, row.id, ownerEmail);
+    const results = await this.d1.batch([
+      routineUpdate,
+      this.d1.prepare(`UPDATE exercises SET routine_code = ?, updated_at = ?
+        WHERE owner_email = ? AND routine_code = ? AND EXISTS (
+          SELECT 1 FROM routines
+          WHERE id = ? AND owner_email = ? AND code = ? AND is_active = ?
+        )`).bind(nextCode, now, ownerEmail, row.code, row.id, ownerEmail, nextCode, nextIsActive),
     ]);
+    if (input.isActive === true && Number(results[0]?.meta.changes ?? 0) !== 1) {
+      throw new Error("The routine references an unavailable exercise.");
+    }
     const updated = await this.routineRow(ownerEmail, String(row.id));
     return updated ? (await this.aggregate(ownerEmail, updated) as RoutineAggregate) : null;
   }
@@ -433,7 +549,7 @@ export class D1EntityRepository implements EntityRepository {
 
     for (const exercise of version.exercises) {
       const catalog = await this.getExercise(ownerEmail, exercise.exerciseId);
-      if (!catalog) throw new Error("A routine references a missing exercise.");
+      if (!catalog?.isActive) throw new Error("A routine references an unavailable exercise.");
       const warmups = exercise.sets.filter((set) => set.setType === "warmup");
       const regular = exercise.sets.filter((set) => set.setType === "regular" || set.setType === "emom");
       const failures = exercise.sets.filter((set) => set.setType === "failure");

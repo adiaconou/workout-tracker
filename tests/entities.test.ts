@@ -6,6 +6,7 @@ import { expandLegacyPrescription, parseRestPrescription } from "../domain/presc
 import { homeGymExercises } from "../lib/home-gym-exercises";
 import {
   ExerciseService,
+  RoutineService,
   WorkoutService,
   validateExerciseInput,
   validateRoutineVersionInput,
@@ -70,6 +71,16 @@ test("validates exercise muscle metadata and routine ordering", () => {
     ],
   }), /only once/);
 
+  assert.throws(() => validateExerciseInput({
+    name: "Invalid muscle",
+    muscles: [{ muscleGroup: "neck" as "chest", role: "primary", weight: 1 }],
+  }), /Muscle group is invalid/);
+
+  assert.throws(() => validateExerciseInput({
+    name: "Invalid role",
+    muscles: [{ muscleGroup: "chest", role: "tertiary" as "primary", weight: 1 }],
+  }), /Muscle role is invalid/);
+
   assert.throws(() => validateRoutineVersionInput({
     focus: "Duplicate order",
     summary: "",
@@ -127,4 +138,16 @@ test("workout corrections reject invalid performance values before persistence",
   const service = new WorkoutService({} as EntityRepository);
   assert.throws(() => service.correctSet("owner@example.com", "workout", "set", { actualWeight: -1 }), /non-negative/);
   assert.throws(() => service.update("owner@example.com", "workout", { bodyWeight: -180 }), /non-negative/);
+});
+
+test("routine service rejects non-boolean active-state payloads", () => {
+  const service = new RoutineService({} as EntityRepository);
+  assert.throws(
+    () => service.updateIdentity("owner@example.com", "A", { isActive: 1 as unknown as boolean }),
+    /must be a boolean/,
+  );
+  assert.throws(
+    () => service.updateIdentity("owner@example.com", "A", { isActive: "1" as unknown as boolean }),
+    /must be a boolean/,
+  );
 });

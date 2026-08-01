@@ -437,6 +437,32 @@ export const assistantChangePlans = sqliteTable(
   ],
 );
 
+export const assistantExerciseChangePlans = sqliteTable(
+  "assistant_exercise_change_plans",
+  {
+    id: text("id").primaryKey(),
+    ownerEmail: text("owner_email").notNull(),
+    threadId: text("thread_id").notNull().references(() => assistantThreads.id, { onDelete: "cascade" }),
+    action: text("action").notNull(),
+    exerciseId: text("exercise_id"),
+    exerciseName: text("exercise_name").notNull(),
+    baseUpdatedAt: text("base_updated_at"),
+    baseInputJson: text("base_input_json"),
+    proposedInputJson: text("proposed_input_json").notNull(),
+    summary: text("summary").notNull(),
+    rationale: text("rationale").notNull(),
+    diffJson: text("diff_json").notNull(),
+    status: text("status").notNull().default("pending"),
+    appliedExerciseId: text("applied_exercise_id"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    index("assistant_exercise_change_plans_owner_status_idx").on(table.ownerEmail, table.status),
+    index("assistant_exercise_change_plans_thread_created_idx").on(table.threadId, table.createdAt),
+  ],
+);
+
 export const assistantToolCalls = sqliteTable(
   "assistant_tool_calls",
   {

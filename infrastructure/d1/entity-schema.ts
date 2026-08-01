@@ -185,6 +185,17 @@ const createStatements = [
   )`,
   "CREATE INDEX IF NOT EXISTS assistant_change_plans_owner_status_idx ON assistant_change_plans(owner_email, status)",
   "CREATE INDEX IF NOT EXISTS assistant_change_plans_thread_created_idx ON assistant_change_plans(thread_id, created_at)",
+  `CREATE TABLE IF NOT EXISTS assistant_exercise_change_plans (
+    id TEXT PRIMARY KEY, owner_email TEXT NOT NULL,
+    thread_id TEXT NOT NULL REFERENCES assistant_threads(id) ON DELETE CASCADE,
+    action TEXT NOT NULL, exercise_id TEXT, exercise_name TEXT NOT NULL,
+    base_updated_at TEXT, base_input_json TEXT, proposed_input_json TEXT NOT NULL,
+    summary TEXT NOT NULL, rationale TEXT NOT NULL, diff_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending', applied_exercise_id TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS assistant_exercise_change_plans_owner_status_idx ON assistant_exercise_change_plans(owner_email, status)",
+  "CREATE INDEX IF NOT EXISTS assistant_exercise_change_plans_thread_created_idx ON assistant_exercise_change_plans(thread_id, created_at)",
   `CREATE TABLE IF NOT EXISTS assistant_tool_calls (
     id TEXT PRIMARY KEY, owner_email TEXT NOT NULL,
     thread_id TEXT NOT NULL REFERENCES assistant_threads(id) ON DELETE CASCADE,

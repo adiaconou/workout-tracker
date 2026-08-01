@@ -39,19 +39,31 @@ type AssistantMessage = {
   createdAt: string;
 };
 
-type ChangePlan = {
+type ChangePlanBase = {
   id: string;
-  routineCode: string;
   summary: string;
   rationale: string;
   diff: string[];
-  status: "pending" | "applying" | "applied" | "rejected";
+  status: "pending" | "applying" | "applied" | "rejected" | "stale";
+};
+
+type RoutineChangePlan = ChangePlanBase & {
+  kind: "routine";
+  routineCode: string;
   proposedRoutine: {
     focus: string;
     durationMin: number;
     exercises: unknown[];
   };
 };
+
+type ExerciseChangePlan = ChangePlanBase & {
+  kind: "exercise";
+  action: "create" | "update" | "archive";
+  exerciseName: string;
+};
+
+type ChangePlan = RoutineChangePlan | ExerciseChangePlan;
 
 type ModelOption = {
   id: string;
@@ -279,7 +291,9 @@ export function CoachScreen() {
       });
       await load(data.thread.id);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The routine update could not be completed.");
+      const message = caught instanceof Error ? caught.message : "The change could not be completed.";
+      await load(data.thread.id);
+      setError(message);
     } finally {
       setPlanBusy(null);
     }
@@ -376,32 +390,40 @@ export function CoachScreen() {
               {pendingPlans.map((plan) => (
                 <View key={plan.id} style={styles.planCard}>
                   <View style={styles.planHeader}>
-                    <View style={styles.planBadge}><Text style={styles.planBadgeText}>Routine {plan.routineCode}</Text></View>
-                    <Text style={styles.planTitle}>{plan.summary}</Text>
+                    <View style={styles.planBadge}>
+                      <Text style={styles.planBadgeText}>
+                        {plan.kind === "routine" ? `Routine ${plan.routineCode}` : `Exercise · ${exerciseActionLabel(plan.action)}`}
+                      </Text>
+                    </View>
+                    <Text style={styles.planTitle}>
+                      {plan.kind === "exercise" ? `${plan.exerciseName}: ${plan.summary}` : plan.summary}
+                    </Text>
                   </View>
                   <Text style={styles.planRationale}>{plan.rationale}</Text>
                   <View style={styles.planDiff}>
-                    {plan.diff.slice(0, 4).map((change, index) => (
+                    {(plan.kind === "exercise" ? plan.diff : plan.diff.slice(0, 4)).map((change, index) => (
                       <Text key={`${plan.id}:${index}`} style={styles.planDiffText}>• {change}</Text>
                     ))}
-                    {plan.diff.length > 4 ? (
+                    {plan.kind === "routine" && plan.diff.length > 4 ? (
                       <Text style={styles.planMore}>+{plan.diff.length - 4} more changes</Text>
                     ) : null}
                   </View>
                   <View style={styles.planActions}>
                     <CompactAction
-                      title="Apply"
+                      title={plan.kind === "exercise" ? exerciseApplyLabel(plan.action) : "Apply"}
                       primary
                       loading={planBusy === `${plan.id}:apply:true`}
                       disabled={Boolean(planBusy)}
                       onPress={() => void handlePlan(plan.id, "apply", true)}
                     />
-                    <CompactAction
-                      title="Save draft"
-                      loading={planBusy === `${plan.id}:apply:false`}
-                      disabled={Boolean(planBusy)}
-                      onPress={() => void handlePlan(plan.id, "apply", false)}
-                    />
+                    {plan.kind === "routine" ? (
+                      <CompactAction
+                        title="Save draft"
+                        loading={planBusy === `${plan.id}:apply:false`}
+                        disabled={Boolean(planBusy)}
+                        onPress={() => void handlePlan(plan.id, "apply", false)}
+                      />
+                    ) : null}
                     <CompactAction
                       title="Reject"
                       subtle
@@ -456,7 +478,7 @@ export function CoachScreen() {
           </View>
           <Text style={[styles.composerNote, !data.modelConfiguration.configured && styles.setupNote]}>
             {data.modelConfiguration.configured
-              ? "Coach can make mistakes. Review routine changes before applying."
+              ? "Coach can make mistakes. Review proposed changes before applying."
               : "Connect OPENAI_API_KEY in Site settings to start chatting."}
           </Text>
         </View>
@@ -658,6 +680,14 @@ function OptionModal({
       </Pressable>
     </Modal>
   );
+}
+
+function exerciseActionLabel(action: ExerciseChangePlan["action"]) {
+  return action === "create" ? "Create" : action === "update" ? "Update" : "Archive";
+}
+
+function exerciseApplyLabel(action: ExerciseChangePlan["action"]) {
+  return action === "create" ? "Add exercise" : action === "archive" ? "Archive" : "Apply update";
 }
 
 const styles = StyleSheet.create({
