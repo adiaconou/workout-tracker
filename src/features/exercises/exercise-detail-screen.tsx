@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { router } from "expo-router";
 import type { RoutineAggregate } from "../../../domain/entities";
@@ -20,40 +20,68 @@ import { colors, radii, spacing } from "../../theme/tokens";
 export function ExerciseDetailScreen({ exerciseId }: { exerciseId: string }) {
   const [exercise, setExercise] = useState<Exercise | null>(null);
   const [usedIn, setUsedIn] = useState<RoutineAggregate[]>([]);
+  const [usageStatus, setUsageStatus] = useState<"idle" | "loading" | "loaded" | "error">("idle");
   const [loading, setLoading] = useState(true);
   const [savingFavorite, setSavingFavorite] = useState(false);
   const [error, setError] = useState("");
 
-  const load = useCallback(async () => {
+  useEffect(() => {
+    let cancelled = false;
     setLoading(true);
     setError("");
+    setExercise(null);
+    setUsedIn([]);
+    setUsageStatus(exerciseId ? "loading" : "idle");
+
     if (!exerciseId) {
-      setExercise(null);
       setLoading(false);
       setError("Exercise not found.");
-      return;
+      return () => {
+        cancelled = true;
+      };
     }
-    try {
-      const [exercisePayload, routinePayload] = await Promise.all([
-        apiRequest<{ exercise: Exercise }>(`/api/v1/exercises/${encodeURIComponent(exerciseId)}`),
-        apiRequest<{ routines: RoutineAggregate[] }>("/api/v1/routines"),
-      ]);
-      setExercise(exercisePayload.exercise);
-      setUsedIn(routinePayload.routines.filter(
-        (routine) => routine.currentVersion?.exercises.some(
-          (item) => item.exerciseId === exercisePayload.exercise.id,
-        ),
-      ));
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Exercise could not be loaded.");
-    } finally {
-      setLoading(false);
-    }
-  }, [exerciseId]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+    const routineRequest = apiRequest<{ routines: RoutineAggregate[] }>("/api/v1/routines").then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      () => ({ status: "rejected" as const }),
+    );
+
+    void (async () => {
+      try {
+        const exercisePayload = await apiRequest<{ exercise: Exercise }>(
+          `/api/v1/exercises/${encodeURIComponent(exerciseId)}`,
+        );
+        if (cancelled) return;
+
+        setExercise(exercisePayload.exercise);
+        setLoading(false);
+
+        const routineResult = await routineRequest;
+        if (cancelled) return;
+
+        if (routineResult.status === "rejected") {
+          setUsageStatus("error");
+          return;
+        }
+
+        setUsedIn(routineResult.value.routines.filter(
+          (routine) => routine.currentVersion?.exercises.some(
+            (item) => item.exerciseId === exercisePayload.exercise.id,
+          ),
+        ));
+        setUsageStatus("loaded");
+      } catch (caught) {
+        if (cancelled) return;
+        setError(caught instanceof Error ? caught.message : "Exercise could not be loaded.");
+        setLoading(false);
+        setUsageStatus("idle");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [exerciseId]);
 
   async function toggleFavorite() {
     if (!exercise || savingFavorite) return;
@@ -154,9 +182,11 @@ export function ExerciseDetailScreen({ exerciseId }: { exerciseId: string }) {
             <Eyebrow>Program usage</Eyebrow>
             <Heading size="medium">Used in routines</Heading>
           </View>
-          <Text style={styles.count}>{usedIn.length}</Text>
+          <Text style={styles.count}>{usageStatus === "loaded" ? usedIn.length : "-"}</Text>
         </View>
-        {usedIn.length ? usedIn.map((routine) => (
+        {usageStatus === "loading" ? <Body muted>Loading routine usage...</Body>
+          : usageStatus === "error" ? <Body muted>Routine usage could not be loaded.</Body>
+          : usedIn.length ? usedIn.map((routine) => (
           <RowLink
             key={routine.id}
             label={`Open Routine ${routine.code}`}
