@@ -21,6 +21,7 @@ import {
   Screen,
 } from "../../components/ui";
 import { colors, maxContentWidth, radii, spacing } from "../../theme/tokens";
+import { exerciseDetailHref } from "./exercise-routes";
 
 export function ExerciseLibraryScreen() {
   const { width } = useWindowDimensions();
@@ -189,7 +190,7 @@ export function ExerciseLibraryScreen() {
                     <Pressable
                       accessibilityRole="link"
                       accessibilityLabel={`Open ${item.name}`}
-                      onPress={() => router.push(`/exercises/${encodeURIComponent(item.id)}`)}
+                      onPress={() => router.push(exerciseDetailHref(item.id))}
                       style={({ pressed }) => [
                         styles.rowLink,
                         pressed && styles.rowPressed,

@@ -27,6 +27,12 @@ export function ExerciseDetailScreen({ exerciseId }: { exerciseId: string }) {
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
+    if (!exerciseId) {
+      setExercise(null);
+      setLoading(false);
+      setError("Exercise not found.");
+      return;
+    }
     try {
       const [exercisePayload, routinePayload] = await Promise.all([
         apiRequest<{ exercise: Exercise }>(`/api/v1/exercises/${encodeURIComponent(exerciseId)}`),
