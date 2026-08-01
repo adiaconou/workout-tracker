@@ -18,6 +18,7 @@ test("uses one Expo Router application for Android and hosted web", async () => 
     historyDetail,
     activeWorkout,
     coach,
+    coachMarkdown,
     discardWorkoutModal,
     authContext,
     pendingWrites,
@@ -37,6 +38,7 @@ test("uses one Expo Router application for Android and hosted web", async () => 
     readFile(new URL("src/features/history/workout-history-detail-screen.tsx", root), "utf8"),
     readFile(new URL("src/features/workouts/active-workout-screen.tsx", root), "utf8"),
     readFile(new URL("src/features/coach/coach-screen.tsx", root), "utf8"),
+    readFile(new URL("src/features/coach/coach-markdown.tsx", root), "utf8"),
     readFile(new URL("src/features/workouts/discard-workout-modal.tsx", root), "utf8"),
     readFile(new URL("src/auth/auth-context.tsx", root), "utf8"),
     readFile(new URL("src/api/pending-writes.ts", root), "utf8"),
@@ -128,6 +130,17 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(coach, /\/api\/v1\/assistant\/models/);
   assert.match(coach, /Save draft/);
   assert.match(coach, /OPENAI_API_KEY/);
+  assert.match(coach, /<CoachMarkdown content=\{message\.content\} \/>/);
+  assert.match(coachMarkdown, /EnrichedMarkdownText/);
+  assert.match(coachMarkdown, /flavor="github"/);
+  assert.match(coachMarkdown, /md4cFlags=\{\{ latexMath: false \}\}/);
+  assert.match(coachMarkdown, /isSafeCoachMarkdownLink/);
+  assert.match(coachMarkdown, /sanitizeCoachMarkdown\(content\)/);
+  assert.match(coachMarkdown, /onAuxClickCapture/);
+  assert.match(coachMarkdown, /onContextMenuCapture/);
+  assert.match(packageJson, /"react-native-enriched-markdown": "0\.7\.4"/);
+  assert.match(appConfig, /"react-native-enriched-markdown"/);
+  assert.match(appConfig, /enableMath: false/);
   assert.doesNotMatch(coach, /Coaching profile/);
   assert.doesNotMatch(coach, /Readiness check-in/);
   assert.match(discardWorkoutModal, /Discard this workout/);

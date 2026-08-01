@@ -15,6 +15,7 @@ import {
 import { apiRequest } from "../../api/client";
 import { LoadingView, Screen } from "../../components/ui";
 import { colors, radii, spacing } from "../../theme/tokens";
+import { CoachMarkdown } from "./coach-markdown";
 
 type CoachProfile = {
   model: string;
@@ -367,7 +368,7 @@ export function CoachScreen() {
                 ) : (
                   <View key={message.id} style={styles.assistantRow}>
                     <View style={styles.assistantAvatar}><Text style={styles.assistantAvatarText}>C</Text></View>
-                    <Text style={[styles.messageText, styles.assistantMessage]}>{message.content}</Text>
+                    <CoachMarkdown content={message.content} />
                   </View>
                 )
               ))}
@@ -768,7 +769,6 @@ const styles = StyleSheet.create({
   },
   assistantAvatarText: { color: colors.background, fontSize: 13, fontWeight: "900" },
   messageText: { color: colors.text, fontSize: 15, lineHeight: 23 },
-  assistantMessage: { flex: 1, paddingTop: 2 },
   thinkingRow: { minHeight: 28, flexDirection: "row", alignItems: "center", gap: spacing.sm },
   thinkingText: { color: colors.textMuted, fontSize: 14 },
   planCard: {

@@ -17,6 +17,12 @@ const config: ExpoConfig = {
     "expo-secure-store",
     "expo-dev-client",
     [
+      "react-native-enriched-markdown",
+      {
+        enableMath: false,
+      },
+    ],
+    [
       "react-native-nitro-google-signin",
       {
         iosUrlScheme: "com.googleusercontent.apps.workout-tracker-placeholder",
