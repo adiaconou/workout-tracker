@@ -1,7 +1,10 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { useFocusEffect } from "expo-router";
 import {
+  ActivityIndicator,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -10,31 +13,12 @@ import {
   View,
 } from "react-native";
 import { apiRequest } from "../../api/client";
-import {
-  Body,
-  Button,
-  Card,
-  Eyebrow,
-  Field,
-  Heading,
-  LoadingView,
-  Message,
-  Screen,
-} from "../../components/ui";
+import { LoadingView, Screen } from "../../components/ui";
 import { colors, radii, spacing } from "../../theme/tokens";
 
 type CoachProfile = {
-  ownerEmail: string;
-  primaryGoal: string;
-  trainingDaysPerWeek: number;
-  sessionDurationMin: number;
-  equipment: string;
-  limitations: string;
-  preferences: string;
   model: string;
   reasoningEffort: string;
-  createdAt: string;
-  updatedAt: string;
 };
 
 type AssistantThread = {
@@ -54,16 +38,6 @@ type AssistantMessage = {
   createdAt: string;
 };
 
-type CoachCheckIn = {
-  id: string;
-  energy: number;
-  soreness: number;
-  sleepQuality: number;
-  availableMinutes: number | null;
-  notes: string;
-  createdAt: string;
-};
-
 type ChangePlan = {
   id: string;
   routineCode: string;
@@ -76,8 +50,6 @@ type ChangePlan = {
     durationMin: number;
     exercises: unknown[];
   };
-  appliedVersionId: string | null;
-  createdAt: string;
 };
 
 type ModelOption = {
@@ -93,7 +65,6 @@ type CoachBootstrap = {
   thread: AssistantThread;
   messages: AssistantMessage[];
   plans: ChangePlan[];
-  checkIns: CoachCheckIn[];
   models: ModelOption[];
   modelConfiguration: {
     configured: boolean;
@@ -102,38 +73,28 @@ type CoachBootstrap = {
   };
 };
 
-type ProfileDraft = Pick<CoachProfile,
-  "primaryGoal" | "trainingDaysPerWeek" | "sessionDurationMin" |
-  "equipment" | "limitations" | "preferences" | "model" | "reasoningEffort"
->;
+type ModelSelection = Pick<CoachProfile, "model" | "reasoningEffort">;
 
 const quickPrompts = [
-  "Review my recent training and tell me what to prioritize next.",
-  "Make my next routine more strength focused without increasing the session length.",
-  "Review my set design, rest periods, and RIR targets for my goal.",
+  "What should I train today?",
+  "Review my recent workouts",
+  "Improve my next routine",
+  "Adjust my sets and rest for strength",
 ];
 
 export function CoachScreen() {
+  const messageListRef = useRef<ScrollView | null>(null);
   const [data, setData] = useState<CoachBootstrap | null>(null);
-  const [profileDraft, setProfileDraft] = useState<ProfileDraft | null>(null);
+  const [selection, setSelection] = useState<ModelSelection | null>(null);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
-  const [savingProfile, setSavingProfile] = useState(false);
-  const [savingCheckIn, setSavingCheckIn] = useState(false);
+  const [savingModel, setSavingModel] = useState(false);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const [planBusy, setPlanBusy] = useState<string | null>(null);
   const [composer, setComposer] = useState("");
   const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
-  const [showProfile, setShowProfile] = useState(false);
-  const [showCheckIn, setShowCheckIn] = useState(false);
   const [showModels, setShowModels] = useState(false);
   const [showThreads, setShowThreads] = useState(false);
-  const [energy, setEnergy] = useState(3);
-  const [soreness, setSoreness] = useState(2);
-  const [sleepQuality, setSleepQuality] = useState(3);
-  const [availableMinutes, setAvailableMinutes] = useState("60");
-  const [checkInNotes, setCheckInNotes] = useState("");
 
   const load = useCallback(async (threadId?: string) => {
     setLoading(true);
@@ -143,7 +104,7 @@ export function CoachScreen() {
         `/api/v1/assistant${threadId ? `?threadId=${encodeURIComponent(threadId)}` : ""}`,
       );
       setData(payload);
-      setProfileDraft(toProfileDraft(payload.profile));
+      setSelection({ model: payload.profile.model, reasoningEffort: payload.profile.reasoningEffort });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "The coach could not be loaded.");
     } finally {
@@ -156,39 +117,99 @@ export function CoachScreen() {
   }, [load]));
 
   const selectedModel = useMemo(
-    () => data?.models.find((model) => model.id === profileDraft?.model) ?? data?.models[0] ?? null,
-    [data?.models, profileDraft?.model],
+    () => data?.models.find((model) => model.id === selection?.model) ?? data?.models[0] ?? null,
+    [data?.models, selection?.model],
   );
   const reasoningEfforts = selectedModel?.reasoningEfforts ?? ["auto"];
   const pendingPlans = data?.plans.filter((plan) => plan.status === "pending") ?? [];
 
-  async function saveProfile() {
-    if (!profileDraft) return;
-    setSavingProfile(true);
+  async function persistModelSettings(next: ModelSelection) {
+    if (!data || !selection) return;
+    const previous = selection;
+    setSelection(next);
+    setSavingModel(true);
     setError("");
-    setMessage("");
     try {
       const payload = await apiRequest<{ profile: CoachProfile }>("/api/v1/assistant/profile", {
         method: "PATCH",
-        body: JSON.stringify(profileDraft),
+        body: JSON.stringify(next),
       });
-      setData((current) => current ? { ...current, profile: payload.profile } : current);
-      setProfileDraft(toProfileDraft(payload.profile));
-      setMessage("Coaching profile saved.");
-      setShowProfile(false);
+      setData((current) => current ? { ...current, profile: { ...current.profile, ...payload.profile } } : current);
+      setSelection({ model: payload.profile.model, reasoningEffort: payload.profile.reasoningEffort });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The coaching profile could not be saved.");
+      setSelection(previous);
+      setError(caught instanceof Error ? caught.message : "The model setting could not be saved.");
     } finally {
-      setSavingProfile(false);
+      setSavingModel(false);
+    }
+  }
+
+  function chooseModel(model: ModelOption) {
+    if (!selection || savingModel) return;
+    const reasoningEffort = model.reasoningEfforts.includes(selection.reasoningEffort)
+      ? selection.reasoningEffort
+      : model.reasoningEfforts.includes("medium") ? "medium" : "auto";
+    setShowModels(false);
+    void persistModelSettings({ model: model.id, reasoningEffort });
+  }
+
+  function chooseReasoningEffort(reasoningEffort: string) {
+    if (!selection || savingModel || reasoningEffort === selection.reasoningEffort) return;
+    void persistModelSettings({ ...selection, reasoningEffort });
+  }
+
+  async function refreshModels() {
+    if (!data || !selection) return;
+    setRefreshingModels(true);
+    setError("");
+    try {
+      const payload = await apiRequest<{
+        models: ModelOption[];
+        configured: boolean;
+        source: "live" | "fallback";
+        defaultModel: string;
+      }>("/api/v1/assistant/models");
+      const model = payload.models.some((option) => option.id === selection.model)
+        ? selection.model
+        : payload.defaultModel;
+      const option = payload.models.find((candidate) => candidate.id === model);
+      const reasoningEffort = option?.reasoningEfforts.includes(selection.reasoningEffort)
+        ? selection.reasoningEffort
+        : "auto";
+      setData({
+        ...data,
+        models: payload.models,
+        modelConfiguration: {
+          configured: payload.configured,
+          source: payload.source,
+          defaultModel: payload.defaultModel,
+        },
+      });
+      setSelection({ model, reasoningEffort });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "The model list could not be refreshed.");
+    } finally {
+      setRefreshingModels(false);
     }
   }
 
   async function send(text = composer) {
     const content = text.trim();
-    if (!content || !data || !profileDraft) return;
+    if (!content || !data || !selection || sending || !data.modelConfiguration.configured) return;
+    const activeThreadId = data.thread.id;
+    const optimisticMessage: AssistantMessage = {
+      id: `local-${Date.now()}`,
+      threadId: activeThreadId,
+      role: "user",
+      content,
+      model: null,
+      reasoningEffort: null,
+      createdAt: new Date().toISOString(),
+    };
     setSending(true);
     setError("");
-    setMessage("");
+    setComposer("");
+    setData((current) => current ? { ...current, messages: [...current.messages, optimisticMessage] } : current);
     try {
       const payload = await apiRequest<{
         thread: AssistantThread;
@@ -198,26 +219,33 @@ export function CoachScreen() {
       }>("/api/v1/assistant/messages", {
         method: "POST",
         body: JSON.stringify({
-          threadId: data.thread.id,
+          threadId: activeThreadId,
           content,
-          model: profileDraft.model,
-          reasoningEffort: profileDraft.reasoningEffort,
+          model: selection.model,
+          reasoningEffort: selection.reasoningEffort,
         }),
       });
+      setData((current) => {
+        if (!current || current.thread.id !== activeThreadId) return current;
+        return {
+          ...current,
+          thread: payload.thread,
+          threads: current.threads.map((thread) => thread.id === payload.thread.id ? payload.thread : thread),
+          messages: [
+            ...current.messages.filter((message) => message.id !== optimisticMessage.id),
+            payload.userMessage,
+            payload.assistantMessage,
+          ],
+          plans: payload.plans,
+          profile: { ...current.profile, ...selection },
+        };
+      });
+    } catch (caught) {
       setData((current) => current ? {
         ...current,
-        thread: payload.thread,
-        threads: current.threads.map((thread) => thread.id === payload.thread.id ? payload.thread : thread),
-        messages: [...current.messages, payload.userMessage, payload.assistantMessage],
-        plans: payload.plans,
-        profile: {
-          ...current.profile,
-          model: profileDraft.model,
-          reasoningEffort: profileDraft.reasoningEffort,
-        },
+        messages: current.messages.filter((message) => message.id !== optimisticMessage.id),
       } : current);
-      setComposer("");
-    } catch (caught) {
+      setComposer(content);
       setError(caught instanceof Error ? caught.message : "The coach could not respond.");
     } finally {
       setSending(false);
@@ -225,6 +253,7 @@ export function CoachScreen() {
   }
 
   async function createThread() {
+    if (sending) return;
     setError("");
     try {
       const payload = await apiRequest<{ thread: AssistantThread }>("/api/v1/assistant/threads", {
@@ -238,540 +267,365 @@ export function CoachScreen() {
     }
   }
 
-  async function refreshModels() {
-    if (!data || !profileDraft) return;
-    setRefreshingModels(true);
-    setError("");
-    try {
-      const payload = await apiRequest<{
-        models: ModelOption[];
-        configured: boolean;
-        source: "live" | "fallback";
-        defaultModel: string;
-      }>("/api/v1/assistant/models");
-      const model = payload.models.some((option) => option.id === profileDraft.model)
-        ? profileDraft.model
-        : payload.defaultModel;
-      const option = payload.models.find((candidate) => candidate.id === model);
-      const reasoningEffort = option?.reasoningEfforts.includes(profileDraft.reasoningEffort)
-        ? profileDraft.reasoningEffort
-        : "auto";
-      setData({
-        ...data,
-        models: payload.models,
-        modelConfiguration: {
-          configured: payload.configured,
-          source: payload.source,
-          defaultModel: payload.defaultModel,
-        },
-      });
-      setProfileDraft({ ...profileDraft, model, reasoningEffort });
-      setMessage("Model catalog refreshed.");
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The model catalog could not be refreshed.");
-    } finally {
-      setRefreshingModels(false);
-    }
-  }
-
-  async function saveCheckIn() {
-    setSavingCheckIn(true);
-    setError("");
-    setMessage("");
-    try {
-      const payload = await apiRequest<{ checkIn: CoachCheckIn }>("/api/v1/assistant/check-ins", {
-        method: "POST",
-        body: JSON.stringify({
-          energy,
-          soreness,
-          sleepQuality,
-          availableMinutes: Number(availableMinutes) || null,
-          notes: checkInNotes,
-        }),
-      });
-      setData((current) => current ? {
-        ...current,
-        checkIns: [payload.checkIn, ...current.checkIns].slice(0, 7),
-      } : current);
-      setCheckInNotes("");
-      setShowCheckIn(false);
-      setMessage("Readiness check-in saved for the coach.");
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The check-in could not be saved.");
-    } finally {
-      setSavingCheckIn(false);
-    }
-  }
-
   async function handlePlan(planId: string, action: "apply" | "reject", publish = true) {
     if (!data) return;
     setPlanBusy(`${planId}:${action}:${publish}`);
     setError("");
-    setMessage("");
     try {
       await apiRequest(`/api/v1/assistant/plans/${encodeURIComponent(planId)}/${action}`, {
         method: "POST",
         body: JSON.stringify(action === "apply" ? { publish } : {}),
       });
       await load(data.thread.id);
-      setMessage(action === "reject"
-        ? "The coaching plan was rejected."
-        : publish ? "Routine version approved and published." : "Routine version saved as a draft.");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The coaching plan could not be updated.");
+      setError(caught instanceof Error ? caught.message : "The routine update could not be completed.");
     } finally {
       setPlanBusy(null);
     }
   }
 
-  function chooseModel(model: ModelOption) {
-    if (!profileDraft) return;
-    const reasoningEffort = model.reasoningEfforts.includes(profileDraft.reasoningEffort)
-      ? profileDraft.reasoningEffort
-      : model.reasoningEfforts.includes("medium") ? "medium" : "auto";
-    setProfileDraft({ ...profileDraft, model: model.id, reasoningEffort });
-    setShowModels(false);
-  }
-
-  if (loading && !data) return <LoadingView label="Opening your coach…" />;
-  if (!data || !profileDraft) {
+  if (loading && !data) return <LoadingView label="Opening Coach…" />;
+  if (!data || !selection) {
     return (
-      <Screen>
-        <Message>{error || "The coach could not be loaded."}</Message>
-        <Button title="Try again" onPress={() => void load()} />
+      <Screen scroll={false} contentStyle={styles.errorScreen}>
+        <Text style={styles.errorText}>{error || "The coach could not be loaded."}</Text>
+        <CompactAction title="Try again" onPress={() => void load()} />
       </Screen>
     );
   }
 
+  const hasConversation = data.messages.length > 0 || pendingPlans.length > 0;
+
   return (
-    <Screen>
-      <View style={styles.heroRow}>
-        <View style={styles.heroCopy}>
-          <Eyebrow>AI training partner</Eyebrow>
-          <Heading>Coach</Heading>
-          <Body muted>
-            Ask about programming, recovery, exercise selection, set design, and rest. Routine edits always wait for your approval.
-          </Body>
-        </View>
-        <View style={styles.statusBadge}>
-          <View style={[styles.statusDot, !data.modelConfiguration.configured && styles.statusDotWarning]} />
-          <Text style={styles.statusText}>
-            {data.modelConfiguration.configured ? "Ready" : "Setup needed"}
-          </Text>
-        </View>
-      </View>
-
-      {!data.modelConfiguration.configured ? (
-        <Message tone="warning">
-          The coaching workspace is ready, but an OpenAI API key still needs to be connected to the Site before messages can be sent.
-        </Message>
-      ) : null}
-      {message ? <Message tone="success">{message}</Message> : null}
-      {error ? <Message>{error}</Message> : null}
-
-      <Card style={styles.controlCard}>
-        <View style={styles.cardHeadingRow}>
-          <View style={styles.cardHeadingCopy}>
-            <Eyebrow>Conversation</Eyebrow>
-            <Heading size="small">{data.thread.title}</Heading>
-          </View>
-          <View style={styles.inlineActions}>
-            <Button title="History" compact variant="ghost" onPress={() => setShowThreads(true)} />
-            <Button title="New chat" compact variant="secondary" onPress={() => void createThread()} />
-          </View>
-        </View>
-
-        <View style={styles.selectorRow}>
-          <View style={styles.selectorColumn}>
-            <Text style={styles.fieldLabel}>Model</Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Choose coach model"
-              onPress={() => setShowModels(true)}
-              style={({ pressed }) => [styles.selectButton, pressed && styles.pressed]}
-            >
-              <Text numberOfLines={1} style={styles.selectValue}>{selectedModel?.label ?? profileDraft.model}</Text>
-              <Text style={styles.selectArrow}>⌄</Text>
-            </Pressable>
-          </View>
-          <View style={styles.sourceColumn}>
-            <Text style={styles.sourceText}>
-              {data.modelConfiguration.source === "live" ? "Live model catalog" : "Preview catalog"}
+    <Screen scroll={false} contentStyle={styles.screen}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        style={styles.keyboardView}
+      >
+        <View style={styles.header}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Choose coach model"
+            disabled={savingModel}
+            onPress={() => setShowModels(true)}
+            style={({ pressed }) => [styles.modelTrigger, pressed && styles.pressed]}
+          >
+            <Text numberOfLines={1} style={styles.modelTriggerText}>
+              {selectedModel?.label ?? selection.model}
             </Text>
-            <Button
-              title="Refresh"
-              compact
-              variant="ghost"
-              loading={refreshingModels}
-              onPress={() => void refreshModels()}
-            />
-          </View>
-        </View>
-
-        <View style={styles.effortSection}>
-          <Text style={styles.fieldLabel}>Reasoning effort</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-            {reasoningEfforts.map((effort) => (
-              <ChoiceChip
-                key={effort}
-                title={effort}
-                selected={profileDraft.reasoningEffort === effort}
-                onPress={() => setProfileDraft({ ...profileDraft, reasoningEffort: effort })}
-              />
-            ))}
-          </ScrollView>
-          <Text style={styles.helperText}>Auto lets the selected model use its default. Higher efforts can take longer and cost more.</Text>
-          <View style={styles.modelSaveRow}>
-            <Button
-              title="Save model settings"
-              compact
-              variant="secondary"
-              loading={savingProfile}
-              onPress={() => void saveProfile()}
-            />
-          </View>
-        </View>
-      </Card>
-
-      <View style={styles.twoColumnRow}>
-        <Card style={styles.compactCard}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ expanded: showProfile }}
-            onPress={() => setShowProfile((value) => !value)}
-            style={styles.disclosureHeader}
-          >
-            <View style={styles.cardHeadingCopy}>
-              <Eyebrow>Goals and guardrails</Eyebrow>
-              <Heading size="small">Coaching profile</Heading>
-            </View>
-            <Text style={styles.disclosureText}>{showProfile ? "Close" : "Edit"}</Text>
+            {savingModel ? (
+              <ActivityIndicator color={colors.textMuted} size="small" />
+            ) : (
+              <Text style={styles.chevron}>⌄</Text>
+            )}
           </Pressable>
-          {showProfile ? (
-            <View style={styles.formStack}>
-              <Field
-                label="Primary goal"
-                value={profileDraft.primaryGoal}
-                onChangeText={(primaryGoal) => setProfileDraft({ ...profileDraft, primaryGoal })}
-                placeholder="Strength, hypertrophy, conditioning…"
-              />
-              <View style={styles.fieldPair}>
-                <View style={styles.pairField}>
-                  <Field
-                    label="Days per week"
-                    keyboardType="number-pad"
-                    value={String(profileDraft.trainingDaysPerWeek)}
-                    onChangeText={(value) => setProfileDraft({ ...profileDraft, trainingDaysPerWeek: Number(value) || 0 })}
-                  />
-                </View>
-                <View style={styles.pairField}>
-                  <Field
-                    label="Minutes per session"
-                    keyboardType="number-pad"
-                    value={String(profileDraft.sessionDurationMin)}
-                    onChangeText={(value) => setProfileDraft({ ...profileDraft, sessionDurationMin: Number(value) || 0 })}
-                  />
-                </View>
+          <View style={styles.headerActions}>
+            <IconButton label="New chat" symbol="＋" onPress={() => void createThread()} disabled={sending} />
+            <IconButton label="Chat history" symbol="☰" onPress={() => setShowThreads(true)} />
+          </View>
+        </View>
+
+        <ScrollView
+          ref={messageListRef}
+          style={styles.messageScroll}
+          contentContainerStyle={[styles.messageContent, !hasConversation && styles.messageContentEmpty]}
+          keyboardShouldPersistTaps="handled"
+          onContentSizeChange={() => messageListRef.current?.scrollToEnd({ animated: hasConversation })}
+        >
+          {!hasConversation ? (
+            <View style={styles.emptyState}>
+              <View style={styles.coachMark}><Text style={styles.coachMarkText}>C</Text></View>
+              <Text style={styles.emptyTitle}>How can I help with your training?</Text>
+              <View style={styles.promptGrid}>
+                {quickPrompts.map((prompt) => (
+                  <Pressable
+                    key={prompt}
+                    accessibilityRole="button"
+                    disabled={!data.modelConfiguration.configured || sending}
+                    onPress={() => void send(prompt)}
+                    style={({ pressed }) => [
+                      styles.promptButton,
+                      (!data.modelConfiguration.configured || sending) && styles.disabled,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.promptText}>{prompt}</Text>
+                    <Text style={styles.promptArrow}>›</Text>
+                  </Pressable>
+                ))}
               </View>
-              <Field
-                label="Equipment"
-                value={profileDraft.equipment}
-                multiline
-                onChangeText={(equipment) => setProfileDraft({ ...profileDraft, equipment })}
-                placeholder="Home gym, barbell, dumbbells…"
-              />
-              <Field
-                label="Limitations"
-                value={profileDraft.limitations}
-                multiline
-                onChangeText={(limitations) => setProfileDraft({ ...profileDraft, limitations })}
-                placeholder="Movements to avoid or discuss with your coach"
-              />
-              <Field
-                label="Preferences"
-                value={profileDraft.preferences}
-                multiline
-                onChangeText={(preferences) => setProfileDraft({ ...profileDraft, preferences })}
-                placeholder="Favorite exercises, progression style, scheduling…"
-              />
-              <Button title="Save coaching profile" loading={savingProfile} onPress={() => void saveProfile()} />
             </View>
           ) : (
-            <Body muted>{profileDraft.primaryGoal} · {profileDraft.trainingDaysPerWeek} days/week · {profileDraft.sessionDurationMin} min</Body>
-          )}
-        </Card>
+            <View style={styles.chatColumn}>
+              {data.messages.map((message) => (
+                message.role === "user" ? (
+                  <View key={message.id} style={styles.userRow}>
+                    <View style={styles.userBubble}>
+                      <Text style={styles.messageText}>{message.content}</Text>
+                    </View>
+                  </View>
+                ) : (
+                  <View key={message.id} style={styles.assistantRow}>
+                    <View style={styles.assistantAvatar}><Text style={styles.assistantAvatarText}>C</Text></View>
+                    <Text style={[styles.messageText, styles.assistantMessage]}>{message.content}</Text>
+                  </View>
+                )
+              ))}
 
-        <Card style={styles.compactCard}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ expanded: showCheckIn }}
-            onPress={() => setShowCheckIn((value) => !value)}
-            style={styles.disclosureHeader}
-          >
-            <View style={styles.cardHeadingCopy}>
-              <Eyebrow>Today</Eyebrow>
-              <Heading size="small">Readiness check-in</Heading>
-            </View>
-            <Text style={styles.disclosureText}>{showCheckIn ? "Close" : "Update"}</Text>
-          </Pressable>
-          {showCheckIn ? (
-            <View style={styles.formStack}>
-              <RatingPicker label="Energy" value={energy} onChange={setEnergy} low="Low" high="High" />
-              <RatingPicker label="Soreness" value={soreness} onChange={setSoreness} low="Fresh" high="Very sore" />
-              <RatingPicker label="Sleep" value={sleepQuality} onChange={setSleepQuality} low="Poor" high="Great" />
-              <Field
-                label="Minutes available"
-                keyboardType="number-pad"
-                value={availableMinutes}
-                onChangeText={setAvailableMinutes}
-              />
-              <Field
-                label="Notes"
-                value={checkInNotes}
-                multiline
-                onChangeText={setCheckInNotes}
-                placeholder="Anything the coach should account for today"
-              />
-              <Button title="Save check-in" loading={savingCheckIn} onPress={() => void saveCheckIn()} />
-            </View>
-          ) : data.checkIns[0] ? (
-            <Body muted>
-              Energy {data.checkIns[0].energy}/5 · Soreness {data.checkIns[0].soreness}/5 · Sleep {data.checkIns[0].sleepQuality}/5
-            </Body>
-          ) : (
-            <Body muted>No check-in yet. Add one when recovery should influence the plan.</Body>
-          )}
-        </Card>
-      </View>
+              {pendingPlans.map((plan) => (
+                <View key={plan.id} style={styles.planCard}>
+                  <View style={styles.planHeader}>
+                    <View style={styles.planBadge}><Text style={styles.planBadgeText}>Routine {plan.routineCode}</Text></View>
+                    <Text style={styles.planTitle}>{plan.summary}</Text>
+                  </View>
+                  <Text style={styles.planRationale}>{plan.rationale}</Text>
+                  <View style={styles.planDiff}>
+                    {plan.diff.slice(0, 4).map((change, index) => (
+                      <Text key={`${plan.id}:${index}`} style={styles.planDiffText}>• {change}</Text>
+                    ))}
+                    {plan.diff.length > 4 ? (
+                      <Text style={styles.planMore}>+{plan.diff.length - 4} more changes</Text>
+                    ) : null}
+                  </View>
+                  <View style={styles.planActions}>
+                    <CompactAction
+                      title="Apply"
+                      primary
+                      loading={planBusy === `${plan.id}:apply:true`}
+                      disabled={Boolean(planBusy)}
+                      onPress={() => void handlePlan(plan.id, "apply", true)}
+                    />
+                    <CompactAction
+                      title="Save draft"
+                      loading={planBusy === `${plan.id}:apply:false`}
+                      disabled={Boolean(planBusy)}
+                      onPress={() => void handlePlan(plan.id, "apply", false)}
+                    />
+                    <CompactAction
+                      title="Reject"
+                      subtle
+                      loading={planBusy === `${plan.id}:reject:true`}
+                      disabled={Boolean(planBusy)}
+                      onPress={() => void handlePlan(plan.id, "reject")}
+                    />
+                  </View>
+                </View>
+              ))}
 
-      {pendingPlans.map((plan) => (
-        <Card key={plan.id} style={styles.planCard}>
-          <View style={styles.planTop}>
-            <View style={styles.planCode}><Text style={styles.planCodeText}>Routine {plan.routineCode}</Text></View>
-            <View style={styles.planHeading}>
-              <Eyebrow>Approval required</Eyebrow>
-              <Heading size="small">{plan.summary}</Heading>
-            </View>
-          </View>
-          <Body muted>{plan.rationale}</Body>
-          <View style={styles.diffList}>
-            {plan.diff.map((change, index) => (
-              <View key={`${plan.id}:${index}`} style={styles.diffRow}>
-                <Text style={styles.diffMarker}>+</Text>
-                <Text style={styles.diffText}>{change}</Text>
-              </View>
-            ))}
-          </View>
-          <View style={styles.planMeta}>
-            <Text style={styles.planMetaText}>{plan.proposedRoutine.exercises.length} exercises</Text>
-            <Text style={styles.planMetaText}>{plan.proposedRoutine.durationMin} min</Text>
-          </View>
-          <View style={styles.planActions}>
-            <Button
-              title="Approve & publish"
-              compact
-              loading={planBusy === `${plan.id}:apply:true`}
-              disabled={Boolean(planBusy)}
-              onPress={() => void handlePlan(plan.id, "apply", true)}
-            />
-            <Button
-              title="Save draft"
-              compact
-              variant="secondary"
-              loading={planBusy === `${plan.id}:apply:false`}
-              disabled={Boolean(planBusy)}
-              onPress={() => void handlePlan(plan.id, "apply", false)}
-            />
-            <Button
-              title="Reject"
-              compact
-              variant="ghost"
-              loading={planBusy === `${plan.id}:reject:true`}
-              disabled={Boolean(planBusy)}
-              onPress={() => void handlePlan(plan.id, "reject")}
-            />
-          </View>
-        </Card>
-      ))}
-
-      <View style={styles.chatHeading}>
-        <View>
-          <Eyebrow>Coach conversation</Eyebrow>
-          <Heading size="medium">Plan with your data</Heading>
-        </View>
-        {pendingPlans.length ? <Text style={styles.pendingCount}>{pendingPlans.length} pending</Text> : null}
-      </View>
-
-      {!data.messages.length ? (
-        <Card style={styles.emptyChat}>
-          <Heading size="small">What should we work on?</Heading>
-          <Body muted>The coach can inspect your real routines, exercise library, recent workouts, and readiness before answering.</Body>
-          <View style={styles.quickPromptList}>
-            {quickPrompts.map((prompt) => (
-              <Pressable
-                key={prompt}
-                accessibilityRole="button"
-                onPress={() => setComposer(prompt)}
-                style={({ pressed }) => [styles.quickPrompt, pressed && styles.pressed]}
-              >
-                <Text style={styles.quickPromptText}>{prompt}</Text>
-                <Text style={styles.quickPromptArrow}>→</Text>
-              </Pressable>
-            ))}
-          </View>
-        </Card>
-      ) : (
-        <View style={styles.messageList}>
-          {data.messages.map((item) => (
-            <View key={item.id} style={[styles.messageBubble, item.role === "user" ? styles.userBubble : styles.coachBubble]}>
-              <Text style={styles.messageRole}>{item.role === "user" ? "You" : "Coach"}</Text>
-              <Text style={styles.messageContent}>{item.content}</Text>
-              {item.role === "assistant" && item.model ? (
-                <Text style={styles.messageMeta}>{item.model} · {item.reasoningEffort}</Text>
+              {sending ? (
+                <View style={styles.assistantRow}>
+                  <View style={styles.assistantAvatar}><Text style={styles.assistantAvatarText}>C</Text></View>
+                  <View style={styles.thinkingRow}>
+                    <ActivityIndicator color={colors.textMuted} size="small" />
+                    <Text style={styles.thinkingText}>Thinking…</Text>
+                  </View>
+                </View>
               ) : null}
             </View>
+          )}
+        </ScrollView>
+
+        <View style={styles.composerDock}>
+          {error ? <Text style={styles.inlineError}>{error}</Text> : null}
+          <View style={styles.composerShell}>
+            <TextInput
+              accessibilityLabel="Message your coach"
+              value={composer}
+              multiline
+              editable={!sending && data.modelConfiguration.configured}
+              onChangeText={setComposer}
+              placeholder={data.modelConfiguration.configured ? "Message Coach" : "OpenAI API key required"}
+              placeholderTextColor={colors.textDim}
+              selectionColor={colors.accent}
+              style={styles.composer}
+            />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Send message"
+              disabled={!composer.trim() || sending || !data.modelConfiguration.configured}
+              onPress={() => void send()}
+              style={({ pressed }) => [
+                styles.sendButton,
+                (!composer.trim() || sending || !data.modelConfiguration.configured) && styles.sendButtonDisabled,
+                pressed && styles.pressed,
+              ]}
+            >
+              {sending ? <ActivityIndicator color={colors.background} size="small" /> : <Text style={styles.sendIcon}>↑</Text>}
+            </Pressable>
+          </View>
+          <Text style={[styles.composerNote, !data.modelConfiguration.configured && styles.setupNote]}>
+            {data.modelConfiguration.configured
+              ? "Coach can make mistakes. Review routine changes before applying."
+              : "Connect OPENAI_API_KEY in Site settings to start chatting."}
+          </Text>
+        </View>
+
+        <OptionModal visible={showModels} title="Model" onClose={() => setShowModels(false)}>
+          <View style={styles.modalSection}>
+            <View style={styles.modalSectionHeader}>
+              <Text style={styles.modalLabel}>Reasoning effort</Text>
+              <Text style={styles.modalHint}>Higher can take longer</Text>
+            </View>
+            <View style={styles.effortRow}>
+              {reasoningEfforts.map((effort) => (
+                <Pressable
+                  key={effort}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: selection.reasoningEffort === effort }}
+                  disabled={savingModel}
+                  onPress={() => chooseReasoningEffort(effort)}
+                  style={({ pressed }) => [
+                    styles.effortChip,
+                    selection.reasoningEffort === effort && styles.effortChipSelected,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={[
+                    styles.effortText,
+                    selection.reasoningEffort === effort && styles.effortTextSelected,
+                  ]}>{effort}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+          <View style={styles.modelListHeader}>
+            <Text style={styles.modalLabel}>Available models</Text>
+            <Pressable
+              accessibilityRole="button"
+              disabled={refreshingModels}
+              onPress={() => void refreshModels()}
+              style={({ pressed }) => [styles.refreshButton, pressed && styles.pressed]}
+            >
+              {refreshingModels ? (
+                <ActivityIndicator color={colors.textMuted} size="small" />
+              ) : (
+                <Text style={styles.refreshText}>Refresh</Text>
+              )}
+            </Pressable>
+          </View>
+          {data.models.map((model) => (
+            <Pressable
+              key={model.id}
+              accessibilityRole="button"
+              accessibilityState={{ selected: selection.model === model.id }}
+              disabled={savingModel}
+              onPress={() => chooseModel(model)}
+              style={({ pressed }) => [
+                styles.optionRow,
+                selection.model === model.id && styles.optionRowSelected,
+                pressed && styles.pressed,
+              ]}
+            >
+              <View style={styles.optionCopy}>
+                <Text style={styles.optionTitle}>{model.label}</Text>
+                <Text style={styles.optionSubtitle}>{model.id}</Text>
+              </View>
+              {selection.model === model.id ? <Text style={styles.optionCheck}>✓</Text> : null}
+            </Pressable>
           ))}
-        </View>
-      )}
+          <Text style={styles.catalogSource}>
+            {data.modelConfiguration.source === "live" ? "Live model catalog" : "Preview model catalog"}
+          </Text>
+        </OptionModal>
 
-      <Card style={styles.composerCard}>
-        <TextInput
-          accessibilityLabel="Message your coach"
-          value={composer}
-          multiline
-          editable={!sending && data.modelConfiguration.configured}
-          onChangeText={setComposer}
-          placeholder={data.modelConfiguration.configured ? "Ask your coach to review or change your training…" : "Connect the model API key to start coaching"}
-          placeholderTextColor={colors.textDim}
-          selectionColor={colors.accent}
-          style={styles.composer}
-        />
-        <View style={styles.composerFooter}>
-          <Text style={styles.composerHint}>Changes are proposed first and never auto-published.</Text>
-          <Button
-            title="Send"
-            compact
-            loading={sending}
-            disabled={!composer.trim() || !data.modelConfiguration.configured}
-            onPress={() => void send()}
-          />
-        </View>
-      </Card>
-
-      <Body muted style={styles.safetyNote}>
-        Coach guidance is for training support, not medical diagnosis. Stop and seek appropriate help for concerning pain or symptoms.
-      </Body>
-
-      <OptionModal
-        visible={showModels}
-        title="Choose a model"
-        onClose={() => setShowModels(false)}
-      >
-        {data.models.map((model) => (
+        <OptionModal visible={showThreads} title="Chats" onClose={() => setShowThreads(false)}>
           <Pressable
-            key={model.id}
             accessibilityRole="button"
-            accessibilityState={{ selected: profileDraft.model === model.id }}
-            onPress={() => chooseModel(model)}
-            style={({ pressed }) => [
-              styles.optionRow,
-              profileDraft.model === model.id && styles.optionRowSelected,
-              pressed && styles.pressed,
-            ]}
+            onPress={() => void createThread()}
+            style={({ pressed }) => [styles.newChatRow, pressed && styles.pressed]}
           >
-            <View style={styles.optionCopy}>
-              <Text style={styles.optionTitle}>{model.label}</Text>
-              <Text style={styles.optionSubtitle}>{model.id}</Text>
-              <Text style={styles.optionSubtitle}>Reasoning: {model.reasoningEfforts.join(", ")}</Text>
-            </View>
-            {profileDraft.model === model.id ? <Text style={styles.optionCheck}>✓</Text> : null}
+            <Text style={styles.newChatPlus}>＋</Text>
+            <Text style={styles.newChatText}>New chat</Text>
           </Pressable>
-        ))}
-      </OptionModal>
-
-      <OptionModal
-        visible={showThreads}
-        title="Coaching history"
-        onClose={() => setShowThreads(false)}
-      >
-        <Button title="Start a new conversation" onPress={() => void createThread()} />
-        {data.threads.map((thread) => (
-          <Pressable
-            key={thread.id}
-            accessibilityRole="button"
-            accessibilityState={{ selected: data.thread.id === thread.id }}
-            onPress={() => {
-              setShowThreads(false);
-              void load(thread.id);
-            }}
-            style={({ pressed }) => [
-              styles.optionRow,
-              data.thread.id === thread.id && styles.optionRowSelected,
-              pressed && styles.pressed,
-            ]}
-          >
-            <View style={styles.optionCopy}>
-              <Text style={styles.optionTitle}>{thread.title}</Text>
-              <Text style={styles.optionSubtitle}>{new Date(thread.updatedAt).toLocaleString()}</Text>
-            </View>
-          </Pressable>
-        ))}
-      </OptionModal>
+          {data.threads.map((thread) => (
+            <Pressable
+              key={thread.id}
+              accessibilityRole="button"
+              accessibilityState={{ selected: data.thread.id === thread.id }}
+              onPress={() => {
+                setShowThreads(false);
+                void load(thread.id);
+              }}
+              style={({ pressed }) => [
+                styles.optionRow,
+                data.thread.id === thread.id && styles.optionRowSelected,
+                pressed && styles.pressed,
+              ]}
+            >
+              <View style={styles.optionCopy}>
+                <Text numberOfLines={1} style={styles.optionTitle}>{thread.title}</Text>
+                <Text style={styles.optionSubtitle}>{new Date(thread.updatedAt).toLocaleString()}</Text>
+              </View>
+            </Pressable>
+          ))}
+        </OptionModal>
+      </KeyboardAvoidingView>
     </Screen>
   );
 }
 
-function ChoiceChip({
-  title,
-  selected,
+function IconButton({
+  label,
+  symbol,
   onPress,
+  disabled = false,
 }: {
-  title: string;
-  selected: boolean;
+  label: string;
+  symbol: string;
   onPress: () => void;
+  disabled?: boolean;
 }) {
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityState={{ selected }}
+      accessibilityLabel={label}
+      disabled={disabled}
       onPress={onPress}
-      style={({ pressed }) => [styles.chip, selected && styles.chipSelected, pressed && styles.pressed]}
+      style={({ pressed }) => [styles.iconButton, disabled && styles.disabled, pressed && styles.pressed]}
     >
-      <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{title}</Text>
+      <Text style={styles.iconButtonText}>{symbol}</Text>
     </Pressable>
   );
 }
 
-function RatingPicker({
-  label,
-  value,
-  onChange,
-  low,
-  high,
+function CompactAction({
+  title,
+  onPress,
+  primary = false,
+  subtle = false,
+  loading = false,
+  disabled = false,
 }: {
-  label: string;
-  value: number;
-  onChange: (value: number) => void;
-  low: string;
-  high: string;
+  title: string;
+  onPress: () => void;
+  primary?: boolean;
+  subtle?: boolean;
+  loading?: boolean;
+  disabled?: boolean;
 }) {
   return (
-    <View style={styles.ratingSection}>
-      <View style={styles.ratingLabels}>
-        <Text style={styles.fieldLabel}>{label}</Text>
-        <Text style={styles.helperText}>{low} → {high}</Text>
-      </View>
-      <View style={styles.ratingRow}>
-        {[1, 2, 3, 4, 5].map((ratingValue) => (
-          <ChoiceChip
-            key={ratingValue}
-            title={String(ratingValue)}
-            selected={value === ratingValue}
-            onPress={() => onChange(ratingValue)}
-          />
-        ))}
-      </View>
-    </View>
+    <Pressable
+      accessibilityRole="button"
+      disabled={disabled || loading}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.compactAction,
+        primary && styles.compactActionPrimary,
+        subtle && styles.compactActionSubtle,
+        (disabled || loading) && styles.disabled,
+        pressed && styles.pressed,
+      ]}
+    >
+      {loading ? (
+        <ActivityIndicator color={primary ? colors.background : colors.text} size="small" />
+      ) : (
+        <Text style={[
+          styles.compactActionText,
+          primary && styles.compactActionTextPrimary,
+          subtle && styles.compactActionTextSubtle,
+        ]}>{title}</Text>
+      )}
+    </Pressable>
   );
 }
 
@@ -784,115 +638,316 @@ function OptionModal({
   visible: boolean;
   title: string;
   onClose: () => void;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.modalBackdrop}>
-        <Card style={styles.modalCard}>
-          <View style={styles.modalHeading}>
-            <Heading size="medium">{title}</Heading>
-            <Button title="Close" compact variant="ghost" onPress={onClose} />
+    <Modal animationType="fade" transparent visible={visible} onRequestClose={onClose}>
+      <Pressable accessibilityRole="button" accessibilityLabel={`Close ${title}`} onPress={onClose} style={styles.modalBackdrop}>
+        <Pressable accessibilityRole="none" onPress={() => undefined} style={styles.modalPanel}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>{title}</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel={`Close ${title}`} onPress={onClose} style={styles.modalClose}>
+              <Text style={styles.modalCloseText}>×</Text>
+            </Pressable>
           </View>
-          <ScrollView contentContainerStyle={styles.modalList} keyboardShouldPersistTaps="handled">
+          <ScrollView contentContainerStyle={styles.modalContent} keyboardShouldPersistTaps="handled">
             {children}
           </ScrollView>
-        </Card>
-      </View>
+        </Pressable>
+      </Pressable>
     </Modal>
   );
 }
 
-function toProfileDraft(profile: CoachProfile): ProfileDraft {
-  return {
-    primaryGoal: profile.primaryGoal,
-    trainingDaysPerWeek: profile.trainingDaysPerWeek,
-    sessionDurationMin: profile.sessionDurationMin,
-    equipment: profile.equipment,
-    limitations: profile.limitations,
-    preferences: profile.preferences,
-    model: profile.model,
-    reasoningEffort: profile.reasoningEffort,
-  };
-}
-
 const styles = StyleSheet.create({
-  heroRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.lg },
-  heroCopy: { flex: 1, gap: spacing.sm },
-  statusBadge: { flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radii.pill, backgroundColor: colors.surfaceRaised, borderWidth: 1, borderColor: colors.border },
-  statusDot: { width: 8, height: 8, borderRadius: radii.pill, backgroundColor: colors.success },
-  statusDotWarning: { backgroundColor: colors.warning },
-  statusText: { color: colors.textMuted, fontSize: 12, fontWeight: "800" },
-  controlCard: { borderColor: colors.borderStrong },
-  cardHeadingRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md },
-  cardHeadingCopy: { flex: 1, gap: spacing.xs },
-  inlineActions: { flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: spacing.xs },
-  selectorRow: { flexDirection: "row", alignItems: "flex-end", gap: spacing.md },
-  selectorColumn: { flex: 1, gap: 6 },
-  sourceColumn: { alignItems: "flex-end", gap: 2 },
-  sourceText: { color: colors.textDim, fontSize: 11, fontWeight: "700" },
-  fieldLabel: { color: colors.textMuted, fontSize: 12, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.7 },
-  selectButton: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: spacing.md, borderWidth: 1, borderColor: colors.borderStrong, backgroundColor: colors.background, borderRadius: radii.md, paddingHorizontal: spacing.md },
-  selectValue: { flex: 1, color: colors.text, fontSize: 15, fontWeight: "700" },
-  selectArrow: { color: colors.accent, fontSize: 18 },
-  effortSection: { gap: spacing.sm },
-  chipRow: { gap: spacing.sm, paddingVertical: 2 },
-  chip: { minWidth: 46, minHeight: 38, alignItems: "center", justifyContent: "center", paddingHorizontal: spacing.md, borderRadius: radii.pill, borderWidth: 1, borderColor: colors.borderStrong, backgroundColor: colors.background },
-  chipSelected: { borderColor: colors.accent, backgroundColor: colors.accentDark },
-  chipText: { color: colors.textMuted, fontSize: 12, fontWeight: "800", textTransform: "capitalize" },
-  chipTextSelected: { color: colors.accent },
-  helperText: { color: colors.textDim, fontSize: 11, lineHeight: 16 },
-  modelSaveRow: { alignItems: "flex-start", marginTop: spacing.xs },
-  twoColumnRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.lg, flexWrap: "wrap" },
-  compactCard: { flex: 1, minWidth: 280 },
-  disclosureHeader: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: spacing.md },
-  disclosureText: { color: colors.accent, fontSize: 11, fontWeight: "800", textTransform: "uppercase" },
-  formStack: { gap: spacing.md },
-  fieldPair: { flexDirection: "row", gap: spacing.md },
-  pairField: { flex: 1 },
-  ratingSection: { gap: spacing.sm },
-  ratingLabels: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: spacing.sm },
-  ratingRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
-  planCard: { borderColor: colors.accent, backgroundColor: colors.accentDark },
-  planTop: { flexDirection: "row", alignItems: "center", gap: spacing.md },
-  planCode: { minHeight: 38, paddingHorizontal: spacing.md, alignItems: "center", justifyContent: "center", borderRadius: radii.sm, backgroundColor: colors.accent },
-  planCodeText: { color: colors.background, fontSize: 11, fontWeight: "900", textTransform: "uppercase" },
-  planHeading: { flex: 1, gap: spacing.xs },
-  diffList: { gap: spacing.sm },
-  diffRow: { flexDirection: "row", gap: spacing.sm, paddingVertical: spacing.sm, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.borderStrong },
-  diffMarker: { color: colors.accent, fontSize: 16, fontWeight: "900" },
-  diffText: { flex: 1, color: colors.text, fontSize: 13, lineHeight: 19 },
-  planMeta: { flexDirection: "row", gap: spacing.md },
-  planMetaText: { color: colors.textMuted, fontSize: 12, fontWeight: "700" },
+  screen: {
+    flex: 1,
+    maxWidth: 960,
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
+    gap: 0,
+  },
+  keyboardView: { flex: 1 },
+  errorScreen: { flex: 1, alignItems: "center", justifyContent: "center" },
+  errorText: { color: colors.danger, fontSize: 14, textAlign: "center" },
+  header: {
+    minHeight: 58,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  modelTrigger: {
+    minHeight: 42,
+    maxWidth: "75%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.md,
+  },
+  modelTriggerText: { color: colors.text, fontSize: 16, fontWeight: "700" },
+  chevron: { color: colors.textMuted, fontSize: 18, lineHeight: 18 },
+  headerActions: { flexDirection: "row", gap: spacing.xs },
+  iconButton: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.pill,
+  },
+  iconButtonText: { color: colors.textMuted, fontSize: 21, lineHeight: 24, fontWeight: "600" },
+  messageScroll: { flex: 1 },
+  messageContent: {
+    flexGrow: 1,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.xl,
+    paddingBottom: spacing.xl,
+  },
+  messageContentEmpty: { justifyContent: "center" },
+  emptyState: { width: "100%", maxWidth: 720, alignSelf: "center", alignItems: "center" },
+  coachMark: {
+    width: 46,
+    height: 46,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.pill,
+    backgroundColor: colors.accent,
+    marginBottom: spacing.lg,
+  },
+  coachMarkText: { color: colors.background, fontSize: 22, fontWeight: "900" },
+  emptyTitle: {
+    color: colors.text,
+    fontSize: 25,
+    lineHeight: 31,
+    fontWeight: "700",
+    textAlign: "center",
+    letterSpacing: -0.5,
+    marginBottom: spacing.xl,
+  },
+  promptGrid: { width: "100%", flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  promptButton: {
+    minWidth: 240,
+    flexGrow: 1,
+    flexBasis: "47%",
+    minHeight: 52,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.md,
+    paddingHorizontal: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.lg,
+    backgroundColor: colors.surface,
+  },
+  promptText: { flex: 1, color: colors.textMuted, fontSize: 14, lineHeight: 19 },
+  promptArrow: { color: colors.textDim, fontSize: 22 },
+  chatColumn: { width: "100%", maxWidth: 760, alignSelf: "center", gap: spacing.xl },
+  userRow: { width: "100%", alignItems: "flex-end" },
+  userBubble: {
+    maxWidth: "82%",
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderRadius: 20,
+    borderBottomRightRadius: 6,
+    backgroundColor: colors.surfaceRaised,
+  },
+  assistantRow: { width: "100%", flexDirection: "row", alignItems: "flex-start", gap: spacing.md },
+  assistantAvatar: {
+    width: 28,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.pill,
+    backgroundColor: colors.accent,
+    marginTop: 1,
+  },
+  assistantAvatarText: { color: colors.background, fontSize: 13, fontWeight: "900" },
+  messageText: { color: colors.text, fontSize: 15, lineHeight: 23 },
+  assistantMessage: { flex: 1, paddingTop: 2 },
+  thinkingRow: { minHeight: 28, flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  thinkingText: { color: colors.textMuted, fontSize: 14 },
+  planCard: {
+    marginLeft: 40,
+    padding: spacing.lg,
+    gap: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: radii.lg,
+    backgroundColor: colors.surface,
+  },
+  planHeader: { flexDirection: "row", alignItems: "center", gap: spacing.md, flexWrap: "wrap" },
+  planBadge: { borderRadius: radii.pill, backgroundColor: colors.accentDark, paddingHorizontal: spacing.md, paddingVertical: 5 },
+  planBadgeText: { color: colors.accent, fontSize: 11, fontWeight: "800" },
+  planTitle: { flex: 1, minWidth: 180, color: colors.text, fontSize: 15, fontWeight: "800" },
+  planRationale: { color: colors.textMuted, fontSize: 13, lineHeight: 19 },
+  planDiff: { gap: 5 },
+  planDiffText: { color: colors.text, fontSize: 13, lineHeight: 18 },
+  planMore: { color: colors.textDim, fontSize: 12, marginTop: 2 },
   planActions: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
-  chatHeading: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", gap: spacing.md },
-  pendingCount: { color: colors.warning, fontSize: 12, fontWeight: "800" },
-  emptyChat: { gap: spacing.lg },
-  quickPromptList: { gap: spacing.sm },
-  quickPrompt: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: spacing.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radii.md, backgroundColor: colors.surfaceRaised, borderWidth: 1, borderColor: colors.border },
-  quickPromptText: { flex: 1, color: colors.text, fontSize: 13, lineHeight: 18 },
-  quickPromptArrow: { color: colors.accent, fontSize: 18 },
-  messageList: { gap: spacing.md },
-  messageBubble: { maxWidth: "92%", padding: spacing.lg, borderRadius: radii.lg, gap: spacing.sm, borderWidth: 1 },
-  userBubble: { alignSelf: "flex-end", backgroundColor: colors.accentDark, borderColor: colors.accent },
-  coachBubble: { alignSelf: "flex-start", backgroundColor: colors.surface, borderColor: colors.border },
-  messageRole: { color: colors.accent, fontSize: 10, fontWeight: "900", letterSpacing: 1, textTransform: "uppercase" },
-  messageContent: { color: colors.text, fontSize: 15, lineHeight: 23 },
-  messageMeta: { color: colors.textDim, fontSize: 10 },
-  composerCard: { borderColor: colors.borderStrong },
-  composer: { minHeight: 110, color: colors.text, fontSize: 16, lineHeight: 23, textAlignVertical: "top", padding: spacing.md, borderRadius: radii.md, borderWidth: 1, borderColor: colors.borderStrong, backgroundColor: colors.background },
-  composerFooter: { flexDirection: "row", alignItems: "center", gap: spacing.md },
-  composerHint: { flex: 1, color: colors.textDim, fontSize: 11, lineHeight: 16 },
-  safetyNote: { textAlign: "center", fontSize: 11, lineHeight: 17 },
-  modalBackdrop: { flex: 1, alignItems: "center", justifyContent: "center", padding: spacing.lg, backgroundColor: colors.overlay },
-  modalCard: { width: "100%", maxWidth: 620, maxHeight: "86%", borderColor: colors.borderStrong, padding: spacing.xl },
-  modalHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md },
-  modalList: { gap: spacing.sm },
-  optionRow: { minHeight: 64, flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, borderRadius: radii.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.background },
-  optionRowSelected: { borderColor: colors.accent, backgroundColor: colors.accentDark },
-  optionCopy: { flex: 1, gap: 3 },
-  optionTitle: { color: colors.text, fontSize: 15, fontWeight: "800" },
-  optionSubtitle: { color: colors.textMuted, fontSize: 11 },
-  optionCheck: { color: colors.accent, fontSize: 20, fontWeight: "900" },
-  pressed: { opacity: 0.72 },
+  compactAction: {
+    minHeight: 36,
+    minWidth: 74,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: radii.md,
+    backgroundColor: colors.surfaceRaised,
+  },
+  compactActionPrimary: { backgroundColor: colors.accent, borderColor: colors.accent },
+  compactActionSubtle: { backgroundColor: "transparent", borderColor: "transparent" },
+  compactActionText: { color: colors.text, fontSize: 13, fontWeight: "800" },
+  compactActionTextPrimary: { color: colors.background },
+  compactActionTextSubtle: { color: colors.textMuted },
+  composerDock: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.md,
+    backgroundColor: colors.background,
+  },
+  inlineError: {
+    width: "100%",
+    maxWidth: 760,
+    alignSelf: "center",
+    color: colors.danger,
+    fontSize: 12,
+    lineHeight: 17,
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.sm,
+  },
+  composerShell: {
+    width: "100%",
+    maxWidth: 760,
+    minHeight: 58,
+    maxHeight: 180,
+    alignSelf: "center",
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: spacing.sm,
+    padding: 9,
+    paddingLeft: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: 27,
+    backgroundColor: colors.surfaceRaised,
+  },
+  composer: {
+    flex: 1,
+    minHeight: 38,
+    maxHeight: 150,
+    paddingTop: 8,
+    paddingBottom: 7,
+    color: colors.text,
+    fontSize: 16,
+    lineHeight: 22,
+    textAlignVertical: "top",
+  },
+  sendButton: {
+    width: 38,
+    height: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.pill,
+    backgroundColor: colors.accent,
+  },
+  sendButtonDisabled: { backgroundColor: colors.borderStrong, opacity: 0.65 },
+  sendIcon: { color: colors.background, fontSize: 22, lineHeight: 23, fontWeight: "900" },
+  composerNote: {
+    color: colors.textDim,
+    fontSize: 10,
+    lineHeight: 14,
+    textAlign: "center",
+    marginTop: 7,
+  },
+  setupNote: { color: colors.warning },
+  modalBackdrop: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: spacing.lg,
+    backgroundColor: colors.overlay,
+  },
+  modalPanel: {
+    width: "100%",
+    maxWidth: 520,
+    maxHeight: "82%",
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: radii.lg,
+    backgroundColor: colors.surface,
+  },
+  modalHeader: {
+    minHeight: 58,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: spacing.lg,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  modalTitle: { color: colors.text, fontSize: 17, fontWeight: "800" },
+  modalClose: { width: 36, height: 36, alignItems: "center", justifyContent: "center", borderRadius: radii.pill },
+  modalCloseText: { color: colors.textMuted, fontSize: 26, lineHeight: 28 },
+  modalContent: { padding: spacing.md, gap: spacing.sm },
+  modalSection: { padding: spacing.sm, gap: spacing.md },
+  modalSectionHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md },
+  modalLabel: { color: colors.textMuted, fontSize: 12, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.7 },
+  modalHint: { color: colors.textDim, fontSize: 11 },
+  effortRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  effortChip: {
+    minHeight: 34,
+    justifyContent: "center",
+    paddingHorizontal: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.pill,
+  },
+  effortChipSelected: { borderColor: colors.accent, backgroundColor: colors.accentDark },
+  effortText: { color: colors.textMuted, fontSize: 12, fontWeight: "700", textTransform: "capitalize" },
+  effortTextSelected: { color: colors.accent },
+  modelListHeader: {
+    minHeight: 42,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: spacing.sm,
+    marginTop: spacing.sm,
+  },
+  refreshButton: { minWidth: 64, minHeight: 34, alignItems: "center", justifyContent: "center", borderRadius: radii.md },
+  refreshText: { color: colors.textMuted, fontSize: 12, fontWeight: "700" },
+  optionRow: {
+    minHeight: 58,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radii.md,
+  },
+  optionRowSelected: { backgroundColor: colors.surfaceRaised },
+  optionCopy: { flex: 1, gap: 2 },
+  optionTitle: { color: colors.text, fontSize: 14, fontWeight: "700" },
+  optionSubtitle: { color: colors.textDim, fontSize: 11 },
+  optionCheck: { color: colors.accent, fontSize: 18, fontWeight: "800" },
+  catalogSource: { color: colors.textDim, fontSize: 10, textAlign: "center", marginVertical: spacing.sm },
+  newChatRow: {
+    minHeight: 52,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.md,
+    backgroundColor: colors.surfaceRaised,
+  },
+  newChatPlus: { color: colors.text, fontSize: 20 },
+  newChatText: { color: colors.text, fontSize: 14, fontWeight: "800" },
+  pressed: { opacity: 0.7 },
+  disabled: { opacity: 0.4 },
 });
