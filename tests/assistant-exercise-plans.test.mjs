@@ -72,7 +72,7 @@ function responseTool(id, callId, name, argumentsValue) {
   };
 }
 
-test("Coach exercise-library plans require review and enforce owner, state, and revision boundaries", async (context) => {
+test("Coach review cards are single-approval and enforce owner, state, and revision boundaries", async (context) => {
   const bundle = await build({
     absWorkingDir: root,
     entryPoints: ["worker/index.ts"],
@@ -185,15 +185,6 @@ test("Coach exercise-library plans require review and enforce owner, state, and 
       "SELECT COUNT(*) AS count FROM assistant_exercise_change_plans WHERE owner_email = ?",
       ownerEmail,
     );
-    enqueueText(`Plan: ${summary}. I will wait for your approval.`);
-    const presented = await sendMessage(thread.id, `Please ${summary.toLowerCase()}.`);
-    assertStatus(presented, 201);
-    assert.equal(
-      await count("SELECT COUNT(*) AS count FROM assistant_exercise_change_plans WHERE owner_email = ?", ownerEmail),
-      plansBefore,
-      "Presenting a plan must not stage or apply a write",
-    );
-
     if (action === "create") {
       enqueueTool("search_exercises", { query: proposedExercise.name, includeArchived: true });
     } else {
@@ -205,12 +196,22 @@ test("Coach exercise-library plans require review and enforce owner, state, and 
       baseUpdatedAt: exercise?.updatedAt ?? null,
       proposedExercise,
       summary,
-      rationale: `Approved integration-test ${action} plan.`,
+      rationale: `Integration-test ${action} review plan.`,
     });
-    enqueueText("The approved plan is staged for final review in the app.");
-    const approved = await sendMessage(thread.id, "I approve that exact plan.");
-    const payload = assertStatus(approved, 201);
+    enqueueText("The review card is ready. Nothing has changed yet.");
+    const staged = await sendMessage(thread.id, `Please ${summary.toLowerCase()}.`);
+    const payload = assertStatus(staged, 201);
     assert.equal(queuedResponses.length, 0, "Every queued model response should be consumed");
+    assert.equal(
+      await count("SELECT COUNT(*) AS count FROM assistant_exercise_change_plans WHERE owner_email = ?", ownerEmail),
+      plansBefore + 1,
+      "One initial user request should stage one review card",
+    );
+    assert.equal(
+      await count("SELECT COUNT(*) AS count FROM assistant_messages WHERE owner_email = ? AND thread_id = ? AND role = 'user'", ownerEmail, thread.id),
+      1,
+      "Staging a review card must not require a second verbal approval message",
+    );
     const plan = payload.plans.find((candidate) => (
       candidate.kind === "exercise" && candidate.action === action && candidate.summary === summary
     ));
@@ -294,7 +295,7 @@ test("Coach exercise-library plans require review and enforce owner, state, and 
     assertStatus(await request(`/api/v1/assistant/plans/${plan.id}/apply`, { method: "POST", body: {} }), 409);
   });
 
-  await context.test("Reject is terminal and never mutates the library", async () => {
+  await context.test("Dismiss is terminal and never mutates the library", async () => {
     const name = "Coach Rejected Carry";
     const { plan } = await stageExercisePlan({
       action: "create",
@@ -308,6 +309,84 @@ test("Coach exercise-library plans require review and enforce owner, state, and 
       await count("SELECT COUNT(*) AS count FROM exercise_catalog WHERE owner_email = ? AND normalized_name = ?", ownerEmail, name.toLowerCase()),
       0,
     );
+  });
+
+  await context.test("one routine request stages an exact review card without creating a version", async () => {
+    const exercise = await createExercise("Coach Routine Review Exercise");
+    const created = assertStatus(await request("/api/v1/routines", {
+      method: "POST",
+      body: { code: "COACH-REVIEW", version: singleSetRoutine(exercise.id, "Review baseline") },
+    }), 201).routine;
+    const current = created.currentVersion;
+    assert.ok(current);
+    const placement = current.exercises[0];
+    const set = placement.sets[0];
+    const proposedRoutine = {
+      focus: current.focus,
+      summary: "Exact review-card coverage",
+      durationMin: current.durationMin,
+      exercises: [{
+        sourceRoutineExerciseId: placement.id,
+        exerciseId: placement.exerciseId,
+        position: placement.position,
+        supersetGroup: "A",
+        instructions: "Use a controlled three-second lowering phase.",
+        notes: "Stop if technique changes.",
+        sets: [{
+          sourceRoutineSetId: set.id,
+          position: set.position,
+          setType: set.setType,
+          targetType: set.targetType,
+          targetMin: set.targetMin,
+          targetMax: set.targetMax,
+          targetDisplay: set.targetDisplay,
+          targetRirMin: set.targetRirMin,
+          targetRirMax: set.targetRirMax,
+          restAfterSec: set.restAfterSec,
+          restRule: "after_superset",
+          loadInstruction: "Use the heaviest technically clean load.",
+          sideMode: set.sideMode,
+          tempo: "3-1-1",
+          notes: "Keep the final rep smooth.",
+        }],
+      }],
+    };
+    const versionsBefore = await count("SELECT COUNT(*) AS count FROM routine_versions WHERE routine_id = ?", created.id);
+    const thread = await createThread();
+    enqueueTool("get_routine", { routineId: created.id });
+    enqueueTool("propose_routine_change", {
+      routineId: created.id,
+      baseVersionId: created.currentVersionId,
+      proposedRoutine,
+      summary: "Update the detailed set prescription",
+      rationale: "Make every requested field visible before the user chooses an action.",
+    });
+    enqueueText("The review card is ready. Nothing has changed yet.");
+    const staged = assertStatus(await sendMessage(thread.id, "Update this routine exactly as requested."), 201);
+    const plan = staged.plans.find((candidate) => candidate.kind === "routine" && candidate.routineCode === "COACH-REVIEW");
+    assert.ok(plan);
+    assert.equal(plan.status, "pending");
+    assert.match(plan.diff.join("\n"), /Routine summary.*Assistant exercise-plan integration test.*Exact review-card coverage/i);
+    assert.match(plan.diff.join("\n"), /exercise instructions.*controlled three-second/i);
+    assert.match(plan.diff.join("\n"), /superset group.*"A"/i);
+    assert.match(plan.diff.join("\n"), /rest rule.*after_superset/i);
+    assert.match(plan.diff.join("\n"), /load instruction.*heaviest technically clean/i);
+    assert.match(plan.diff.join("\n"), /tempo.*3-1-1/i);
+    assert.match(plan.diff.join("\n"), /set 1.*notes.*final rep smooth/i);
+    assert.equal(await count("SELECT COUNT(*) AS count FROM routine_versions WHERE routine_id = ?", created.id), versionsBefore);
+    assert.equal((await first("SELECT current_version_id AS currentVersionId FROM routines WHERE id = ?", created.id))?.currentVersionId, created.currentVersionId);
+    assert.equal(
+      await count("SELECT COUNT(*) AS count FROM assistant_messages WHERE thread_id = ? AND role = 'user'", thread.id),
+      1,
+      "The review card should be staged from the initial request",
+    );
+
+    assertStatus(await request(`/api/v1/assistant/plans/${plan.id}/apply`, {
+      method: "POST",
+      body: { publish: false },
+    }), 200);
+    assert.equal(await count("SELECT COUNT(*) AS count FROM routine_versions WHERE routine_id = ?", created.id), versionsBefore + 1);
+    assert.equal((await first("SELECT current_version_id AS currentVersionId FROM routines WHERE id = ?", created.id))?.currentVersionId, created.currentVersionId);
   });
 
   await context.test("stale update and archive plans cannot overwrite intervening changes", async () => {
@@ -387,4 +466,5 @@ test("Coach exercise-library plans require review and enforce owner, state, and 
   assert.equal(queuedResponses.length, 0);
   assert.ok(responseRequests.length >= 1);
   assert.ok(responseRequests.every((body) => body.parallel_tool_calls === false));
+  assert.ok(responseRequests.some((body) => body.tool_choice === "none"), "A staged card should end tool use for that turn");
 });

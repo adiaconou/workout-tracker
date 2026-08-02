@@ -66,7 +66,7 @@ test("keeps published versions immutable and materializes normalized workout row
   assert.match(store, /status = 'Partial'/);
 });
 
-test("runs an owner-scoped coaching assistant with strict tools and approval-gated writes", async () => {
+test("runs an owner-scoped coaching assistant with strict review cards and user-controlled writes", async () => {
   const [api, assistant, toolLoop, models, types, schema, coachScreen, repository] = await Promise.all([
     readFile(new URL("server/api.ts", root), "utf8"),
     readFile(new URL("server/assistant.ts", root), "utf8"),
@@ -92,25 +92,32 @@ test("runs an owner-scoped coaching assistant with strict tools and approval-gat
   assert.match(toolLoop, /defaultCoachRunDurationMs = 4 \* 60_000/);
   assert.match(toolLoop, /canonicalJson/);
   assert.match(toolLoop, /repeatedCallCount >= repeatedCallLimit/);
-  assert.match(assistant, /isWriteTool: \(name\) => \["propose_routine_change", "propose_exercise_change"\]\.includes\(name\)/);
+  assert.match(toolLoop, /proposalStaged = true/);
+  assert.match(toolLoop, /forceFinalResponse = true/);
+  assert.match(assistant, /isProposalTool: \(name\) => \["propose_routine_change", "propose_exercise_change"\]\.includes\(name\)/);
   assert.match(toolLoop, /forceFinalResponse \? "none" : "auto"/);
   assert.match(toolLoop, /response\.status === "incomplete"/);
   assert.match(toolLoop, /response\.status !== "completed"/);
   assert.match(toolLoop, /reason === "max_output_tokens"/);
   assert.match(assistant, /strict: true/);
   assert.match(assistant, /propose_routine_change/);
-  assert.match(assistant, /Change-control policy \(always follow this policy\)/);
-  assert.match(assistant, /read-only tools to investigate/);
+  assert.match(assistant, /Change review policy \(always follow this policy\)/);
+  assert.match(assistant, /read-only tools to inspect and verify/);
   assert.match(assistant, /do not repeat an identical tool call unless the underlying data could have changed/);
-  assert.match(assistant, /Never call a write tool in the same response where you first present its plan/);
-  assert.match(assistant, /explicit approval in a later message/);
-  assert.match(assistant, /initial request to make a change is not approval/);
-  assert.match(assistant, /Do not infer approval from silence or an ambiguous response/);
-  assert.match(assistant, /if the plan changes materially.*wait for approval again/is);
-  assert.match(assistant, /re-read the routine.*then and only then call propose_routine_change/is);
-  assert.match(assistant, /re-read the target.*then and only then call propose_exercise_change/is);
-  assert.match(assistant, /Only after the user explicitly approves a plan presented in an earlier assistant message/);
-  assert.match(assistant, /This does not apply or publish the change/);
+  assert.match(assistant, /review-staging tools/);
+  assert.match(assistant, /stage the matching review card in that same turn/);
+  assert.match(assistant, /Do not ask for verbal approval before staging it/);
+  assert.match(assistant, /asks only for advice or options.*without staging a review card/is);
+  assert.match(assistant, /sourceRoutineExerciseId/);
+  assert.match(assistant, /sourceRoutineSetId/);
+  assert.match(assistant, /required: \["sourceRoutineExerciseId", "exerciseId"/);
+  assert.match(assistant, /"sourceRoutineSetId", "position", "setType"/);
+  assert.match(assistant, /only approval actions that mutate domain data/);
+  assert.match(assistant, /prior chat approval is not required/);
+  assert.match(assistant, /cannot create or publish a routine version or change the current routine/);
+  assert.match(assistant, /status: "ready_for_review"/);
+  assert.doesNotMatch(assistant, /explicit approval in a later message/);
+  assert.doesNotMatch(assistant, /Only after the user explicitly approves a plan/);
   assert.match(assistant, /status = 'pending'/);
   assert.match(assistant, /childAction === "apply" && request\.method === "POST"/);
   assert.match(assistant, /routine\.currentVersionId !== plan\.baseVersionId/);

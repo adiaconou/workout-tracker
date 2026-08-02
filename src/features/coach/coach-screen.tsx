@@ -392,25 +392,23 @@ export function CoachScreen() {
                   <View style={styles.planHeader}>
                     <View style={styles.planBadge}>
                       <Text style={styles.planBadgeText}>
-                        {plan.kind === "routine" ? `Routine ${plan.routineCode}` : `Exercise · ${exerciseActionLabel(plan.action)}`}
+                        {plan.kind === "routine" ? "Review routine change" : `Review exercise ${exerciseActionLabel(plan.action).toLowerCase()}`}
                       </Text>
                     </View>
                     <Text style={styles.planTitle}>
-                      {plan.kind === "exercise" ? `${plan.exerciseName}: ${plan.summary}` : plan.summary}
+                      {plan.kind === "exercise" ? `${plan.exerciseName}: ${plan.summary}` : `Routine ${plan.routineCode}: ${plan.summary}`}
                     </Text>
                   </View>
                   <Text style={styles.planRationale}>{plan.rationale}</Text>
+                  <Text style={styles.planSafety}>Nothing changes until you choose an action.</Text>
                   <View style={styles.planDiff}>
-                    {(plan.kind === "exercise" ? plan.diff : plan.diff.slice(0, 4)).map((change, index) => (
+                    {plan.diff.map((change, index) => (
                       <Text key={`${plan.id}:${index}`} style={styles.planDiffText}>• {change}</Text>
                     ))}
-                    {plan.kind === "routine" && plan.diff.length > 4 ? (
-                      <Text style={styles.planMore}>+{plan.diff.length - 4} more changes</Text>
-                    ) : null}
                   </View>
                   <View style={styles.planActions}>
                     <CompactAction
-                      title={plan.kind === "exercise" ? exerciseApplyLabel(plan.action) : "Apply"}
+                      title={plan.kind === "exercise" ? exerciseApplyLabel(plan.action) : "Apply & publish"}
                       primary
                       loading={planBusy === `${plan.id}:apply:true`}
                       disabled={Boolean(planBusy)}
@@ -418,14 +416,14 @@ export function CoachScreen() {
                     />
                     {plan.kind === "routine" ? (
                       <CompactAction
-                        title="Save draft"
+                        title="Save as draft"
                         loading={planBusy === `${plan.id}:apply:false`}
                         disabled={Boolean(planBusy)}
                         onPress={() => void handlePlan(plan.id, "apply", false)}
                       />
                     ) : null}
                     <CompactAction
-                      title="Reject"
+                      title="Dismiss"
                       subtle
                       loading={planBusy === `${plan.id}:reject:true`}
                       disabled={Boolean(planBusy)}
@@ -478,7 +476,7 @@ export function CoachScreen() {
           </View>
           <Text style={[styles.composerNote, !data.modelConfiguration.configured && styles.setupNote]}>
             {data.modelConfiguration.configured
-              ? "Coach can make mistakes. Review proposed changes before applying."
+              ? "Review each proposed change. Only the action buttons make changes."
               : "Connect OPENAI_API_KEY in Site settings to start chatting."}
           </Text>
         </View>
@@ -687,7 +685,7 @@ function exerciseActionLabel(action: ExerciseChangePlan["action"]) {
 }
 
 function exerciseApplyLabel(action: ExerciseChangePlan["action"]) {
-  return action === "create" ? "Add exercise" : action === "archive" ? "Archive" : "Apply update";
+  return action === "create" ? "Add to library" : action === "archive" ? "Archive exercise" : "Update exercise";
 }
 
 const styles = StyleSheet.create({
@@ -815,9 +813,9 @@ const styles = StyleSheet.create({
   planBadgeText: { color: colors.accent, fontSize: 11, fontWeight: "800" },
   planTitle: { flex: 1, minWidth: 180, color: colors.text, fontSize: 15, fontWeight: "800" },
   planRationale: { color: colors.textMuted, fontSize: 13, lineHeight: 19 },
+  planSafety: { color: colors.warning, fontSize: 12, lineHeight: 17, fontWeight: "700" },
   planDiff: { gap: 5 },
   planDiffText: { color: colors.text, fontSize: 13, lineHeight: 18 },
-  planMore: { color: colors.textDim, fontSize: 12, marginTop: 2 },
   planActions: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
   compactAction: {
     minHeight: 36,

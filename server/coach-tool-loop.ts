@@ -37,7 +37,7 @@ export async function runCoachToolLoop(input: {
   executeTool: (call: CoachToolCall) => Promise<unknown>;
   recordToolCall: (record: CoachToolCallRecord) => Promise<void>;
   formatError: (error: unknown, fallback: string) => string;
-  isWriteTool?: (name: string) => boolean;
+  isProposalTool?: (name: string) => boolean;
   maxRunDurationMs?: number;
   now?: () => number;
   reportAuditError?: (error: unknown) => void;
@@ -49,6 +49,7 @@ export async function runCoachToolLoop(input: {
   let responseId = "";
   const callSignatureCounts = new Map<string, number>();
   let forceFinalResponse = false;
+  let proposalStaged = false;
 
   while (true) {
     if (!forceFinalResponse && now() - startedAt >= maxRunDurationMs) forceFinalResponse = true;
@@ -91,9 +92,14 @@ export async function runCoachToolLoop(input: {
         : `${name}:${canonicalJson(argumentsValue)}`;
       const repeatedCallCount = (callSignatureCounts.get(callSignature) ?? 0) + 1;
       callSignatureCounts.set(callSignature, repeatedCallCount);
-      const repeatedCallLimit = input.isWriteTool?.(name) ? 2 : 3;
+      const repeatedCallLimit = input.isProposalTool?.(name) ? 2 : 3;
 
-      if (repeatedCallCount >= repeatedCallLimit) {
+      if (proposalStaged) {
+        status = "failed";
+        toolOutput = {
+          error: "A review card has already been staged. Stop using tools and tell the user to review it.",
+        };
+      } else if (repeatedCallCount >= repeatedCallLimit) {
         status = "failed";
         forceFinalResponse = true;
         toolOutput = {
@@ -105,6 +111,10 @@ export async function runCoachToolLoop(input: {
       } else {
         try {
           toolOutput = await input.executeTool({ name, argumentsValue });
+          if (input.isProposalTool?.(name)) {
+            proposalStaged = true;
+            forceFinalResponse = true;
+          }
         } catch (error) {
           status = "failed";
           toolOutput = { error: input.formatError(error, "The tool call failed.") };

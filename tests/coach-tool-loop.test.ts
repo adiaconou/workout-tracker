@@ -153,24 +153,20 @@ test("forces a final response when the same tool call repeats without progress",
     .some((item) => item.type === "function_call_output" && item.call_id === "call-3"));
 });
 
-test("does not execute the same write tool twice", async (context) => {
-  const writeTools = ["propose_routine_change", "propose_exercise_change"];
-  for (const toolName of writeTools) {
+test("a successful proposal ends tool use and forces final synthesis", async (context) => {
+  const proposalTools = ["propose_routine_change", "propose_exercise_change"];
+  for (const toolName of proposalTools) {
     await context.test(toolName, async () => {
-      const argumentVariants = [
-        '{"target":"item-a","options":{"sets":3,"reps":8}}',
-        '{"options":{"reps":8,"sets":3},"target":"item-a"}',
-      ];
-      const responses: CoachResponse[] = [1, 2].map((index) => ({
-        id: `response-${index}`,
+      const responses: CoachResponse[] = [{
+        id: "response-proposal",
         status: "completed",
         output: [{
-          type: "function_call",
-          call_id: `call-${index}`,
+          type: "function_call" as const,
+          call_id: "call-proposal",
           name: toolName,
-          arguments: argumentVariants[index - 1],
+          arguments: '{"target":"item-a"}',
         }],
-      }));
+      }];
       responses.push({
         id: "response-final",
         status: "completed",
@@ -178,9 +174,11 @@ test("does not execute the same write tool twice", async (context) => {
       });
       let executions = 0;
       const statuses: string[] = [];
+      const choices: string[] = [];
       const result = await runCoachToolLoop({
         conversation: [],
-        createResponse: async () => {
+        createResponse: async (_conversation, toolChoice) => {
+          choices.push(toolChoice);
           const response = responses.shift();
           assert.ok(response);
           return response;
@@ -193,14 +191,104 @@ test("does not execute the same write tool twice", async (context) => {
           statuses.push(status);
         },
         formatError,
-        isWriteTool: (name) => writeTools.includes(name),
+        isProposalTool: (name) => proposalTools.includes(name),
       });
 
       assert.equal(result.text, "The plan is ready.");
       assert.equal(executions, 1);
-      assert.deepEqual(statuses, ["succeeded", "failed"]);
+      assert.deepEqual(statuses, ["succeeded"]);
+      assert.deepEqual(choices, ["auto", "none"]);
     });
   }
+});
+
+test("does not execute another tool after staging a proposal in the same response", async () => {
+  const responses: CoachResponse[] = [
+    {
+      id: "response-proposal",
+      status: "completed",
+      output: [
+        { type: "function_call", call_id: "call-proposal", name: "propose_routine_change", arguments: "{}" },
+        { type: "function_call", call_id: "call-extra", name: "lookup", arguments: "{}" },
+      ],
+    },
+    {
+      id: "response-final",
+      status: "completed",
+      output: [{ type: "message", content: [{ type: "output_text", text: "Review the card." }] }],
+    },
+  ];
+  const executed: string[] = [];
+  const records: Array<{ name: string; status: string; output: unknown }> = [];
+  const result = await runCoachToolLoop({
+    conversation: [],
+    createResponse: async () => {
+      const response = responses.shift();
+      assert.ok(response);
+      return response;
+    },
+    executeTool: async ({ name }) => {
+      executed.push(name);
+      return { planId: "plan-1" };
+    },
+    recordToolCall: async (record) => {
+      records.push(record);
+    },
+    formatError,
+    isProposalTool: (name) => name === "propose_routine_change",
+  });
+
+  assert.equal(result.text, "Review the card.");
+  assert.deepEqual(executed, ["propose_routine_change"]);
+  assert.deepEqual(records.map((record) => record.status), ["succeeded", "failed"]);
+  assert.match(JSON.stringify(records[1]?.output), /already been staged/i);
+});
+
+test("allows a failed proposal to be repaired before final synthesis", async () => {
+  const responses: CoachResponse[] = [
+    {
+      id: "response-bad",
+      status: "completed",
+      output: [{ type: "function_call", call_id: "call-bad", name: "propose_routine_change", arguments: '{"attempt":1}' }],
+    },
+    {
+      id: "response-good",
+      status: "completed",
+      output: [{ type: "function_call", call_id: "call-good", name: "propose_routine_change", arguments: '{"attempt":2}' }],
+    },
+    {
+      id: "response-final",
+      status: "completed",
+      output: [{ type: "message", content: [{ type: "output_text", text: "Review the corrected card." }] }],
+    },
+  ];
+  const choices: string[] = [];
+  let executions = 0;
+  const statuses: string[] = [];
+  const result = await runCoachToolLoop({
+    conversation: [],
+    createResponse: async (_conversation, toolChoice) => {
+      choices.push(toolChoice);
+      const response = responses.shift();
+      assert.ok(response);
+      return response;
+    },
+    executeTool: async () => {
+      executions += 1;
+      if (executions === 1) throw new Error("invalid proposal");
+      return { planId: "plan-2" };
+    },
+    recordToolCall: async ({ status }) => {
+      statuses.push(status);
+    },
+    formatError,
+    isProposalTool: (name) => name === "propose_routine_change",
+  });
+
+  assert.equal(result.text, "Review the corrected card.");
+  assert.equal(executions, 2);
+  assert.deepEqual(statuses, ["failed", "succeeded"]);
+  assert.deepEqual(choices, ["auto", "auto", "none"]);
 });
 
 test("switches to final synthesis after the soft run-duration budget", async () => {
