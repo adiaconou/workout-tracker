@@ -135,6 +135,9 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   const previousExerciseSets = currentSet
     ? workout?.previousPerformanceByExercise[currentSet.exerciseOrder]?.sets ?? []
     : [];
+  const currentExerciseInputKey = currentSet
+    ? `${sessionId}:${currentSet.sourceRoutineExerciseId ?? `position:${currentSet.exerciseOrder}`}`
+    : "";
   const exerciseProgress = useMemo(
     () => buildWorkoutExerciseProgress(workout?.sets ?? [], currentIndex),
     [currentIndex, workout?.sets],
@@ -144,7 +147,7 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
     if (!currentSet) return;
     const defaults = getSetInputDefaults(
       currentSet,
-      completedSetInputs.current[`${sessionId}:${currentSet.exerciseId}`] ??
+      completedSetInputs.current[currentExerciseInputKey] ??
         workout?.lastCompletedSetByExercise[currentSet.exerciseOrder],
     );
     setWeight(defaults.weight);
@@ -214,7 +217,7 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
       return;
     }
     if (status === "Completed" && (!Number.isFinite(numericResult) || numericResult < 0)) {
-      setError(`Enter the ${currentSet.targetUnit === "seconds" ? "seconds" : "reps"} completed.`);
+      setError(`Enter the ${resultUnitName(currentSet.targetUnit)} completed.`);
       setSaving(false);
       return;
     }
@@ -224,7 +227,7 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
       status,
       actualWeight: status === "Completed" ? numericWeight : null,
       actualReps:
-        status === "Completed" && currentSet.targetUnit === "reps" ? numericResult : null,
+        status === "Completed" && currentSet.targetUnit !== "seconds" ? numericResult : null,
       actualDurationSec:
         status === "Completed" && currentSet.targetUnit === "seconds" ? numericResult : null,
     };
@@ -246,10 +249,10 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
       setSkippedSets(payload.skippedSets);
       setSaveState("Saved");
       if (status === "Completed") {
-        completedSetInputs.current[`${sessionId}:${currentSet.exerciseId}`] = {
+        completedSetInputs.current[currentExerciseInputKey] = {
           actualWeight: numericWeight,
           actualReps:
-            currentSet.targetUnit === "reps" ? numericResult : null,
+            currentSet.targetUnit !== "seconds" ? numericResult : null,
         };
       }
       if (payload.workoutCompleted) {
@@ -522,6 +525,21 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
             </Body>
             <Fact label="Target" value={currentSet.target} />
             <Fact label="Effort" value={currentSet.effort} />
+            {currentSet.purpose ? <Fact label="Purpose" value={currentSet.purpose} /> : null}
+            {currentSet.exerciseInstructions ? (
+              <Fact label="Exercise instructions" value={currentSet.exerciseInstructions} />
+            ) : null}
+            {currentSet.exerciseNotes ? (
+              <Fact label="Exercise notes" value={currentSet.exerciseNotes} />
+            ) : null}
+            {currentSet.sideMode && currentSet.sideMode !== "bilateral" ? (
+              <Fact label="Sides" value={sideModeLabel(currentSet.sideMode)} />
+            ) : null}
+            {currentSet.tempo ? <Fact label="Tempo" value={currentSet.tempo} /> : null}
+            {currentSet.loadInstruction ? (
+              <Fact label="Load" value={currentSet.loadInstruction} />
+            ) : null}
+            {currentSet.notes ? <Fact label="Set notes" value={currentSet.notes} /> : null}
             <PreviousPerformance
               sets={previousExerciseSets}
               setCount={currentSet.exerciseSetTotal}
@@ -539,7 +557,24 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
             <View style={styles.prescriptionGrid}>
               <Prescription label="Target" value={currentSet.target} />
               <Prescription label="Effort" value={currentSet.effort} />
+              {currentSet.purpose ? (
+                <Prescription label="Purpose" value={currentSet.purpose} />
+              ) : null}
+              {currentSet.exerciseInstructions ? (
+                <Prescription label="Exercise instructions" value={currentSet.exerciseInstructions} />
+              ) : null}
+              {currentSet.exerciseNotes ? (
+                <Prescription label="Exercise notes" value={currentSet.exerciseNotes} />
+              ) : null}
               <Prescription label="Rest after" value={formatRest(currentSet.restSeconds, currentSet.restRule)} />
+              {currentSet.sideMode && currentSet.sideMode !== "bilateral" ? (
+                <Prescription label="Sides" value={sideModeLabel(currentSet.sideMode)} />
+              ) : null}
+              {currentSet.tempo ? <Prescription label="Tempo" value={currentSet.tempo} /> : null}
+              {currentSet.loadInstruction ? (
+                <Prescription label="Load" value={currentSet.loadInstruction} />
+              ) : null}
+              {currentSet.notes ? <Prescription label="Set notes" value={currentSet.notes} /> : null}
             </View>
             <Body muted>
               Set {currentSet.exerciseSetNumber} of {currentSet.exerciseSetTotal} ·{" "}
@@ -567,7 +602,7 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
               selectTextOnFocus
             />
             <StepperField
-              label={currentSet.targetUnit === "seconds" ? "Seconds completed" : "Reps completed"}
+              label={`${resultUnitName(currentSet.targetUnit, true)} completed`}
               value={result}
               onChangeText={
                 currentSet.targetUnit === "seconds"
@@ -962,10 +997,23 @@ function formatTimer(seconds: number) {
 
 function setTypeLabel(type: string) {
   if (type === "emom") return "EMOM round";
+  if (type === "test") return "Test set";
   if (type === "warmup") return "Warm-up set";
   if (type === "failure") return "Failure set";
   if (type === "drop") return "Drop set";
   return "Working set";
+}
+
+function resultUnitName(unit: "reps" | "seconds" | "rounds", capitalize = false) {
+  const label = unit === "seconds" ? "seconds" : unit === "rounds" ? "rounds" : "reps";
+  return capitalize ? `${label.charAt(0).toUpperCase()}${label.slice(1)}` : label;
+}
+
+function sideModeLabel(sideMode: string) {
+  if (sideMode === "per_side") return "Per side";
+  if (sideMode === "per_leg") return "Per leg";
+  if (sideMode === "left_right") return "Left, then right";
+  return "Bilateral";
 }
 
 function loadLabel(type: string) {

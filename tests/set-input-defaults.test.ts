@@ -35,3 +35,13 @@ test("copies weight but leaves duration results empty", () => {
     { weight: "35", result: "" },
   );
 });
+
+test("copies the previous completed round count", () => {
+  assert.deepEqual(
+    getSetInputDefaults(
+      { loadType: "bodyweight", targetUnit: "rounds" },
+      { actualWeight: 0, actualReps: 7 },
+    ),
+    { weight: "0", result: "7" },
+  );
+});

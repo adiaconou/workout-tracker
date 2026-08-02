@@ -1,6 +1,10 @@
 import { env } from "cloudflare:workers";
 import { canonicalRoutines } from "./routines";
-import { buildGuidedSets, type GuidedSet } from "./workout";
+import {
+  buildGuidedSets,
+  type GuidedSet,
+  type NormalizedWorkoutPrescription,
+} from "./workout";
 import {
   buildRoutineRecommendations,
   type RecentCompletedSession,
@@ -454,12 +458,28 @@ export async function updateRoutine(ownerEmail: string, code: string, input: Edi
   return getRoutine(ownerEmail, code);
 }
 
-export async function startWorkout(ownerEmail: string, code: string, abandonActive = false) {
+export class WorkoutRoutineVersionConflictError extends Error {
+  constructor() {
+    super("This routine changed before the workout started. Reload it and try again.");
+    this.name = "WorkoutRoutineVersionConflictError";
+  }
+}
+
+export async function startWorkout(
+  ownerEmail: string,
+  code: string,
+  abandonActive = false,
+  expectedRoutineVersionId?: string,
+) {
   await ensureUserRoutines(ownerEmail);
   const d1 = db();
-  const requestedRoutine = await d1.prepare("SELECT code FROM routines WHERE owner_email = ? AND is_active = 1 AND (id = ? OR code = ?)")
-    .bind(ownerEmail, code, code.toUpperCase()).first<{ code: string }>();
+  const requestedRoutine = await d1.prepare(`SELECT code, current_version_id AS currentVersionId
+      FROM routines WHERE owner_email = ? AND is_active = 1 AND (id = ? OR code = ?)`)
+    .bind(ownerEmail, code, code.toUpperCase()).first<{ code: string; currentVersionId: string | null }>();
   if (!requestedRoutine) return null;
+  if (expectedRoutineVersionId && requestedRoutine.currentVersionId !== expectedRoutineVersionId) {
+    throw new WorkoutRoutineVersionConflictError();
+  }
   const requestedCode = requestedRoutine.code;
   const active = await d1
     .prepare("SELECT id, routine_code AS routineCode, started_at AS startedAt, total_sets AS totalSets FROM workout_sessions WHERE owner_email = ? AND status = 'In Progress' LIMIT 1")
@@ -472,39 +492,142 @@ export async function startWorkout(ownerEmail: string, code: string, abandonActi
     return { created: false, requiresConfirmation: true, session: active };
   }
 
-  const routine = await getRoutine(ownerEmail, requestedCode);
-  if (!routine) return null;
-  const now = new Date().toISOString();
-  const totalSets = routine.exercises.reduce(
-    (sum, exercise) => sum + exercise.warmupSets + exercise.regularSets + exercise.failureSets + exercise.dropSets,
-    0,
+  const services = getEntityServices();
+  const [routine, aggregate, exactExpectedVersion, exerciseLibrary] = await Promise.all([
+    getRoutine(ownerEmail, requestedCode),
+    services.routines.get(ownerEmail, requestedCode),
+    expectedRoutineVersionId
+      ? services.routines.getVersion(ownerEmail, requestedCode, expectedRoutineVersionId)
+      : Promise.resolve(null),
+    services.exercises.list(ownerEmail, { includeArchived: true }),
+  ]);
+  if (!routine || !aggregate) return null;
+  const currentVersion = expectedRoutineVersionId
+    ? exactExpectedVersion
+    : aggregate?.currentVersion;
+  if (expectedRoutineVersionId && currentVersion?.id !== expectedRoutineVersionId) {
+    throw new WorkoutRoutineVersionConflictError();
+  }
+  const catalogById = new Map(exerciseLibrary.map((exercise) => [exercise.id, exercise]));
+  const legacyExerciseByPosition = new Map(
+    routine.exercises.map((exercise) => [exercise.exerciseOrder, exercise]),
   );
+  const normalizedPrescription: NormalizedWorkoutPrescription | undefined = currentVersion
+    ? {
+        schemaVersion: 1,
+        routineId: aggregate.id,
+        routineVersionId: currentVersion.id,
+        routineVersionNumber: currentVersion.versionNumber,
+        exercises: [...currentVersion.exercises]
+          .sort((left, right) => left.position - right.position)
+          .map((exercise) => {
+            const catalog = catalogById.get(exercise.exerciseId);
+            const legacyExercise = legacyExerciseByPosition.get(exercise.position);
+            return {
+              sourceRoutineExerciseId: exercise.id,
+              exerciseId: exercise.exerciseId,
+              exerciseName: exercise.exerciseName,
+              position: exercise.position,
+              supersetGroup: exercise.supersetGroup,
+              instructions: exercise.instructions,
+              notes: exercise.notes,
+              loadType: catalog?.defaultLoadType ?? "external",
+              sideMode: catalog?.sideMode ?? exercise.sets[0]?.sideMode ?? "bilateral",
+              weightUnit: legacyExercise?.weightUnit ?? "lb",
+              sets: [...exercise.sets]
+                .sort((left, right) => left.position - right.position)
+                .map((set) => ({
+                  sourceRoutineSetId: set.id,
+                  position: set.position,
+                  setType: set.setType,
+                  targetType: set.targetType,
+                  targetMin: set.targetMin,
+                  targetMax: set.targetMax,
+                  targetDisplay: set.targetDisplay,
+                  targetRirMin: set.targetRirMin,
+                  targetRirMax: set.targetRirMax,
+                  restAfterSec: set.restAfterSec,
+                  restRule: set.restRule,
+                  loadInstruction: set.loadInstruction,
+                  sideMode: set.sideMode,
+                  tempo: set.tempo,
+                  notes: set.notes,
+                })),
+            };
+          }),
+      }
+    : undefined;
+  const snapshotRoutine = normalizedPrescription
+    ? {
+        ...routine,
+        version: normalizedPrescription.routineVersionNumber,
+        focus: currentVersion!.focus,
+        summary: currentVersion!.summary,
+        durationMin: currentVersion!.durationMin,
+        updatedAt: currentVersion!.updatedAt,
+        normalizedPrescription,
+      }
+    : routine;
+  const now = new Date().toISOString();
+  const totalSets = buildGuidedSets(snapshotRoutine).length;
   const id = crypto.randomUUID();
-  const createSession = d1.prepare(`INSERT INTO workout_sessions (
-      id, owner_email, routine_code, routine_version, status, snapshot_json,
-      current_exercise, current_set, completed_sets, skipped_sets, total_sets,
-      started_at, updated_at
-    ) VALUES (?, ?, ?, ?, 'In Progress', ?, 1, 1, 0, 0, ?, ?, ?)`)
-    .bind(id, ownerEmail, routine.code, routine.version, JSON.stringify(routine), totalSets, now, now);
+  const snapshotJson = JSON.stringify(snapshotRoutine);
+  const createSession = expectedRoutineVersionId
+    ? d1.prepare(`INSERT INTO workout_sessions (
+        id, owner_email, routine_code, routine_version, status, snapshot_json,
+        current_exercise, current_set, completed_sets, skipped_sets, total_sets,
+        started_at, updated_at
+      ) SELECT ?, ?, ?, ?, 'In Progress', ?, 1, 1, 0, 0, ?, ?, ?
+      WHERE EXISTS (
+        SELECT 1 FROM routines
+        WHERE owner_email = ? AND code = ? AND current_version_id = ?
+      )`)
+      .bind(
+        id, ownerEmail, snapshotRoutine.code, snapshotRoutine.version, snapshotJson,
+        totalSets, now, now, ownerEmail, requestedCode, expectedRoutineVersionId,
+      )
+    : d1.prepare(`INSERT INTO workout_sessions (
+        id, owner_email, routine_code, routine_version, status, snapshot_json,
+        current_exercise, current_set, completed_sets, skipped_sets, total_sets,
+        started_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'In Progress', ?, 1, 1, 0, 0, ?, ?, ?)`)
+      .bind(id, ownerEmail, snapshotRoutine.code, snapshotRoutine.version, snapshotJson, totalSets, now, now);
 
+  let createResult: D1Result<unknown>;
   if (active) {
-    await d1.batch([
-      d1
-        .prepare(`UPDATE workout_sessions SET status = 'Abandoned', completed_at = ?,
+    const abandonSession = expectedRoutineVersionId
+      ? d1.prepare(`UPDATE workout_sessions SET status = 'Abandoned', completed_at = ?,
+          rest_ends_at = NULL, updated_at = ?
+          WHERE id = ? AND owner_email = ? AND status = 'In Progress'
+          AND EXISTS (
+            SELECT 1 FROM routines
+            WHERE owner_email = ? AND code = ? AND current_version_id = ?
+          )`)
+        .bind(
+          now, now, active.id, ownerEmail,
+          ownerEmail, requestedCode, expectedRoutineVersionId,
+        )
+      : d1.prepare(`UPDATE workout_sessions SET status = 'Abandoned', completed_at = ?,
           rest_ends_at = NULL, updated_at = ?
           WHERE id = ? AND owner_email = ? AND status = 'In Progress'`)
-        .bind(now, now, active.id, ownerEmail),
+        .bind(now, now, active.id, ownerEmail);
+    const results = await d1.batch([
+      abandonSession,
       createSession,
     ]);
+    createResult = results[1];
   } else {
-    await createSession.run();
+    createResult = await createSession.run();
+  }
+  if (expectedRoutineVersionId && Number(createResult.meta.changes ?? 0) !== 1) {
+    throw new WorkoutRoutineVersionConflictError();
   }
   await materializeWorkoutFromSnapshot(d1, ownerEmail, id);
 
   return {
     created: true,
     requiresConfirmation: false,
-    session: { id, routineCode: routine.code, startedAt: now, totalSets },
+    session: { id, routineCode: snapshotRoutine.code, startedAt: now, totalSets },
   };
 }
 
@@ -598,9 +721,38 @@ type RecordSetInput = {
 };
 
 function cleanNonNegativeNumber(value: unknown, allowDecimal = false) {
+  if (value === null || value === undefined || (typeof value === "string" && !value.trim())) {
+    return null;
+  }
   const number = Number(value);
   if (!Number.isFinite(number) || number < 0) return null;
   return allowDecimal ? Math.round(number * 100) / 100 : Math.round(number);
+}
+
+function effectiveRestSecondsForSet(sets: GuidedSet[], currentIndex: number) {
+  const current = sets[currentIndex];
+  if (!current) return 0;
+  const group = current.supersetGroup?.trim() || null;
+  if (!group) return current.restSeconds;
+
+  const next = sets[currentIndex + 1];
+  if (
+    next &&
+    (next.supersetGroup?.trim() || null) === group &&
+    next.exerciseSetNumber === current.exerciseSetNumber
+  ) {
+    return 0;
+  }
+
+  const deferredRest = sets
+    .filter(
+      (set) =>
+        (set.supersetGroup?.trim() || null) === group &&
+        set.exerciseSetNumber === current.exerciseSetNumber &&
+        set.restRule === "after_superset",
+    )
+    .map((set) => set.restSeconds);
+  return deferredRest.length ? Math.max(...deferredRest) : current.restSeconds;
 }
 
 export async function recordWorkoutSet(ownerEmail: string, sessionId: string, input: RecordSetInput) {
@@ -661,14 +813,15 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
   const actualReps = cleanNonNegativeNumber(input.actualReps);
   const actualDurationSec = cleanNonNegativeNumber(input.actualDurationSec);
   if (status === "Completed" && actualWeight === null) throw new Error("Enter the weight used for this set.");
-  if (status === "Completed" && prescribedSet.targetUnit === "reps" && actualReps === null) {
-    throw new Error("Enter the reps completed for this set.");
+  if (status === "Completed" && prescribedSet.targetUnit !== "seconds" && actualReps === null) {
+    throw new Error(`Enter the ${prescribedSet.targetUnit === "rounds" ? "rounds" : "reps"} completed for this set.`);
   }
   if (status === "Completed" && prescribedSet.targetUnit === "seconds" && actualDurationSec === null) {
     throw new Error("Enter the seconds completed for this set.");
   }
 
   const now = new Date().toISOString();
+  const effectiveRestSeconds = effectiveRestSecondsForSet(sets, currentIndex);
   const performanceId = `${sessionId}::${prescribedSet.id}`;
   const d1 = db();
   await d1
@@ -688,7 +841,7 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
     .bind(
       performanceId, ownerEmail, sessionId, prescribedSet.id, prescribedSet.exerciseId,
       prescribedSet.exerciseOrder, prescribedSet.exerciseName, prescribedSet.globalIndex + 1,
-      prescribedSet.setType, prescribedSet.target, prescribedSet.restSeconds,
+      prescribedSet.setType, prescribedSet.target, effectiveRestSeconds,
       prescribedSet.restRule, status === "Completed" ? actualReps : null,
       status === "Completed" ? actualDurationSec : null,
       status === "Completed" ? actualWeight : null, status, now, now, now,
@@ -706,7 +859,7 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
   const skippedSets = Number(counts?.skippedSets ?? 0);
   const nextSetIndex = currentIndex + 1;
   const workoutCompleted = nextSetIndex >= sets.length;
-  const restSeconds = workoutCompleted ? 0 : prescribedSet.restSeconds;
+  const restSeconds = workoutCompleted ? 0 : effectiveRestSeconds;
   const restEndsAt = restSeconds > 0 ? new Date(Date.now() + restSeconds * 1000).toISOString() : null;
   const nextSet = sets[nextSetIndex];
 
@@ -734,9 +887,9 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
     .bind(status === "Completed" ? actualReps : null, status === "Completed" ? actualDurationSec : null,
       status === "Completed" ? actualWeight : null, status.toLowerCase(), now,
       restEndsAt ? now : null, restEndsAt ?? now, now, sessionId, prescribedSet.id, ownerEmail).run();
-  await d1.prepare(`UPDATE workout_sets SET actual_rest_sec = CASE WHEN ? IS NULL THEN 0 ELSE planned_rest_sec END
+  await d1.prepare(`UPDATE workout_sets SET actual_rest_sec = CASE WHEN ? IS NULL THEN 0 ELSE ? END
     WHERE workout_id = ? AND prescribed_set_id = ? AND owner_email = ?`)
-    .bind(restEndsAt, sessionId, prescribedSet.id, ownerEmail).run();
+    .bind(restEndsAt, effectiveRestSeconds, sessionId, prescribedSet.id, ownerEmail).run();
   await d1.prepare(`UPDATE workout_exercises SET status = CASE
       WHEN NOT EXISTS (SELECT 1 FROM workout_sets ws WHERE ws.workout_exercise_id = workout_exercises.id AND ws.status = 'planned') THEN 'completed'
       ELSE 'started' END, updated_at = ?

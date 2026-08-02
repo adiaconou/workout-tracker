@@ -12,7 +12,7 @@ export function formatPreviousSetPerformance(
     ? "—"
     : `${displayNumber(set.actualWeight)} ${set.weightUnit}`;
   const result = set.actualReps !== null
-    ? `${displayNumber(set.actualReps)} reps`
+    ? `${displayNumber(set.actualReps)} ${set.targetType === "rounds" ? "rounds" : "reps"}`
     : set.actualDurationSec !== null
       ? `${displayNumber(set.actualDurationSec)} sec`
       : "—";

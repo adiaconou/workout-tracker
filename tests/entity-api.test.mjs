@@ -17,6 +17,8 @@ test("exposes owner-scoped CRUD through the versioned Worker API", async () => {
   assert.match(api, /action === "favorite"/);
   assert.match(api, /setFavorite/);
   assert.match(api, /handleRoutines/);
+  assert.match(api, /routine_editor_required/);
+  assert.doesNotMatch(api, /updateRoutine\(/);
   assert.match(api, /handleWorkouts/);
   assert.match(api, /createVersion/);
   assert.match(api, /publish/);
@@ -126,6 +128,8 @@ test("runs an owner-scoped coaching assistant with strict review cards and user-
   assert.match(assistant, /status = 'stale'/);
   assert.match(assistant, /createVersion/);
   assert.match(assistant, /services\.routines\.publish/);
+  assert.match(assistant, /services\.routines\.publish\([^;]*plan\.baseVersionId/s);
+  assert.match(assistant, /publish && !publishedRoutine/);
   assert.match(assistant, /services\.exercises\.create/);
   assert.match(assistant, /services\.exercises\.updateIfUnchanged/);
   assert.match(assistant, /services\.exercises\.archiveIfUnchanged/);

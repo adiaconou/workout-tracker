@@ -1,6 +1,7 @@
-import type { PropsWithChildren, ReactNode } from "react";
+import { useId, useState, type PropsWithChildren, type ReactNode } from "react";
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -13,6 +14,18 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { colors, maxContentWidth, radii, spacing } from "../theme/tokens";
 import { stepNumericText } from "./stepper-value";
+
+type WebFieldAriaProps = {
+  "aria-describedby"?: string;
+  "aria-errormessage"?: string;
+  "aria-invalid"?: boolean | "false" | "true" | "grammar" | "spelling";
+};
+
+type FieldProps = TextInputProps & WebFieldAriaProps & {
+  label: string;
+  hint?: string;
+  error?: string;
+};
 
 export function Screen({
   children,
@@ -45,10 +58,20 @@ export function Eyebrow({ children }: PropsWithChildren) {
 export function Heading({
   children,
   size = "large",
-}: PropsWithChildren<{ size?: "large" | "medium" | "small" }>) {
+  level,
+}: PropsWithChildren<{
+  size?: "large" | "medium" | "small";
+  level?: 1 | 2 | 3 | 4 | 5 | 6;
+}>) {
+  const semanticLevel = level ?? (size === "large" ? 1 : size === "medium" ? 2 : 3);
+  const webHeadingProps = Platform.OS === "web"
+    ? { "aria-level": semanticLevel }
+    : {};
   return (
     <Text
       accessibilityRole="header"
+      role="heading"
+      {...webHeadingProps}
       style={[
         styles.heading,
         size === "medium" && styles.headingMedium,
@@ -84,6 +107,7 @@ export function Button({
   disabled = false,
   loading = false,
   compact = false,
+  accessibilityLabel = title,
   accessibilityHint,
 }: {
   title: string;
@@ -92,20 +116,28 @@ export function Button({
   disabled?: boolean;
   loading?: boolean;
   compact?: boolean;
+  accessibilityLabel?: string;
   accessibilityHint?: string;
 }) {
+  const [focused, setFocused] = useState(false);
+  const unavailable = disabled || loading;
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
       accessibilityHint={accessibilityHint}
-      disabled={disabled || loading}
+      accessibilityState={{ disabled: unavailable, busy: loading }}
+      disabled={unavailable}
+      onBlur={() => setFocused(false)}
+      onFocus={() => setFocused(true)}
       onPress={onPress}
       style={({ pressed }) => [
         styles.button,
         styles[`button_${variant}`],
         compact && styles.buttonCompact,
-        (disabled || loading) && styles.buttonDisabled,
+        unavailable && styles.buttonDisabled,
         pressed && styles.buttonPressed,
+        focused && Platform.OS === "web" && styles.webFocusRing,
       ]}
     >
       {loading ? (
@@ -120,18 +152,69 @@ export function Button({
 export function Field({
   label,
   hint,
+  error,
   ...props
-}: TextInputProps & { label: string; hint?: string }) {
+}: FieldProps) {
+  const id = useId();
+  const labelId = `field-label-${id}`;
+  const hintId = `field-hint-${id}`;
+  const errorId = `field-error-${id}`;
+  const [focused, setFocused] = useState(false);
+  const webRelationshipProps = fieldWebRelationshipProps({
+    hintId: hint ? hintId : null,
+    errorId: error ? errorId : null,
+    labelledBy:
+      props["aria-labelledby"] ??
+      idReferenceList(props.accessibilityLabelledBy) ??
+      (props.accessibilityLabel ? null : labelId),
+    callerDescribedBy: props["aria-describedby"],
+    callerErrorMessage: props["aria-errormessage"],
+    callerInvalid: props["aria-invalid"],
+  });
   return (
     <View style={styles.field}>
-      <Text style={styles.fieldLabel}>{label}</Text>
+      <Text nativeID={labelId} style={styles.fieldLabel}>{label}</Text>
       <TextInput
         {...props}
+        {...webRelationshipProps}
+        accessibilityLabel={props.accessibilityLabel ?? label}
+        accessibilityLabelledBy={
+          Platform.OS === "web"
+            ? undefined
+            : props.accessibilityLabelledBy ?? (props.accessibilityLabel ? undefined : labelId)
+        }
+        accessibilityHint={
+          props.accessibilityHint ?? fieldAccessibilityHint(hint, error)
+        }
+        onBlur={(event) => {
+          setFocused(false);
+          props.onBlur?.(event);
+        }}
+        onFocus={(event) => {
+          setFocused(true);
+          props.onFocus?.(event);
+        }}
         placeholderTextColor={colors.textDim}
         selectionColor={colors.accent}
-        style={[styles.input, props.multiline && styles.inputMultiline, props.style]}
+        style={[
+          styles.input,
+          props.multiline && styles.inputMultiline,
+          focused && styles.inputFocused,
+          focused && Platform.OS === "web" && styles.webFocusRing,
+          props.style,
+        ]}
       />
-      {hint ? <Text style={styles.fieldHint}>{hint}</Text> : null}
+      {hint ? <Text nativeID={hintId} style={styles.fieldHint}>{hint}</Text> : null}
+      {error ? (
+        <Text
+          nativeID={errorId}
+          accessibilityRole="alert"
+          accessibilityLiveRegion="polite"
+          style={styles.fieldError}
+        >
+          {error}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -143,10 +226,12 @@ export function StepperField({
   onChangeText,
   minimum = 0,
   step = 1,
+  error,
   ...props
-}: Omit<TextInputProps, "onChangeText" | "value"> & {
+}: Omit<FieldProps, "onChangeText" | "value"> & {
   label: string;
   hint?: string;
+  error?: string;
   value: string;
   onChangeText: (value: string) => void;
   minimum?: number;
@@ -154,8 +239,24 @@ export function StepperField({
 }) {
   const numericValue = Number(value);
   const disabled = props.editable === false;
+  const id = useId();
+  const labelId = `stepper-label-${id}`;
+  const hintId = `stepper-hint-${id}`;
+  const errorId = `stepper-error-${id}`;
+  const [focusedControl, setFocusedControl] = useState<"decrease" | "input" | "increase" | null>(null);
   const canDecrement =
     !disabled && Number.isFinite(numericValue) && numericValue > minimum;
+  const webRelationshipProps = fieldWebRelationshipProps({
+    hintId: hint ? hintId : null,
+    errorId: error ? errorId : null,
+    labelledBy:
+      props["aria-labelledby"] ??
+      idReferenceList(props.accessibilityLabelledBy) ??
+      (props.accessibilityLabel ? null : labelId),
+    callerDescribedBy: props["aria-describedby"],
+    callerErrorMessage: props["aria-errormessage"],
+    callerInvalid: props["aria-invalid"],
+  });
 
   function changeBy(delta: number) {
     onChangeText(stepNumericText(value, delta, minimum));
@@ -163,46 +264,130 @@ export function StepperField({
 
   return (
     <View style={styles.field}>
-      <Text style={styles.fieldLabel}>{label}</Text>
+      <Text nativeID={labelId} style={styles.fieldLabel}>{label}</Text>
       <View style={styles.stepperRow}>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Decrease ${label} by ${step}`}
+          accessibilityState={{ disabled: !canDecrement }}
           disabled={!canDecrement}
+          onBlur={() => setFocusedControl(null)}
+          onFocus={() => setFocusedControl("decrease")}
           onPress={() => changeBy(-step)}
           style={({ pressed }) => [
             styles.stepperButton,
             !canDecrement && styles.stepperButtonDisabled,
             pressed && canDecrement && styles.stepperButtonPressed,
+            focusedControl === "decrease" && Platform.OS === "web" && styles.webFocusRing,
           ]}
         >
           <Text style={styles.stepperButtonText}>−</Text>
         </Pressable>
         <TextInput
           {...props}
+          {...webRelationshipProps}
           value={value}
           onChangeText={onChangeText}
+          accessibilityLabel={props.accessibilityLabel ?? label}
+          accessibilityLabelledBy={
+            Platform.OS === "web"
+              ? undefined
+              : props.accessibilityLabelledBy ?? (props.accessibilityLabel ? undefined : labelId)
+          }
+          accessibilityHint={
+            props.accessibilityHint ?? fieldAccessibilityHint(hint, error)
+          }
+          onBlur={(event) => {
+            setFocusedControl(null);
+            props.onBlur?.(event);
+          }}
+          onFocus={(event) => {
+            setFocusedControl("input");
+            props.onFocus?.(event);
+          }}
           placeholderTextColor={colors.textDim}
           selectionColor={colors.accent}
-          style={[styles.input, styles.stepperInput, props.style]}
+          style={[
+            styles.input,
+            styles.stepperInput,
+            focusedControl === "input" && styles.inputFocused,
+            focusedControl === "input" && Platform.OS === "web" && styles.webFocusRing,
+            props.style,
+          ]}
         />
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Increase ${label} by ${step}`}
+          accessibilityState={{ disabled }}
           disabled={disabled}
+          onBlur={() => setFocusedControl(null)}
+          onFocus={() => setFocusedControl("increase")}
           onPress={() => changeBy(step)}
           style={({ pressed }) => [
             styles.stepperButton,
             disabled && styles.stepperButtonDisabled,
             pressed && !disabled && styles.stepperButtonPressed,
+            focusedControl === "increase" && Platform.OS === "web" && styles.webFocusRing,
           ]}
         >
           <Text style={styles.stepperButtonText}>+</Text>
         </Pressable>
       </View>
-      {hint ? <Text style={styles.fieldHint}>{hint}</Text> : null}
+      {hint ? <Text nativeID={hintId} style={styles.fieldHint}>{hint}</Text> : null}
+      {error ? (
+        <Text
+          nativeID={errorId}
+          accessibilityRole="alert"
+          accessibilityLiveRegion="polite"
+          style={styles.fieldError}
+        >
+          {error}
+        </Text>
+      ) : null}
     </View>
   );
+}
+
+function fieldAccessibilityHint(hint?: string, error?: string) {
+  return [error ? `Error: ${error}` : null, hint]
+    .filter((value): value is string => Boolean(value))
+    .join(". ") || undefined;
+}
+
+function idReferenceList(value?: string | string[]) {
+  return Array.isArray(value) ? value.join(" ") : value;
+}
+
+function mergeIdReferences(...values: Array<string | undefined>) {
+  const references = new Set(
+    values.flatMap((value) => value?.split(/\s+/).filter(Boolean) ?? []),
+  );
+  return references.size > 0 ? [...references].join(" ") : undefined;
+}
+
+function fieldWebRelationshipProps({
+  hintId,
+  errorId,
+  labelledBy,
+  callerDescribedBy,
+  callerErrorMessage,
+  callerInvalid,
+}: {
+  hintId: string | null;
+  errorId: string | null;
+  labelledBy: string | null;
+  callerDescribedBy?: string;
+  callerErrorMessage?: string;
+  callerInvalid?: WebFieldAriaProps["aria-invalid"];
+}) {
+  if (Platform.OS !== "web") return {};
+  const generatedDescribedBy = [hintId, errorId].filter(Boolean).join(" ") || undefined;
+  return {
+    "aria-labelledby": labelledBy ?? undefined,
+    "aria-describedby": mergeIdReferences(callerDescribedBy, generatedDescribedBy),
+    "aria-errormessage": errorId ?? callerErrorMessage,
+    "aria-invalid": errorId ? true : callerInvalid,
+  };
 }
 
 export function LoadingView({ label = "Loading…" }: { label?: string }) {
@@ -219,7 +404,11 @@ export function Message({
   tone = "error",
 }: PropsWithChildren<{ tone?: "error" | "success" | "warning" }>) {
   return (
-    <View style={[styles.message, styles[`message_${tone}`]]}>
+    <View
+      role={tone === "error" ? "alert" : "status"}
+      accessibilityLiveRegion={tone === "error" ? "assertive" : "polite"}
+      style={[styles.message, styles[`message_${tone}`]]}
+    >
       <Text style={[styles.messageText, styles[`messageText_${tone}`]]}>{children}</Text>
     </View>
   );
@@ -234,12 +423,19 @@ export function RowLink({
   onPress: () => void;
   label: string;
 }) {
+  const [focused, setFocused] = useState(false);
   return (
     <Pressable
       accessibilityRole="link"
       accessibilityLabel={label}
+      onBlur={() => setFocused(false)}
+      onFocus={() => setFocused(true)}
       onPress={onPress}
-      style={({ pressed }) => [styles.rowLink, pressed && styles.rowPressed]}
+      style={({ pressed }) => [
+        styles.rowLink,
+        pressed && styles.rowPressed,
+        focused && Platform.OS === "web" && styles.webFocusRing,
+      ]}
     >
       {children}
       <Text style={styles.rowArrow}>→</Text>
@@ -298,7 +494,7 @@ const styles = StyleSheet.create({
   button_secondary: { backgroundColor: colors.surfaceRaised, borderColor: colors.borderStrong },
   button_danger: { backgroundColor: colors.dangerSurface, borderColor: colors.danger },
   button_ghost: { backgroundColor: "transparent", borderColor: "transparent" },
-  buttonCompact: { minHeight: 40, paddingVertical: spacing.sm },
+  buttonCompact: { minHeight: 44, paddingVertical: spacing.sm },
   buttonDisabled: { opacity: 0.45 },
   buttonPressed: { opacity: 0.76 },
   buttonText: { fontSize: 15, fontWeight: "800" },
@@ -326,6 +522,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   inputMultiline: { minHeight: 88, textAlignVertical: "top" },
+  inputFocused: { borderColor: colors.accent },
   stepperRow: {
     flexDirection: "row",
     alignItems: "stretch",
@@ -359,6 +556,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   fieldHint: { color: colors.textDim, fontSize: 12, lineHeight: 17 },
+  fieldError: { color: colors.danger, fontSize: 12, lineHeight: 17, fontWeight: "700" },
   center: { flex: 1, minHeight: 320, alignItems: "center", justifyContent: "center", gap: spacing.md },
   loadingLabel: { color: colors.textMuted, fontSize: 14 },
   message: { borderRadius: radii.md, borderWidth: 1, padding: spacing.md },
@@ -381,4 +579,10 @@ const styles = StyleSheet.create({
   },
   rowPressed: { backgroundColor: colors.surfaceRaised },
   rowArrow: { color: colors.textDim, fontSize: 18, marginLeft: "auto" },
+  webFocusRing: {
+    outlineColor: colors.accent,
+    outlineOffset: -2,
+    outlineStyle: "solid",
+    outlineWidth: 2,
+  },
 });

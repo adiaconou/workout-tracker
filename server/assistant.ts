@@ -408,7 +408,14 @@ async function applyRoutineChangePlan(context: AssistantContext, plan: ChangePla
     }
     const proposed = validateRoutineVersionInput(JSON.parse(plan.proposedInputJson) as RoutineVersionInput);
     const version = await services.routines.createVersion(user.email, plan.routineId, proposed);
-    const publishedRoutine = publish ? await services.routines.publish(user.email, plan.routineId, version.id) : null;
+    const publishedRoutine = publish
+      ? await services.routines.publish(user.email, plan.routineId, version.id, plan.baseVersionId ?? "")
+      : null;
+    if (publish && !publishedRoutine) {
+      await services.routines.deleteVersion(user.email, plan.routineId, version.id);
+      await markRoutinePlanStale(env, user.email, plan.id);
+      return apiError(request, 409, "coach_plan_stale", "The routine changed while this plan was being applied. Ask the coach to prepare a fresh plan.");
+    }
     const now = new Date().toISOString();
     await env.DB.prepare(`UPDATE assistant_change_plans SET status = 'applied',
       applied_version_id = ?, updated_at = ? WHERE id = ? AND owner_email = ?`)

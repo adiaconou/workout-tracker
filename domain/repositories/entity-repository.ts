@@ -50,7 +50,12 @@ export interface RoutineRepository {
   createRoutineVersion(ownerEmail: string, idOrCode: string, input: RoutineVersionInput): Promise<RoutineVersion>;
   updateRoutineVersion(ownerEmail: string, idOrCode: string, versionId: string, input: RoutineVersionInput): Promise<RoutineVersion | null>;
   deleteRoutineVersion(ownerEmail: string, idOrCode: string, versionId: string): Promise<boolean>;
-  publishRoutineVersion(ownerEmail: string, idOrCode: string, versionId: string): Promise<RoutineAggregate | null>;
+  publishRoutineVersion(
+    ownerEmail: string,
+    idOrCode: string,
+    versionId: string,
+    expectedCurrentVersionId?: string,
+  ): Promise<RoutineAggregate | null>;
 }
 
 export interface WorkoutRepository {

@@ -1,5 +1,5 @@
 import type { Routine } from "../../lib/store";
-import { buildGuidedSets } from "../../lib/workout";
+import { buildGuidedSets, getNormalizedWorkoutPrescription } from "../../lib/workout";
 import { EXERCISE_MUSCLES, type RoutineCode } from "../../lib/recommendations";
 import { canonicalRoutines } from "../../lib/routines";
 import { homeGymExercises } from "../../lib/home-gym-exercises";
@@ -437,6 +437,7 @@ export async function materializeWorkoutFromSnapshot(d1: D1Database, ownerEmail:
     .bind(routineRow?.id ?? null, versionExists?.id ?? null, sessionId, ownerEmail).run();
 
   const guidedSets = buildGuidedSets(routine);
+  const normalizedPrescription = getNormalizedWorkoutPrescription(routine);
   const performances = await d1.prepare(`SELECT prescribed_set_id AS prescribedSetId, actual_reps AS actualReps,
     actual_duration_sec AS actualDurationSec, actual_weight AS actualWeight, weight_unit AS weightUnit,
     status, performed_at AS performedAt, rest_skipped AS restSkipped, notes
@@ -459,41 +460,79 @@ export async function materializeWorkoutFromSnapshot(d1: D1Database, ownerEmail:
   }
   const statements: D1PreparedStatement[] = [];
 
-  for (const exercise of routine.exercises) {
-    const exerciseId = await catalogExercise(d1, ownerEmail, exercise, routine.code, exercise.exerciseOrder, session.startedAt);
-    const placementId = placementByPosition.get(exercise.exerciseOrder) ?? null;
+  const materializedExercises = normalizedPrescription
+    ? [...normalizedPrescription.exercises]
+      .sort((left, right) => left.position - right.position)
+      .map((exercise) => ({
+        exerciseOrder: exercise.position,
+        name: exercise.exerciseName,
+        loadType: exercise.loadType,
+        weightUnit: exercise.weightUnit,
+        sideMode: exercise.sets[0]?.sideMode ?? exercise.sideMode,
+        notes: exercise.notes,
+        exactExerciseId: exercise.exerciseId,
+        exactPlacementId: exercise.sourceRoutineExerciseId,
+        legacyExercise: null,
+      }))
+    : routine.exercises.map((exercise) => ({
+      exerciseOrder: exercise.exerciseOrder,
+      name: exercise.name,
+      loadType: exercise.loadType,
+      weightUnit: exercise.weightUnit,
+      sideMode: inferSideMode(exercise.target),
+      notes: "",
+      exactExerciseId: null,
+      exactPlacementId: null,
+      legacyExercise: exercise,
+    }));
+
+  for (const exercise of materializedExercises) {
+    const exerciseId = exercise.exactExerciseId ?? await catalogExercise(
+      d1,
+      ownerEmail,
+      exercise.legacyExercise!,
+      routine.code,
+      exercise.exerciseOrder,
+      session.startedAt,
+    );
+    const placementId = exercise.exactPlacementId ?? placementByPosition.get(exercise.exerciseOrder) ?? null;
     const workoutExerciseId = `${sessionId}::exercise::${exercise.exerciseOrder}`;
     statements.push(d1.prepare(`INSERT OR IGNORE INTO workout_exercises (
       id, owner_email, workout_id, exercise_id, source_routine_exercise_id, position,
       exercise_name_snapshot, load_type_snapshot, side_mode_snapshot, status, notes, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', '', ?, ?)`)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?)`)
       .bind(workoutExerciseId, ownerEmail, sessionId, exerciseId, placementId,
         exercise.exerciseOrder, exercise.name, exercise.loadType,
-        inferSideMode(exercise.target), session.startedAt, session.startedAt));
+        exercise.sideMode, exercise.notes, session.startedAt, session.startedAt));
 
     const exerciseSets = guidedSets.filter((set) => set.exerciseOrder === exercise.exerciseOrder);
     for (const set of exerciseSets) {
       const performance = performanceBySet.get(set.id);
       const range = set.target.match(/(\d+(?:\.\d+)?)\s*[–-]\s*(\d+(?:\.\d+)?)/);
       const single = set.target.match(/\d+(?:\.\d+)?/);
-      const targetMin = range ? Number(range[1]) : single ? Number(single[0]) : null;
-      const targetMax = range ? Number(range[2]) : targetMin;
-      const sourceSetId = sourceSetByPosition.get(`${exercise.exerciseOrder}:${set.exerciseSetNumber}`) ?? null;
+      const parsedTargetMin = range ? Number(range[1]) : single ? Number(single[0]) : null;
+      const parsedTargetMax = range ? Number(range[2]) : parsedTargetMin;
+      const targetMin = set.targetType === undefined ? parsedTargetMin : set.targetMin ?? null;
+      const targetMax = set.targetType === undefined ? parsedTargetMax : set.targetMax ?? null;
+      const sourceSetId = set.sourceRoutineSetId
+        ?? sourceSetByPosition.get(`${exercise.exerciseOrder}:${set.exerciseSetNumber}`)
+        ?? null;
       statements.push(d1.prepare(`INSERT OR IGNORE INTO workout_sets (
         id, owner_email, workout_id, workout_exercise_id, source_routine_set_id, prescribed_set_id,
         position, set_type, planned_target_type, planned_target_min, planned_target_max,
         planned_target_display, planned_rir_min, planned_rir_max, planned_rest_sec, planned_rest_rule,
         actual_reps, actual_duration_sec, actual_weight, weight_unit, rest_skipped, status,
         completed_at, notes, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .bind(`${sessionId}::set::${set.globalIndex + 1}`, ownerEmail, sessionId, workoutExerciseId,
           sourceSetId, set.id, set.globalIndex + 1, set.setType,
-          set.targetUnit === "seconds" ? "duration" : set.setType === "emom" ? "rounds" : "reps",
-          targetMin, targetMax, set.target, set.restSeconds, set.restRule,
+          set.targetType ?? (set.targetUnit === "seconds" ? "duration" : set.targetUnit === "rounds" || set.setType === "emom" ? "rounds" : "reps"),
+          targetMin, targetMax, set.target, set.targetRirMin ?? null, set.targetRirMax ?? null,
+          set.restSeconds, set.restRule,
           performance?.actualReps ?? null, performance?.actualDurationSec ?? null,
           performance?.actualWeight ?? null, performance?.weightUnit ?? exercise.weightUnit,
           Number(performance?.restSkipped ?? 0), performance?.status?.toLowerCase() ?? "planned",
-          performance?.performedAt ?? null, performance?.notes ?? "", session.startedAt,
+          performance?.performedAt ?? null, performance?.notes || set.notes || "", session.startedAt,
           performance?.performedAt ?? session.startedAt));
     }
   }

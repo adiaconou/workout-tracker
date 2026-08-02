@@ -1,4 +1,5 @@
-import { getEntityServices } from "../application/services";
+import { getEntityServices, validateRoutineVersionInput } from "../application/services";
+import type { RoutineVersionInput } from "../domain/entities";
 import {
   completeWorkoutEarly,
   getRoutine,
@@ -8,7 +9,7 @@ import {
   recordWorkoutSet,
   skipWorkoutRest,
   startWorkout,
-  updateRoutine,
+  WorkoutRoutineVersionConflictError,
 } from "../lib/store";
 import {
   authenticateRequest,
@@ -27,6 +28,7 @@ import {
 import type { ApiUser, WorkerEnv } from "./types";
 import { verifyGoogleIdToken } from "./google";
 import { handleAssistantRequest } from "./assistant";
+import { isRoutineVersionSemanticallyEqual } from "./coach-routine-change";
 
 type RouteContext = {
   request: Request;
@@ -241,6 +243,79 @@ async function handleRoutines({ request, user, segments }: RouteContext) {
         return apiError(request, 400, "routine_invalid", errorMessage(error, "Routine could not be created."));
       }
     }
+  } else if (child === "editor") {
+    if (request.method === "GET") {
+      const [routine, versions, activeWorkouts] = await Promise.all([
+        service.get(user.email, routineId),
+        service.listVersions(user.email, routineId),
+        getEntityServices().workouts.list(user.email, { status: "In Progress" }),
+      ]);
+      if (!routine?.currentVersion) {
+        return apiError(request, 404, "routine_not_found", "Routine not found.");
+      }
+      const activeWorkout = activeWorkouts[0];
+      return apiResponse(request, {
+        routine,
+        versions,
+        activeWorkout: activeWorkout
+          ? { id: activeWorkout.id, routineCode: activeWorkout.routineCode }
+          : null,
+      });
+    }
+    if (request.method === "PATCH") {
+      try {
+        const payload = await readJson<{
+          baseVersionId?: string;
+          proposedRoutine?: RoutineVersionInput;
+        }>(request);
+        const baseVersionId = typeof payload.baseVersionId === "string"
+          ? payload.baseVersionId.trim()
+          : "";
+        if (!baseVersionId || !payload.proposedRoutine) {
+          return apiError(
+            request,
+            400,
+            "routine_editor_fields_required",
+            "The current version and complete routine are required.",
+          );
+        }
+        const current = await service.get(user.email, routineId);
+        if (!current?.currentVersion) {
+          return apiError(request, 404, "routine_not_found", "Routine not found.");
+        }
+        if (current.currentVersionId !== baseVersionId) {
+          return routineEditorStale(request);
+        }
+        const proposed = validateRoutineVersionInput(payload.proposedRoutine);
+        if (isRoutineVersionSemanticallyEqual(current.currentVersion, proposed)) {
+          return apiError(request, 409, "routine_no_changes", "There are no routine changes to save.");
+        }
+
+        const version = await service.createVersion(user.email, current.id, proposed);
+        let published;
+        try {
+          published = await service.publish(user.email, current.id, version.id, baseVersionId);
+        } catch (error) {
+          await service.deleteVersion(user.email, current.id, version.id).catch(() => false);
+          throw error;
+        }
+        if (!published) {
+          await service.deleteVersion(user.email, current.id, version.id).catch(() => false);
+          return routineEditorStale(request);
+        }
+        return apiResponse(request, {
+          routine: published,
+          versions: await service.listVersions(user.email, current.id),
+        });
+      } catch (error) {
+        return apiError(
+          request,
+          400,
+          "routine_editor_invalid",
+          errorMessage(error, "The routine could not be saved."),
+        );
+      }
+    }
   } else if (child === "prescription") {
     if (request.method === "GET") {
       const routine = await getRoutine(user.email, routineId);
@@ -249,14 +324,12 @@ async function handleRoutines({ request, user, segments }: RouteContext) {
         : apiError(request, 404, "routine_not_found", "Routine not found.");
     }
     if (request.method === "PATCH") {
-      try {
-        const routine = await updateRoutine(user.email, routineId, await readJson(request));
-        return routine
-          ? apiResponse(request, { routine })
-          : apiError(request, 404, "routine_not_found", "Routine not found.");
-      } catch (error) {
-        return apiError(request, 400, "routine_invalid", errorMessage(error, "The routine could not be saved."));
-      }
+      return apiError(
+        request,
+        410,
+        "routine_editor_required",
+        "Legacy routine writes are disabled. Use the normalized routine editor endpoint.",
+      );
     }
   } else if (child === "versions") {
     if (!childId) {
@@ -323,6 +396,15 @@ async function handleRoutines({ request, user, segments }: RouteContext) {
   return apiError(request, 405, "method_not_allowed", "Method not allowed for routines.");
 }
 
+function routineEditorStale(request: Request) {
+  return apiError(
+    request,
+    409,
+    "routine_version_stale",
+    "This routine changed after you started editing. Reload it before saving your changes.",
+  );
+}
+
 async function handleWorkouts({ request, user, segments }: RouteContext) {
   const service = getEntityServices().workouts;
   const workoutId = segments[1];
@@ -363,15 +445,27 @@ async function handleWorkouts({ request, user, segments }: RouteContext) {
     }
     if (request.method === "POST") {
       try {
-        const payload = await readJson<{ routineId?: string; abandonActive?: boolean }>(request);
+        const payload = await readJson<{
+          routineId?: string;
+          abandonActive?: boolean;
+          expectedRoutineVersionId?: string;
+        }>(request);
         if (!payload.routineId) {
           return apiError(request, 400, "routine_required", "Routine is required.");
         }
-        const result = await startWorkout(user.email, payload.routineId, Boolean(payload.abandonActive));
+        const result = await startWorkout(
+          user.email,
+          payload.routineId,
+          Boolean(payload.abandonActive),
+          payload.expectedRoutineVersionId,
+        );
         return result
           ? apiResponse(request, result, { status: result.created ? 201 : 200 })
           : apiError(request, 404, "routine_not_found", "Routine not found.");
       } catch (error) {
+        if (error instanceof WorkoutRoutineVersionConflictError) {
+          return apiError(request, 409, "routine_version_stale", error.message);
+        }
         return apiError(request, 400, "workout_start_failed", errorMessage(error, "The workout could not be started."));
       }
     }

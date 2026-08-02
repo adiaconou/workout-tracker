@@ -14,7 +14,7 @@ export function getSetInputDefaults(
   return {
     weight: previous ? String(previous.actualWeight) : startsAtZero ? "0" : "",
     result:
-      set.targetUnit === "reps" && previous?.actualReps != null
+      set.targetUnit !== "seconds" && previous?.actualReps != null
         ? String(previous.actualReps)
         : "",
   };

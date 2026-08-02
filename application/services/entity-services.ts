@@ -81,6 +81,10 @@ export function validateRoutineVersionInput(input: RoutineVersionInput): Routine
       assertNonNegative(set.targetRirMax, "RIR maximum");
       assertNonNegative(set.restAfterSec, "Rest", false);
       if (set.targetMin !== null && set.targetMax !== null && set.targetMin > set.targetMax) throw new Error("Target minimum cannot exceed target maximum.");
+      if (set.targetRirMin !== null && set.targetRirMax !== null && set.targetRirMin > set.targetRirMax) {
+        throw new Error("RIR minimum cannot exceed RIR maximum.");
+      }
+      if (!Number.isInteger(set.restAfterSec)) throw new Error("Rest must be a non-negative whole number.");
     });
   }
   const durationMin = Math.round(Number(input.durationMin));
@@ -157,7 +161,9 @@ export class RoutineService {
     return this.repository.updateRoutineVersion(ownerEmail, idOrCode, versionId, validateRoutineVersionInput(input));
   }
   deleteVersion(ownerEmail: string, idOrCode: string, versionId: string) { return this.repository.deleteRoutineVersion(ownerEmail, idOrCode, versionId); }
-  publish(ownerEmail: string, idOrCode: string, versionId: string) { return this.repository.publishRoutineVersion(ownerEmail, idOrCode, versionId); }
+  publish(ownerEmail: string, idOrCode: string, versionId: string, expectedCurrentVersionId?: string) {
+    return this.repository.publishRoutineVersion(ownerEmail, idOrCode, versionId, expectedCurrentVersionId);
+  }
 }
 
 

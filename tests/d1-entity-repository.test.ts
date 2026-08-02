@@ -382,3 +382,60 @@ test("D1 entity repository applies Coach exercise updates and archives only at t
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("routine publish compare-and-swap preserves the newer current version", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "workout-d1-routine-cas-"));
+  const database = join(directory, "repository.sqlite");
+  const sqlite = new DatabaseSync(database);
+  const d1 = new SqliteD1(sqlite) as unknown as D1Database;
+  const owner = "routine-cas@example.com";
+  try {
+    await ensureEntitySchema(d1);
+    const repository = new D1EntityRepository(d1);
+    const exercise = await repository.createExercise(owner, { name: "Routine CAS row" });
+    const routine = await repository.createRoutine(owner, "RCAS", singleSetRoutine(exercise.id, "Base version"));
+    const baseVersionId = routine.currentVersionId!;
+    const firstDraft = await repository.createRoutineVersion(
+      owner,
+      routine.id,
+      singleSetRoutine(exercise.id, "First accepted edit"),
+    );
+    const staleDraft = await repository.createRoutineVersion(
+      owner,
+      routine.id,
+      singleSetRoutine(exercise.id, "Stale competing edit"),
+    );
+
+    const firstPublish = await repository.publishRoutineVersion(
+      owner,
+      routine.id,
+      firstDraft.id,
+      baseVersionId,
+    );
+    assert.equal(firstPublish?.currentVersionId, firstDraft.id);
+    assert.equal(firstPublish?.currentVersion?.focus, "First accepted edit");
+
+    const stalePublish = await repository.publishRoutineVersion(
+      owner,
+      routine.id,
+      staleDraft.id,
+      baseVersionId,
+    );
+    assert.equal(stalePublish, null);
+
+    const reloaded = await repository.getRoutineAggregate(owner, routine.id);
+    assert.equal(reloaded?.currentVersionId, firstDraft.id);
+    assert.equal(reloaded?.currentVersion?.focus, "First accepted edit");
+    const versions = await repository.listRoutineVersions(owner, routine.id);
+    assert.equal(versions.find((version) => version.id === firstDraft.id)?.status, "published");
+    assert.equal(versions.find((version) => version.id === staleDraft.id)?.status, "draft");
+    assert.equal(versions.find((version) => version.id === baseVersionId)?.status, "superseded");
+    const projected = await d1.prepare("SELECT focus, current_version_id AS currentVersionId FROM routines WHERE id = ?")
+      .bind(routine.id).first<{ focus: string; currentVersionId: string }>();
+    assert.equal(projected?.focus, "First accepted edit");
+    assert.equal(projected?.currentVersionId, firstDraft.id);
+  } finally {
+    sqlite.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

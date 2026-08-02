@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { EntityRepository } from "../domain/repositories/entity-repository";
-import type { Exercise } from "../domain/entities";
+import type { Exercise, RoutineVersionInput } from "../domain/entities";
 import { expandLegacyPrescription, parseRestPrescription } from "../domain/prescription";
 import { homeGymExercises } from "../lib/home-gym-exercises";
 import {
@@ -90,6 +90,47 @@ test("validates exercise muscle metadata and routine ordering", () => {
       { exerciseId: "two", position: 1, sets: [] },
     ],
   }), /positions must be unique/);
+
+  const validRoutine: RoutineVersionInput = {
+    focus: "Validation",
+    summary: "Set validation",
+    durationMin: 45,
+    exercises: [{
+      exerciseId: "one",
+      position: 1,
+      sets: [{
+        position: 1,
+        setType: "regular",
+        targetType: "reps",
+        targetMin: 8,
+        targetMax: 10,
+        targetDisplay: "8-10 reps",
+        targetRirMin: 1,
+        targetRirMax: 2,
+        restAfterSec: 90,
+        restRule: "standard",
+        loadInstruction: "",
+        sideMode: "bilateral",
+        tempo: null,
+        notes: "",
+      }],
+    }],
+  };
+  assert.doesNotThrow(() => validateRoutineVersionInput(validRoutine));
+  assert.throws(() => validateRoutineVersionInput({
+    ...validRoutine,
+    exercises: [{
+      ...validRoutine.exercises[0],
+      sets: [{ ...validRoutine.exercises[0]!.sets[0]!, targetRirMin: 3, targetRirMax: 2 }],
+    }],
+  }), /RIR minimum cannot exceed RIR maximum/);
+  assert.throws(() => validateRoutineVersionInput({
+    ...validRoutine,
+    exercises: [{
+      ...validRoutine.exercises[0],
+      sets: [{ ...validRoutine.exercises[0]!.sets[0]!, restAfterSec: 30.5 }],
+    }],
+  }), /Rest must be a non-negative whole number/);
 });
 
 test("exercise service performs catalog CRUD through the repository boundary", async () => {

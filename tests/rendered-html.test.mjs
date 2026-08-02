@@ -62,9 +62,26 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(tabs, /tabBarActiveBackgroundColor/);
   assert.match(tabs, /TabGlyph/);
   assert.match(tabs, /Math\.max\(insets\.bottom, 8\)/);
+  assert.match(routines, /<Heading>Routines<\/Heading>/);
+  assert.doesNotMatch(routines, /<Heading>Today<\/Heading>|todayCard/);
   assert.match(routines, /Recommended today/);
-  assert.match(routines, /Why this recommendation/);
+  assert.match(routines, /recommendedRoutineRow/);
+  assert.match(routines, /Why Routine/);
+  assert.match(routines, /routine\.durationMin/);
+  assert.match(routines, /guidance\.availabilityReason/);
   assert.match(routines, /How availability works/);
+  assert.match(routines, /No routines yet/);
+  assert.match(routines, /temporarily unavailable/);
+  assert.match(routines, /AppState\.addEventListener\("change"/);
+  assert.match(routines, /window\.addEventListener\("focus"/);
+  assert.match(routines, /document\.addEventListener\("visibilitychange"/);
+  assert.match(routines, /latestRequest/);
+  assert.match(routines, /setData\(next\);\s*setError\(""\);/);
+  assert.match(routines, /focusedAction === "resume"[\s\S]*styles\.webFocusRing/);
+  assert.match(routines, /focusedAction === "availability-help"[\s\S]*styles\.webFocusRing/);
+  assert.match(routines, /aria-hidden[\s\S]*importantForAccessibility="no-hide-descendants"/);
+  assert.match(routines, /recommendedBadgeText:[\s\S]*fontSize: 11/);
+  assert.doesNotMatch(routines, /listCard: \{[^}]*overflow: "hidden"/);
   assert.match(routines, /accessibilityRole="progressbar"/);
   assert.doesNotMatch(routines, /A → B → C → D/);
   assert.doesNotMatch(routines, /Install the Android APK/);
@@ -77,12 +94,33 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(routineDetail, /accessibilityState=\{\{ expanded \}\}/);
   assert.match(routineDetail, /expanded \? "Collapse" : "Expand"/);
   assert.ok(
-    routineDetail.indexOf("<Heading size=\"small\">Add another exercise</Heading>") <
-      routineDetail.indexOf("{(editing ? draft : routine).exercises.map"),
+    routineDetail.indexOf("<Heading size=\"small\">Add exercise</Heading>") <
+      routineDetail.indexOf("{visibleExercises.map"),
   );
-  assert.match(routineDetail, /Move up/);
-  assert.match(routineDetail, /Move down/);
-  assert.match(routineDetail, /Remove/);
+  assert.match(routineDetail, /title="Move up" accessibilityLabel=\{`Move \$\{exerciseName\} up`\}/);
+  assert.match(routineDetail, /title="Move down" accessibilityLabel=\{`Move \$\{exerciseName\} down`\}/);
+  assert.match(routineDetail, /title="Remove" accessibilityLabel=\{`Remove \$\{exerciseName\}`\}/);
+  assert.match(routineDetail, /useFocusEffect/);
+  assert.match(routineDetail, /AppState\.addEventListener\("change"/);
+  assert.match(routineDetail, /window\.addEventListener\("focus"/);
+  assert.match(routineDetail, /document\.addEventListener\("visibilitychange"/);
+  assert.match(routineDetail, /window\.addEventListener\("beforeunload"/);
+  assert.match(routineDetail, /BackHandler\.addEventListener\("hardwareBackPress"/);
+  assert.match(routineDetail, /state\.editing && state\.dirty/);
+  assert.match(routineDetail, /Discard edits and reload latest/);
+  assert.match(routineDetail, /void load\(true\)/);
+  assert.match(routineDetail, /editable=\{!saving\}/);
+  assert.match(routineDetail, /disabled=\{saving\}.*ChoiceField|ChoiceField[^\n]*disabled=\{saving\}/);
+  assert.match(routineDetail, /accessibilityRole="radiogroup"/);
+  assert.match(routineDetail, /accessibilityViewIsModal/);
+  assert.match(routineDetail, /NullableNumberField/);
+  assert.match(routineDetail, /setText\(nextText\)[\s\S]*Number\(nextText\)/);
+  assert.match(routineDetail, /latestRequest\.current \+= 1/);
+  assert.match(routineDetail, /expectedRoutineVersionId: startRoutine\.currentVersionId/);
+  assert.match(routineDetail, /focusedControl === `exercise:/);
+  assert.match(routineDetail, /focusedExerciseId === exercise\.id/);
+  assert.match(routineDetail, /libraryDialog: \{[^}]*flexShrink: 1/);
+  assert.match(routineDetail, /libraryList: \{[^}]*flexShrink: 1/);
   assert.match(routineDetail, /\/api\/v1\/exercises/);
   assert.match(routineDetail, /Abandon and start Routine/);
   assert.match(exerciseLibrary, /onChangeText=\{setQuery\}/);

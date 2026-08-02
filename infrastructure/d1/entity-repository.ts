@@ -527,7 +527,12 @@ export class D1EntityRepository implements EntityRepository {
     return true;
   }
 
-  async publishRoutineVersion(ownerEmail: string, idOrCode: string, versionId: string) {
+  async publishRoutineVersion(
+    ownerEmail: string,
+    idOrCode: string,
+    versionId: string,
+    expectedCurrentVersionId?: string,
+  ) {
     await this.ready(ownerEmail);
     const routineRow = await this.routineRow(ownerEmail, idOrCode);
     if (!routineRow) return null;
@@ -536,15 +541,41 @@ export class D1EntityRepository implements EntityRepository {
     if (!version) return null;
     const now = new Date().toISOString();
     const code = String(routineRow.code);
+    const publishedGuard = `EXISTS (
+      SELECT 1 FROM routines publish_guard
+      WHERE publish_guard.id = ? AND publish_guard.owner_email = ?
+        AND publish_guard.current_version_id = ? AND publish_guard.updated_at = ?
+    )`;
+    const routineUpdate = expectedCurrentVersionId === undefined
+      ? this.d1.prepare(`UPDATE routines SET version = ?, focus = ?, summary = ?, duration_min = ?,
+          current_version_id = ?, updated_at = ? WHERE id = ? AND owner_email = ?`)
+        .bind(version.versionNumber, version.focus, version.summary, version.durationMin, versionId, now, routineId, ownerEmail)
+      : this.d1.prepare(`UPDATE routines SET version = ?, focus = ?, summary = ?, duration_min = ?,
+          current_version_id = ?, updated_at = ?
+          WHERE id = ? AND owner_email = ? AND current_version_id = ?`)
+        .bind(
+          version.versionNumber,
+          version.focus,
+          version.summary,
+          version.durationMin,
+          versionId,
+          now,
+          routineId,
+          ownerEmail,
+          expectedCurrentVersionId,
+        );
     const statements: D1PreparedStatement[] = [
-      this.d1.prepare("UPDATE routine_versions SET status = 'superseded', updated_at = ? WHERE routine_id = ? AND status = 'published' AND id <> ?")
-        .bind(now, routineId, versionId),
-      this.d1.prepare("UPDATE routine_versions SET status = 'published', published_at = COALESCE(published_at, ?), updated_at = ? WHERE id = ? AND routine_id = ?")
-        .bind(now, now, versionId, routineId),
-      this.d1.prepare(`UPDATE routines SET version = ?, focus = ?, summary = ?, duration_min = ?,
-        current_version_id = ?, updated_at = ? WHERE id = ? AND owner_email = ?`)
-        .bind(version.versionNumber, version.focus, version.summary, version.durationMin, versionId, now, routineId, ownerEmail),
-      this.d1.prepare("DELETE FROM exercises WHERE owner_email = ? AND routine_code = ?").bind(ownerEmail, code),
+      routineUpdate,
+      this.d1.prepare(`UPDATE routine_versions SET status = 'superseded', updated_at = ?
+        WHERE routine_id = ? AND status = 'published' AND id <> ? AND ${publishedGuard}`)
+        .bind(now, routineId, versionId, routineId, ownerEmail, versionId, now),
+      this.d1.prepare(`UPDATE routine_versions SET status = 'published',
+        published_at = COALESCE(published_at, ?), updated_at = ?
+        WHERE id = ? AND routine_id = ? AND ${publishedGuard}`)
+        .bind(now, now, versionId, routineId, routineId, ownerEmail, versionId, now),
+      this.d1.prepare(`DELETE FROM exercises WHERE owner_email = ? AND routine_code = ?
+        AND ${publishedGuard}`)
+        .bind(ownerEmail, code, routineId, ownerEmail, versionId, now),
     ];
 
     for (const exercise of version.exercises) {
@@ -566,14 +597,17 @@ export class D1EntityRepository implements EntityRepository {
         id, owner_email, routine_code, exercise_order, name, warmup, warmup_sets,
         regular_sets, failure_sets, drop_sets, target, rest, effort, purpose,
         load_type, weight_unit, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'lb', ?)`)
+      ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'lb', ?
+        WHERE ${publishedGuard}`)
         .bind(`${ownerEmail}::exercise::${code}::${exercise.position}`, ownerEmail, code, exercise.position,
           catalog.name, warmups.map((set) => set.targetDisplay).join("; ") || "None", warmups.length,
           regular.length, failures.length, drops.length, targetParts.join("; ") || workSet?.targetDisplay || "",
           rest, workSet ? formatRir(workSet, exercise.instructions) : exercise.instructions,
-          exercise.notes, catalog.defaultLoadType, now));
+          exercise.notes, catalog.defaultLoadType, now,
+          routineId, ownerEmail, versionId, now));
     }
-    await this.d1.batch(statements);
+    const results = await this.d1.batch(statements);
+    if (Number(results[0]?.meta.changes ?? 0) !== 1) return null;
     const updated = await this.routineRow(ownerEmail, routineId);
     return updated ? this.aggregate(ownerEmail, updated) : null;
   }

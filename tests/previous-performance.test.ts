@@ -26,6 +26,19 @@ test("preserves fractional weights and supports duration exercises", () => {
   }), "22.5 lb × 30 sec");
 });
 
+test("labels round targets as rounds instead of reps", () => {
+  assert.equal(formatPreviousSetPerformance({
+    setNumber: 1,
+    setType: "emom",
+    targetType: "rounds",
+    actualWeight: 22.5,
+    actualReps: 6,
+    actualDurationSec: null,
+    weightUnit: "lb",
+    status: "completed",
+  }), "22.5 lb × 6 rounds");
+});
+
 test("uses empty placeholders when no completed history exists", () => {
   assert.equal(formatPreviousSetPerformance(undefined), "— × —");
   assert.equal(formatPreviousSetPerformance({
