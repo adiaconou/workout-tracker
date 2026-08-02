@@ -356,6 +356,30 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
   assert.equal(roundsResult.nextSetIndex, 3, "round targets must advance through the explicit rounds path");
   assert.equal(roundsResult.workoutCompleted, true);
 
+  const completedSession = await database.prepare(`SELECT completed_at AS completedAt
+    FROM workout_sessions WHERE id = ?`).bind(started.session.id).first();
+  assert.ok(completedSession?.completedAt);
+  const completedBootstrap = expectStatus(await request("/api/v1/bootstrap"), 200);
+  assert.equal(
+    completedBootstrap.routines.find((routine) => routine.code === "Q")?.lastWorkoutAt,
+    completedSession.completedAt,
+    "routine cards must receive the exact latest completed workout date",
+  );
+  assert.ok(
+    completedBootstrap.routines.some((routine) => routine.code !== "Q" && routine.lastWorkoutAt === null),
+    "routines without history must return a null last workout date",
+  );
+
+  const partialAt = new Date(new Date(completedSession.completedAt).getTime() + 60_000).toISOString();
+  await database.prepare(`UPDATE workout_sessions SET status = 'Partial', completed_at = ?, updated_at = ?
+    WHERE id = ?`).bind(partialAt, partialAt, started.session.id).run();
+  const partialBootstrap = expectStatus(await request("/api/v1/bootstrap"), 200);
+  assert.equal(
+    partialBootstrap.routines.find((routine) => routine.code === "Q")?.lastWorkoutAt,
+    partialAt,
+    "a deliberately finished partial workout still counts as the last time the routine was done",
+  );
+
   const nextVersionInput = versionInput(activeVersion);
   nextVersionInput.summary = "A later version must still match prior duplicate placements by occurrence.";
   const nextVersion = expectStatus(await request("/api/v1/routines/Q/editor", {

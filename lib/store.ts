@@ -58,6 +58,7 @@ export type Routine = {
 export type RoutineSummary = Omit<Routine, "exercises"> & {
   exerciseCount: number;
   setCount: number;
+  lastWorkoutAt: string | null;
 };
 
 type EditableRoutine = Pick<Routine, "focus" | "summary" | "durationMin"> & {
@@ -245,9 +246,16 @@ export async function getRoutineList(ownerEmail: string): Promise<RoutineSummary
   const result = await db()
     .prepare(`SELECT r.code, r.version, r.focus, r.summary, r.duration_min AS durationMin,
       r.updated_at AS updatedAt, COUNT(e.id) AS exerciseCount,
-      COALESCE(SUM(e.warmup_sets + e.regular_sets + e.failure_sets + e.drop_sets), 0) AS setCount
+      COALESCE(SUM(e.warmup_sets + e.regular_sets + e.failure_sets + e.drop_sets), 0) AS setCount,
+      last_workout.completed_at AS lastWorkoutAt
       FROM routines r
       LEFT JOIN exercises e ON e.owner_email = r.owner_email AND e.routine_code = r.code
+      LEFT JOIN (
+        SELECT owner_email, routine_code, MAX(completed_at) AS completed_at
+        FROM workout_sessions
+        WHERE status IN ('Completed', 'Partial') AND completed_at IS NOT NULL
+        GROUP BY owner_email, routine_code
+      ) last_workout ON last_workout.owner_email = r.owner_email AND last_workout.routine_code = r.code
       WHERE r.owner_email = ? AND r.is_active = 1
       GROUP BY r.id
       ORDER BY r.code`)
@@ -259,6 +267,7 @@ export async function getRoutineList(ownerEmail: string): Promise<RoutineSummary
     durationMin: Number(row.durationMin),
     exerciseCount: Number(row.exerciseCount),
     setCount: Number(row.setCount),
+    lastWorkoutAt: row.lastWorkoutAt ?? null,
   }));
 }
 

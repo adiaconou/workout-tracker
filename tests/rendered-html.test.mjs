@@ -68,7 +68,9 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(routines, /recommendedRoutineRow/);
   assert.match(routines, /Why Routine/);
   assert.match(routines, /routine\.durationMin/);
-  assert.match(routines, /guidance\.availabilityReason/);
+  assert.match(routines, /routineLastDoneLabel\(routine\.lastWorkoutAt\)/);
+  assert.match(routines, /Last done/);
+  assert.match(routines, /Not done yet/);
   assert.match(routines, /How availability works/);
   assert.match(routines, /No routines yet/);
   assert.match(routines, /temporarily unavailable/);
@@ -79,7 +81,6 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(routines, /setData\(next\);\s*setError\(""\);/);
   assert.match(routines, /focusedAction === "resume"[\s\S]*styles\.webFocusRing/);
   assert.match(routines, /focusedAction === "availability-help"[\s\S]*styles\.webFocusRing/);
-  assert.match(routines, /aria-hidden[\s\S]*importantForAccessibility="no-hide-descendants"/);
   assert.match(routines, /recommendedBadgeText:[\s\S]*fontSize: 11/);
   assert.doesNotMatch(routines, /listCard: \{[^}]*overflow: "hidden"/);
   assert.match(routines, /accessibilityRole="progressbar"/);
@@ -87,6 +88,11 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.doesNotMatch(routines, /Install the Android APK/);
   assert.match(routines, /Discard workout/);
   assert.match(routines, /DiscardWorkoutModal/);
+  const routineListStart = routines.indexOf("{data.routines.map");
+  const routineListEnd = routines.indexOf("</Card>", routineListStart);
+  assert.ok(routineListStart >= 0 && routineListEnd > routineListStart);
+  const routineList = routines.slice(routineListStart, routineListEnd);
+  assert.doesNotMatch(routineList, /availabilityReason|AvailabilityLabel|guidanceLine/);
   assert.match(routineDetail, /Start workout/);
   assert.match(routineDetail, /Edit routine/);
   assert.match(routineDetail, /Add exercise from library/);

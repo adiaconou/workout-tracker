@@ -299,9 +299,8 @@ export function RoutinesScreen() {
           {data.routines.length ? (
             <Card style={styles.listCard}>
               {data.routines.map((routine, index) => {
-                const guidance = recommendation?.routines.find((item) => item.code === routine.code);
                 const isRecommended = routine.code === recommendation?.recommendedRoutineCode;
-                const showReason = guidance?.availability !== "available";
+                const lastDoneLabel = routineLastDoneLabel(routine.lastWorkoutAt);
                 return (
                   <View
                     key={routine.code}
@@ -315,7 +314,7 @@ export function RoutinesScreen() {
                     <RowLink
                       label={`Open Routine ${routine.code}, ${routine.focus}. ${routine.durationMin} minutes, ${routine.exerciseCount} exercises, ${routine.setCount} sets${
                         isRecommended ? ". Recommended today" : ""
-                      }${guidance ? `. ${guidance.availabilityLabel}. ${guidance.availabilityReason}` : ""}`}
+                      }. ${lastDoneLabel}`}
                       onPress={() => router.push(`/routines/${routine.code}`)}
                     >
                       <View style={[
@@ -343,19 +342,7 @@ export function RoutinesScreen() {
                           <Text style={styles.dot}>·</Text>
                           <Text style={styles.meta}>{routine.setCount} sets</Text>
                         </View>
-                        {guidance ? (
-                          <View style={styles.guidanceLine}>
-                            <AvailabilityLabel
-                              status={guidance.availability}
-                              label={guidance.availabilityLabel}
-                            />
-                            {showReason ? (
-                              <Text numberOfLines={2} style={styles.availabilityReason}>
-                                {guidance.availabilityReason}
-                              </Text>
-                            ) : null}
-                          </View>
-                        ) : null}
+                        <Text style={styles.lastDone}>{lastDoneLabel}</Text>
                       </View>
                     </RowLink>
                   </View>
@@ -442,35 +429,15 @@ export function RoutinesScreen() {
   );
 }
 
-function AvailabilityLabel({
-  status,
-  label,
-}: {
-  status: "available" | "caution" | "recovering";
-  label: string;
-}) {
-  return (
-    <View
-      aria-hidden
-      accessible={false}
-      accessibilityElementsHidden
-      importantForAccessibility="no-hide-descendants"
-      style={styles.availabilityLabel}
-    >
-      <View style={[
-        styles.availabilityDot,
-        status === "caution" && styles.availabilityDotCaution,
-        status === "recovering" && styles.availabilityDotRecovering,
-      ]} />
-      <Text style={[
-        styles.availabilityText,
-        status === "caution" && styles.availabilityTextCaution,
-        status === "recovering" && styles.availabilityTextRecovering,
-      ]}>
-        {label}
-      </Text>
-    </View>
-  );
+function routineLastDoneLabel(value: string | null) {
+  if (!value) return "Not done yet";
+  const completedAt = new Date(value);
+  if (!Number.isFinite(completedAt.getTime())) return "Last workout date unavailable";
+  return `Last done ${new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(completedAt)}`;
 }
 
 const styles = StyleSheet.create({
@@ -632,15 +599,7 @@ const styles = StyleSheet.create({
   routineMeta: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 4 },
   meta: { color: colors.textDim, fontSize: 11 },
   dot: { color: colors.borderStrong, fontSize: 11 },
-  guidanceLine: { flexDirection: "row", alignItems: "flex-start", flexWrap: "wrap", gap: 6 },
-  availabilityLabel: { flexDirection: "row", alignItems: "center", gap: 5, minHeight: 18 },
-  availabilityDot: { width: 6, height: 6, borderRadius: radii.pill, backgroundColor: colors.success },
-  availabilityDotCaution: { backgroundColor: colors.warning },
-  availabilityDotRecovering: { backgroundColor: colors.danger },
-  availabilityText: { color: colors.textMuted, fontSize: 10, lineHeight: 16, fontWeight: "800" },
-  availabilityTextCaution: { color: colors.warning },
-  availabilityTextRecovering: { color: colors.danger },
-  availabilityReason: { color: colors.textDim, fontSize: 10, lineHeight: 16, flex: 1, minWidth: 150 },
+  lastDone: { color: colors.textMuted, fontSize: 11, lineHeight: 16, fontWeight: "700" },
   disclosure: {
     minHeight: 44,
     flexDirection: "row",
