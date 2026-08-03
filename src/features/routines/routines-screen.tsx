@@ -25,6 +25,7 @@ import {
 } from "../../components/ui";
 import { colors, radii, spacing } from "../../theme/tokens";
 import { DiscardWorkoutModal } from "../workouts/discard-workout-modal";
+import { routineLastDoneLabel } from "./routine-card-format";
 
 export function RoutinesScreen() {
   const { signOut } = useAuth();
@@ -138,6 +139,7 @@ export function RoutinesScreen() {
   const activeProgress = data?.activeWorkout?.totalSets
     ? Math.min(1, activeRecordedSets / data.activeWorkout.totalSets)
     : 0;
+  const renderedAt = new Date();
 
   return (
     <Screen contentStyle={styles.screenContent}>
@@ -278,12 +280,12 @@ export function RoutinesScreen() {
           {recommendation?.recommendedRoutineCode === null ? (
             <View
               accessible
-              accessibilityLabel={`Recovery recommended. ${recommendation.summary}`}
+              accessibilityLabel={`Recovery suggested. ${recommendation.summary}`}
               style={styles.recoveryNotice}
             >
               <View style={styles.recoveryMark} />
               <View style={styles.recoveryCopy}>
-                <Text style={styles.recoveryTitle}>Recovery recommended today</Text>
+                <Text style={styles.recoveryTitle}>Recovery suggested today</Text>
                 <Text style={styles.recoveryText}>{recommendation.summary}</Text>
               </View>
             </View>
@@ -299,8 +301,9 @@ export function RoutinesScreen() {
           {data.routines.length ? (
             <Card style={styles.listCard}>
               {data.routines.map((routine, index) => {
+                const guidance = recommendation?.routines.find((item) => item.code === routine.code);
                 const isRecommended = routine.code === recommendation?.recommendedRoutineCode;
-                const lastDoneLabel = routineLastDoneLabel(routine.lastWorkoutAt);
+                const lastDoneLabel = routineLastDoneLabel(routine.lastWorkoutAt, { now: renderedAt });
                 return (
                   <View
                     key={routine.code}
@@ -314,7 +317,7 @@ export function RoutinesScreen() {
                     <RowLink
                       label={`Open Routine ${routine.code}, ${routine.focus}. ${routine.durationMin} minutes, ${routine.exerciseCount} exercises, ${routine.setCount} sets${
                         isRecommended ? ". Recommended today" : ""
-                      }. ${lastDoneLabel}`}
+                      }. ${lastDoneLabel}${guidance ? `. ${guidance.availabilityLabel}` : ""}`}
                       onPress={() => router.push(`/routines/${routine.code}`)}
                     >
                       <View style={[
@@ -342,7 +345,15 @@ export function RoutinesScreen() {
                           <Text style={styles.dot}>·</Text>
                           <Text style={styles.meta}>{routine.setCount} sets</Text>
                         </View>
-                        <Text style={styles.lastDone}>{lastDoneLabel}</Text>
+                        <View style={styles.routineStatusLine}>
+                          <Text style={styles.lastDone}>{lastDoneLabel}</Text>
+                          {guidance ? (
+                            <AvailabilityLabel
+                              status={guidance.availability}
+                              label={guidance.availabilityLabel}
+                            />
+                          ) : null}
+                        </View>
                       </View>
                     </RowLink>
                   </View>
@@ -419,8 +430,9 @@ export function RoutinesScreen() {
           </Pressable>
           {showAvailabilityHelp ? (
             <Body muted style={styles.guidanceNote}>
-              Estimates use completed sets from the past 72 hours. They do not measure pain,
-              sleep, injury, or medical readiness.
+              These overlap estimates use completed sets logged in the past 72 hours. They do
+              not measure soreness, pain, sleep, stress, injury, warm-up performance, or medical
+              readiness. You can always choose a different routine.
             </Body>
           ) : null}
         </>
@@ -429,15 +441,35 @@ export function RoutinesScreen() {
   );
 }
 
-function routineLastDoneLabel(value: string | null) {
-  if (!value) return "Not done yet";
-  const completedAt = new Date(value);
-  if (!Number.isFinite(completedAt.getTime())) return "Last workout date unavailable";
-  return `Last done ${new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  }).format(completedAt)}`;
+function AvailabilityLabel({
+  status,
+  label,
+}: {
+  status: "available" | "caution" | "recovering";
+  label: string;
+}) {
+  return (
+    <View
+      aria-hidden
+      accessible={false}
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      style={styles.availabilityLabel}
+    >
+      <View style={[
+        styles.availabilityDot,
+        status === "caution" && styles.availabilityDotCaution,
+        status === "recovering" && styles.availabilityDotRecovering,
+      ]} />
+      <Text style={[
+        styles.availabilityText,
+        status === "caution" && styles.availabilityTextCaution,
+        status === "recovering" && styles.availabilityTextRecovering,
+      ]}>
+        {label}
+      </Text>
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
@@ -599,7 +631,15 @@ const styles = StyleSheet.create({
   routineMeta: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 4 },
   meta: { color: colors.textDim, fontSize: 11 },
   dot: { color: colors.borderStrong, fontSize: 11 },
-  lastDone: { color: colors.textMuted, fontSize: 11, lineHeight: 16, fontWeight: "700" },
+  routineStatusLine: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: spacing.sm },
+  lastDone: { color: colors.textMuted, fontSize: 11, lineHeight: 18, fontWeight: "700" },
+  availabilityLabel: { flexDirection: "row", alignItems: "center", gap: 5, minHeight: 18 },
+  availabilityDot: { width: 6, height: 6, borderRadius: radii.pill, backgroundColor: colors.success },
+  availabilityDotCaution: { backgroundColor: colors.warning },
+  availabilityDotRecovering: { backgroundColor: colors.danger },
+  availabilityText: { color: colors.textMuted, fontSize: 10, lineHeight: 16, fontWeight: "800" },
+  availabilityTextCaution: { color: colors.warning },
+  availabilityTextRecovering: { color: colors.danger },
   disclosure: {
     minHeight: 44,
     flexDirection: "row",

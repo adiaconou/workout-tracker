@@ -11,6 +11,7 @@ test("uses one Expo Router application for Android and hosted web", async () => 
     rootLayout,
     tabs,
     routines,
+    routineCardFormat,
     routineDetail,
     exerciseLibrary,
     exerciseDetail,
@@ -31,6 +32,7 @@ test("uses one Expo Router application for Android and hosted web", async () => 
     readFile(new URL("app/_layout.tsx", root), "utf8"),
     readFile(new URL("app/(tabs)/_layout.tsx", root), "utf8"),
     readFile(new URL("src/features/routines/routines-screen.tsx", root), "utf8"),
+    readFile(new URL("src/features/routines/routine-card-format.ts", root), "utf8"),
     readFile(new URL("src/features/routines/routine-detail-screen.tsx", root), "utf8"),
     readFile(new URL("src/features/exercises/exercise-library-screen.tsx", root), "utf8"),
     readFile(new URL("src/features/exercises/exercise-detail-screen.tsx", root), "utf8"),
@@ -68,10 +70,15 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(routines, /recommendedRoutineRow/);
   assert.match(routines, /Why Routine/);
   assert.match(routines, /routine\.durationMin/);
-  assert.match(routines, /routineLastDoneLabel\(routine\.lastWorkoutAt\)/);
-  assert.match(routines, /Last done/);
-  assert.match(routines, /Not done yet/);
+  assert.match(routines, /routineLastDoneLabel\(routine\.lastWorkoutAt, \{ now: renderedAt \}\)/);
+  assert.match(routineCardFormat, /Last done/);
+  assert.match(routineCardFormat, /Not done yet/);
+  assert.match(routineCardFormat, /plural\(days, "day"\)/);
+  assert.match(routineCardFormat, /plural\(hours, "hour"\)/);
+  assert.match(routines, /guidance\.availabilityLabel/);
+  assert.match(routines, /<AvailabilityLabel/);
   assert.match(routines, /How availability works/);
+  assert.match(routines, /do\s+not measure soreness, pain, sleep, stress, injury, warm-up performance/);
   assert.match(routines, /No routines yet/);
   assert.match(routines, /temporarily unavailable/);
   assert.match(routines, /AppState\.addEventListener\("change"/);
@@ -92,7 +99,9 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   const routineListEnd = routines.indexOf("</Card>", routineListStart);
   assert.ok(routineListStart >= 0 && routineListEnd > routineListStart);
   const routineList = routines.slice(routineListStart, routineListEnd);
-  assert.doesNotMatch(routineList, /availabilityReason|AvailabilityLabel|guidanceLine/);
+  assert.match(routineList, /AvailabilityLabel/);
+  assert.match(routineList, /guidance\.availabilityLabel/);
+  assert.doesNotMatch(routineList, /availabilityReason/);
   assert.match(routineDetail, /Start workout/);
   assert.match(routineDetail, /Edit routine/);
   assert.match(routineDetail, /Add exercise from library/);

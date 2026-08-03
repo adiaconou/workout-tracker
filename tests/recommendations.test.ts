@@ -6,15 +6,9 @@ import {
   type RecentCompletedSet,
   type RoutineCode,
 } from "../lib/recommendations";
+import { canonicalRoutines } from "../lib/routines";
 
 const NOW = new Date("2026-07-15T12:00:00.000Z");
-
-const workingSetCounts: Record<RoutineCode, number[]> = {
-  A: [5, 4, 3, 3, 3, 2],
-  B: [4, 4, 3, 3, 4, 3, 3],
-  C: [4, 4, 3, 2, 3, 3],
-  D: [10, 3, 3, 3, 3, 3, 3, 3],
-};
 
 function completedSession(routineCode: RoutineCode, hoursAgo: number): RecentCompletedSession {
   return {
@@ -25,15 +19,39 @@ function completedSession(routineCode: RoutineCode, hoursAgo: number): RecentCom
 
 function completedRoutineSets(routineCode: RoutineCode, hoursAgo: number): RecentCompletedSet[] {
   const performedAt = new Date(NOW.getTime() - hoursAgo * 3_600_000).toISOString();
-  return workingSetCounts[routineCode].flatMap((count, exerciseIndex) =>
-    Array.from({ length: count }, () => ({
-      routineCode,
-      exerciseOrder: exerciseIndex + 1,
-      setType: "regular",
-      performedAt,
-    })),
-  );
+  const routine = canonicalRoutines.find((candidate) => candidate.code === routineCode);
+  assert.ok(routine, `Missing canonical Routine ${routineCode}`);
+  return routine.exercises.flatMap((exercise, exerciseIndex) => {
+    const regularType = exercise.rest.toLowerCase().includes("start every minute")
+      ? "emom"
+      : "regular";
+    const definitions = [
+      { setType: "warmup", count: exercise.warmupSets },
+      { setType: regularType, count: exercise.regularSets },
+      { setType: "failure", count: exercise.failureSets },
+      { setType: "drop", count: exercise.dropSets },
+    ];
+    return definitions.flatMap(({ setType, count }) =>
+      Array.from({ length: count }, () => ({
+        routineCode,
+        exerciseOrder: exerciseIndex + 1,
+        setType,
+        performedAt,
+      })),
+    );
+  });
 }
+
+test("recommendation fixtures follow the canonical set prescriptions", () => {
+  const routineB = completedRoutineSets("B", 12);
+  const routineD = completedRoutineSets("D", 12);
+
+  assert.equal(routineB.length, 25);
+  assert.equal(routineD.length, 32);
+  assert.equal(routineD.filter((set) => set.setType === "emom").length, 10);
+  assert.equal(routineB.filter((set) => set.setType === "failure").length, 1);
+  assert.equal(routineB.filter((set) => set.setType === "drop").length, 1);
+});
 
 test("starts a new training history with Routine A and leaves every routine available", () => {
   const result = buildRoutineRecommendations([], [], NOW);
@@ -56,17 +74,56 @@ test("routes around recent upper-body strength fatigue to Routine C", () => {
   assert.equal(result.routines.find((routine) => routine.code === "C")?.availability, "available");
 });
 
-test("continues to Routine D after a recent leg workout", () => {
+test("returns to the most-due upper routine after an isolated leg workout", () => {
   const result = buildRoutineRecommendations(
     [completedSession("C", 18)],
     completedRoutineSets("C", 18),
     NOW,
   );
 
-  assert.equal(result.nextInSequence, "D");
-  assert.equal(result.recommendedRoutineCode, "D");
+  assert.equal(result.nextInSequence, "A");
+  assert.equal(result.recommendedRoutineCode, "A");
   assert.equal(result.routines.find((routine) => routine.code === "C")?.availability, "recovering");
-  assert.equal(result.routines.find((routine) => routine.code === "D")?.availability, "available");
+  assert.equal(result.routines.find((routine) => routine.code === "A")?.availability, "available");
+});
+
+test("keeps a recovery detour from skipping the next upper-body routine", () => {
+  const result = buildRoutineRecommendations(
+    [completedSession("C", 18), completedSession("A", 48)],
+    [...completedRoutineSets("C", 18), ...completedRoutineSets("A", 48)],
+    NOW,
+  );
+
+  assert.equal(result.nextInSequence, "B");
+  assert.equal(result.recommendedRoutineCode, "B");
+  assert.equal(result.routines.find((routine) => routine.code === "B")?.availabilityLabel, "Moderate logged overlap");
+  assert.match(result.summary, /warm-up performance/i);
+});
+
+test("can recommend the planned upper-body routine with an honest moderate-overlap warning", () => {
+  const result = buildRoutineRecommendations(
+    [completedSession("A", 36)],
+    completedRoutineSets("A", 36),
+    NOW,
+  );
+
+  assert.equal(result.nextInSequence, "B");
+  assert.equal(result.recommendedRoutineCode, "B");
+  assert.equal(result.routines.find((routine) => routine.code === "B")?.availability, "caution");
+  assert.equal(result.routines.find((routine) => routine.code === "B")?.availabilityLabel, "Moderate logged overlap");
+  assert.match(result.summary, /moderate overlap/i);
+  assert.match(result.summary, /soreness, energy, and warm-up performance/i);
+});
+
+test("does not recommend moderate-overlap upper work inside the high-overlap window", () => {
+  const result = buildRoutineRecommendations(
+    [completedSession("A", 35)],
+    completedRoutineSets("A", 35),
+    NOW,
+  );
+
+  assert.equal(result.recommendedRoutineCode, "C");
+  assert.equal(result.routines.find((routine) => routine.code === "B")?.availability, "recovering");
 });
 
 test("does not block the planned routine after only one recently completed pull-up set", () => {
@@ -87,6 +144,19 @@ test("recommends recovery when recent upper- and lower-body work blocks every ro
 
   assert.equal(result.recommendedRoutineCode, null);
   assert.ok(result.routines.every((routine) => routine.availability === "recovering"));
+  assert.match(result.summary, /not a medical readiness assessment/i);
+  assert.doesNotMatch(result.summary, /best goal-aligned|sufficiently recovered/i);
+});
+
+test("does not treat missing set logs as proof of readiness", () => {
+  const result = buildRoutineRecommendations([completedSession("A", 18)], [], NOW);
+
+  assert.equal(result.recommendedRoutineCode, "B");
+  assert.match(
+    result.routines.find((routine) => routine.code === "B")?.availabilityReason ?? "",
+    /not evidence of recovery/i,
+  );
+  assert.match(result.summary, /not evidence of recovery/i);
 });
 
 test("uses exercise muscle metadata in preference to legacy routine-position mappings", () => {

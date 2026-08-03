@@ -97,6 +97,7 @@ const MUSCLE_LABELS: Record<MuscleGroup, string> = {
 };
 
 const GOAL_BASE: Record<RoutineCode, number> = { A: 14, B: 12, C: 11, D: 13 };
+const MODERATE_OVERLAP_PENALTY = 20;
 
 function hoursBetween(now: Date, value: string) {
   const timestamp = new Date(value).getTime();
@@ -116,11 +117,6 @@ function setEffortFactor(setType: string) {
   if (setType === "warmup") return 0.25;
   if (setType === "failure" || setType === "drop") return 1.25;
   return 1;
-}
-
-function nextRoutine(code?: RoutineCode): RoutineCode {
-  if (!code) return "A";
-  return ROUTINE_ORDER[(ROUTINE_ORDER.indexOf(code) + 1) % ROUTINE_ORDER.length];
 }
 
 function listMuscles(groups: MuscleGroup[]) {
@@ -163,7 +159,6 @@ export function buildRoutineRecommendations(
     }
   }
 
-  const nextInSequence = nextRoutine(validSessions[0]?.routineCode);
   const recentCycle = validSessions.slice(0, 8);
   const completionCounts = Object.fromEntries(ROUTINE_ORDER.map((code) => [code, 0])) as Record<RoutineCode, number>;
   const lastCompletion = new Map<RoutineCode, string>();
@@ -171,6 +166,14 @@ export function buildRoutineRecommendations(
     completionCounts[session.routineCode] += 1;
     if (!lastCompletion.has(session.routineCode)) lastCompletion.set(session.routineCode, session.completedAt);
   }
+  const nextInSequence = [...ROUTINE_ORDER].sort((a, b) => {
+    const countDifference = completionCounts[a] - completionCounts[b];
+    if (countDifference !== 0) return countDifference;
+    const lastA = lastCompletion.has(a) ? new Date(lastCompletion.get(a)!).getTime() : 0;
+    const lastB = lastCompletion.has(b) ? new Date(lastCompletion.get(b)!).getTime() : 0;
+    const recencyDifference = lastA - lastB;
+    return recencyDifference || ROUTINE_ORDER.indexOf(a) - ROUTINE_ORDER.indexOf(b);
+  })[0] ?? "A";
   const maxCount = Math.max(...Object.values(completionCounts));
   const lowerBodyDue = !validSessions.slice(0, 3).some((session) => session.routineCode === "C");
 
@@ -194,19 +197,19 @@ export function buildRoutineRecommendations(
     const newestRelevantHours = relevantSetAges.length ? Math.min(...relevantSetAges) : Number.POSITIVE_INFINITY;
 
     let availability: AvailabilityStatus = "available";
-    if (overlapScore >= 0.48 && newestRelevantHours < 30) availability = "recovering";
+    if (overlapScore >= 0.48 && newestRelevantHours < 36) availability = "recovering";
     else if (overlapScore >= 0.2) availability = "caution";
 
     const availabilityLabel = availability === "available"
-      ? "Available"
+      ? "Lower logged overlap"
       : availability === "caution"
-        ? "Available with caution"
-        : "Recovering";
+        ? "Moderate logged overlap"
+        : "High logged overlap";
     const availabilityReason = availability === "available"
       ? recentSets.length
-        ? "Low overlap with your completed sets from the past 72 hours."
-        : "No completed sets in the past 72 hours."
-      : `${listMuscles(overlappingMuscles)} were trained ${formatAge(newestRelevantHours)} ago.`;
+        ? "Lower overlap with completed sets logged in the past 72 hours."
+        : "No completed sets are logged in the past 72 hours. That is not evidence of recovery."
+      : `Your logged sets included ${listMuscles(overlappingMuscles)} ${formatAge(newestRelevantHours)} ago.`;
 
     const lastCompletedAt = lastCompletion.get(code);
     const overdueBonus = lastCompletedAt ? Math.min(18, hoursBetween(now, lastCompletedAt) / 24) : 18;
@@ -222,7 +225,7 @@ export function buildRoutineRecommendations(
       availabilityLabel,
       availabilityReason,
       goalReason: code === nextInSequence
-        ? "Next in your rolling sequence and aligned with the plan's goal balance."
+        ? "Most due in your rolling plan and aligned with its goal balance."
         : defaultGoalReason(code),
       isRecommended: false,
       isNextInSequence: code === nextInSequence,
@@ -230,24 +233,35 @@ export function buildRoutineRecommendations(
     };
   });
 
-  const availableCandidates = draft.filter((routine) => routine.availability === "available");
-  const candidates = availableCandidates.length
-    ? availableCandidates
-    : draft.filter((routine) => routine.availability === "caution");
-  const recommended = [...candidates].sort((a, b) => b.goalScore - a.goalScore)[0];
+  const candidates = draft.filter((routine) => routine.availability !== "recovering");
+  const recommended = [...candidates].sort((a, b) => {
+    const score = (routine: typeof a) => routine.goalScore -
+      (routine.availability === "caution" ? MODERATE_OVERLAP_PENALTY : 0);
+    return score(b) - score(a);
+  })[0];
 
   const routines = draft.map(({ goalScore: _goalScore, ...routine }) => ({
     ...routine,
     isRecommended: routine.code === recommended?.code,
   }));
 
-  let summary = "Recovery is the best goal-aligned choice today; every routine has substantial recent overlap.";
+  let summary = "Every routine has high overlap with recently logged work. Consider rest or a lighter session; this is not a medical readiness assessment.";
   if (recommended) {
-    if (!validSessions.length) summary = "Start with pull-up strength and pressing, then continue the rolling plan.";
-    else if (recommended.code === nextInSequence) summary = "It keeps your rolling plan balanced and is sufficiently recovered.";
-    else if (recommended.code === "C" && lowerBodyDue) summary = "Lower-body work is due and avoids your recent upper-body fatigue.";
-    else if (recommended.code !== "C") summary = "It moves your pull-up goal forward using muscles that are available today.";
-    else summary = "It is the strongest available fit for balanced progress today.";
+    if (!validSessions.length && !recentSets.length) {
+      summary = "Start with pull-up strength and pressing, then continue the rolling plan. No recent completed sets are logged, so use how you feel and your warm-up to judge readiness.";
+    } else if (!recentSets.length) {
+      summary = `Routine ${recommended.code} best preserves the rolling plan. No completed sets are logged in the past 72 hours, which is not evidence of recovery; use how you feel and your warm-up to decide.`;
+    } else if (recommended.availability === "caution") {
+      summary = `Routine ${recommended.code} best preserves the plan, but it has moderate overlap with work logged in the past 72 hours. Use soreness, energy, and warm-up performance to decide.`;
+    } else if (recommended.code === nextInSequence) {
+      summary = "It keeps your rolling plan balanced and has lower overlap with recently logged sets.";
+    } else if (recommended.code === "C" && lowerBodyDue) {
+      summary = "Lower-body work is due and has lower overlap with your recently logged upper-body sets.";
+    } else if (recommended.code !== "C") {
+      summary = "It advances your upper-body goal with lower overlap against recently logged sets.";
+    } else {
+      summary = "It is the strongest fit for balanced progress with lower recent logged overlap.";
+    }
   }
 
   return {
