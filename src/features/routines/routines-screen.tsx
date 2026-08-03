@@ -345,7 +345,10 @@ export function RoutinesScreen() {
                           <Text style={styles.dot}>·</Text>
                           <Text style={styles.meta}>{routine.setCount} sets</Text>
                         </View>
-                        <View style={styles.routineStatusLine}>
+                        <View style={[
+                          styles.routineStatusLine,
+                          !routine.lastWorkoutAt && styles.routineStatusLineWithoutHistory,
+                        ]}>
                           <Text style={styles.lastDone}>{lastDoneLabel}</Text>
                           {guidance ? (
                             <AvailabilityLabel
@@ -632,6 +635,7 @@ const styles = StyleSheet.create({
   meta: { color: colors.textDim, fontSize: 11 },
   dot: { color: colors.borderStrong, fontSize: 11 },
   routineStatusLine: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: spacing.sm },
+  routineStatusLineWithoutHistory: { flexDirection: "column", alignItems: "flex-start", gap: 2 },
   lastDone: { color: colors.textMuted, fontSize: 11, lineHeight: 18, fontWeight: "700" },
   availabilityLabel: { flexDirection: "row", alignItems: "center", gap: 5, minHeight: 18 },
   availabilityDot: { width: 6, height: 6, borderRadius: radii.pill, backgroundColor: colors.success },

@@ -77,6 +77,8 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(routineCardFormat, /plural\(hours, "hour"\)/);
   assert.match(routines, /guidance\.availabilityLabel/);
   assert.match(routines, /<AvailabilityLabel/);
+  assert.match(routines, /!routine\.lastWorkoutAt && styles\.routineStatusLineWithoutHistory/);
+  assert.match(routines, /routineStatusLineWithoutHistory: \{ flexDirection: "column"/);
   assert.match(routines, /How availability works/);
   assert.match(routines, /do\s+not measure soreness, pain, sleep, stress, injury, warm-up performance/);
   assert.match(routines, /No routines yet/);
