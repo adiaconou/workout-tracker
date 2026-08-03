@@ -256,11 +256,11 @@ export function buildRoutineRecommendations(
     } else if (recommended.code === nextInSequence) {
       summary = "It keeps your rolling plan balanced and has lower overlap with recently logged sets.";
     } else if (recommended.code === "C" && lowerBodyDue) {
-      summary = "Lower-body work is due and has lower overlap with your recently logged upper-body sets.";
+      summary = "Lower-body work is due and has lower overlap with your recently logged work.";
     } else if (recommended.code !== "C") {
       summary = "It advances your upper-body goal with lower overlap against recently logged sets.";
     } else {
-      summary = "It is the strongest fit for balanced progress with lower recent logged overlap.";
+      summary = "It is the highest-scoring fit for balanced progress with lower recent logged overlap.";
     }
   }
 
