@@ -632,7 +632,8 @@ export class D1EntityRepository implements EntityRepository {
         actual_reps_right AS actualRepsRight, actual_duration_sec AS actualDurationSec,
         actual_weight AS actualWeight, weight_unit AS weightUnit, actual_rir AS actualRir,
         actual_rest_sec AS actualRestSec, rest_started_at AS restStartedAt,
-        rest_ended_at AS restEndedAt, rest_skipped AS restSkipped, status, completed_at AS completedAt,
+        rest_ended_at AS restEndedAt, rest_skipped AS restSkipped, status,
+        started_at AS startedAt, elapsed_seconds AS elapsedSeconds, completed_at AS completedAt,
         notes, created_at AS createdAt, updated_at AS updatedAt
         FROM workout_sets WHERE owner_email = ? AND workout_exercise_id = ? ORDER BY position`)
         .bind(ownerEmail, exercise.id).all<Row>();
@@ -653,7 +654,9 @@ export class D1EntityRepository implements EntityRepository {
           actualRepsLeft: numberOrNull(set.actualRepsLeft), actualRepsRight: numberOrNull(set.actualRepsRight), actualDurationSec: numberOrNull(set.actualDurationSec),
           actualWeight: numberOrNull(set.actualWeight), weightUnit: String(set.weightUnit), actualRir: numberOrNull(set.actualRir), actualRestSec: numberOrNull(set.actualRestSec),
           restStartedAt: set.restStartedAt === null ? null : String(set.restStartedAt), restEndedAt: set.restEndedAt === null ? null : String(set.restEndedAt),
-          restSkipped: bool(set.restSkipped), status: String(set.status) as WorkoutItemStatus, completedAt: set.completedAt === null ? null : String(set.completedAt),
+          restSkipped: bool(set.restSkipped), status: String(set.status) as WorkoutItemStatus,
+          startedAt: set.startedAt === null ? null : String(set.startedAt), elapsedSeconds: numberOrNull(set.elapsedSeconds),
+          completedAt: set.completedAt === null ? null : String(set.completedAt),
           notes: String(set.notes), createdAt: String(set.createdAt), updatedAt: String(set.updatedAt),
         })),
       });
@@ -789,9 +792,8 @@ export class D1EntityRepository implements EntityRepository {
         COALESCE(SUM(ws.completed_sets), 0) AS completedSets,
         COALESCE(SUM(
           CASE WHEN ws.completed_at IS NULL THEN 0
-          ELSE MAX(0, CAST(
+          ELSE MAX(0, ROUND(
             (julianday(ws.completed_at) - julianday(ws.started_at)) * 86400
-            AS INTEGER
           )) END
         ), 0) AS durationSeconds
         FROM workout_sessions ws WHERE ${where}`)

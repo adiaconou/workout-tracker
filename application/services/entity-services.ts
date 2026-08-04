@@ -197,7 +197,7 @@ export class WorkoutService {
     assertNonNegative(input.actualWeight, "Weight");
     assertNonNegative(input.actualRir, "RIR");
     assertNonNegative(input.actualRestSec, "Rest");
-    if (input.status !== undefined && !["planned", "started", "completed", "skipped"].includes(input.status)) {
+    if (input.status !== undefined && !["completed", "skipped"].includes(input.status)) {
       throw new Error("Workout set status is invalid.");
     }
     return this.repository.correctWorkoutSet(ownerEmail, workoutId, setId, input);

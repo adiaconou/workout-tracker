@@ -25,7 +25,10 @@ import {
 } from "../../components/ui";
 import { colors, radii, spacing } from "../../theme/tokens";
 import { DiscardWorkoutModal } from "../workouts/discard-workout-modal";
-import { routineLastDoneLabel } from "./routine-card-format";
+import {
+  routineDurationLabel,
+  routineLastDoneLabel,
+} from "./routine-card-format";
 
 export function RoutinesScreen() {
   const { signOut } = useAuth();
@@ -304,6 +307,11 @@ export function RoutinesScreen() {
                 const guidance = recommendation?.routines.find((item) => item.code === routine.code);
                 const isRecommended = routine.code === recommendation?.recommendedRoutineCode;
                 const lastDoneLabel = routineLastDoneLabel(routine.lastWorkoutAt, { now: renderedAt });
+                const durationLabel = routineDurationLabel(
+                  routine.averageDurationSeconds,
+                  routine.durationSampleCount,
+                  routine.durationMin,
+                );
                 return (
                   <View
                     key={routine.code}
@@ -315,7 +323,7 @@ export function RoutinesScreen() {
                     ]}
                   >
                     <RowLink
-                      label={`Open Routine ${routine.code}, ${routine.focus}. ${routine.durationMin} minutes, ${routine.exerciseCount} exercises, ${routine.setCount} sets${
+                      label={`Open Routine ${routine.code}, ${routine.focus}. ${durationLabel}, ${routine.exerciseCount} exercises, ${routine.setCount} sets${
                         isRecommended ? ". Recommended today" : ""
                       }. ${lastDoneLabel}${guidance ? `. ${guidance.availabilityLabel}` : ""}`}
                       onPress={() => router.push(`/routines/${routine.code}`)}
@@ -339,7 +347,7 @@ export function RoutinesScreen() {
                           ) : null}
                         </View>
                         <View style={styles.routineMeta}>
-                          <Text style={styles.meta}>{routine.durationMin} min</Text>
+                          <Text style={styles.meta}>{durationLabel}</Text>
                           <Text style={styles.dot}>·</Text>
                           <Text style={styles.meta}>{routine.exerciseCount} exercises</Text>
                           <Text style={styles.dot}>·</Text>

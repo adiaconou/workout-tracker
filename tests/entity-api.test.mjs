@@ -66,7 +66,9 @@ test("keeps published versions immutable and materializes normalized workout row
   assert.match(store, /remainingSetsSkipped/);
   assert.match(store, /status = 'skipped'/);
   assert.match(store, /status = 'Partial'/);
-  assert.match(store, /last_workout\.completed_at AS lastWorkoutAt/);
+  assert.match(store, /workout_history\.completed_at AS lastWorkoutAt/);
+  assert.match(store, /average_duration_seconds AS averageDurationSeconds/);
+  assert.match(store, /duration_sample_count AS durationSampleCount/);
   assert.match(store, /MAX\(completed_at\) AS completed_at/);
   assert.match(store, /status IN \('Completed', 'Partial'\)/);
 });

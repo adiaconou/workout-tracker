@@ -187,7 +187,7 @@ export function HistoryScreen() {
           <Stat value={String(history?.stats.completedSets ?? 0)} label="Completed sets" />
           <Stat
             value={formatHistoryDuration(history?.stats.durationSeconds ?? 0)}
-            label="Training time"
+            label="Elapsed time"
           />
         </View>
       </Card>

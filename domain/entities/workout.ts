@@ -61,6 +61,8 @@ export type WorkoutSet = {
   restEndedAt: string | null;
   restSkipped: boolean;
   status: WorkoutItemStatus;
+  startedAt: string | null;
+  elapsedSeconds: number | null;
   completedAt: string | null;
   notes: string;
   createdAt: string;
@@ -103,5 +105,5 @@ export type Workout = {
 
 export type WorkoutSetCorrection = Partial<Pick<WorkoutSet,
   "actualReps" | "actualRepsLeft" | "actualRepsRight" | "actualDurationSec" |
-  "actualWeight" | "actualRir" | "actualRestSec" | "restSkipped" | "notes" | "status"
->>;
+  "actualWeight" | "actualRir" | "actualRestSec" | "restSkipped" | "notes"
+>> & { status?: "completed" | "skipped" };

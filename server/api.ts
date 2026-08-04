@@ -510,7 +510,10 @@ async function handleWorkouts({ request, user, segments }: RouteContext) {
     }
   } else if (child === "complete" && !childId && request.method === "POST") {
     try {
-      const result = await completeWorkoutEarly(user.email, workoutId);
+      const input = request.headers.get("content-type")?.toLowerCase().includes("application/json")
+        ? await readJson<{ workoutElapsedSeconds?: number | null }>(request)
+        : {};
+      const result = await completeWorkoutEarly(user.email, workoutId, input);
       return result
         ? apiResponse(request, result)
         : apiError(request, 404, "workout_not_found", "Workout not found.");

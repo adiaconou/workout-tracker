@@ -295,7 +295,8 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
     planned_target_min AS targetMin, planned_target_max AS targetMax,
     planned_target_display AS targetDisplay, planned_rir_min AS rirMin,
     planned_rir_max AS rirMax, planned_rest_sec AS restSec,
-    planned_rest_rule AS restRule, notes
+    planned_rest_rule AS restRule, started_at AS startedAt,
+    elapsed_seconds AS elapsedSeconds, notes
     FROM workout_sets WHERE workout_id = ? ORDER BY position`).bind(started.session.id).all();
   assert.deepEqual(materializedSets.results.map((set) => set.setType), ["test", "drop", "emom"]);
   assert.deepEqual(materializedSets.results.map((set) => set.targetType), ["reps", "duration", "rounds"]);
@@ -311,6 +312,9 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
     "Change load immediately",
     "Begin on the minute",
   ]);
+  assert.ok(materializedSets.results[0].startedAt, "the first set timer starts with the workout");
+  assert.equal(materializedSets.results[0].elapsedSeconds, null);
+  assert.deepEqual(materializedSets.results.slice(1).map((set) => set.startedAt), [null, null]);
 
   const materializedExercises = await database.prepare(`SELECT source_routine_exercise_id AS sourceRoutineExerciseId,
     side_mode_snapshot AS sideMode, load_type_snapshot AS loadType, notes
@@ -332,6 +336,11 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
   }), 200);
   assert.equal(firstMemberResult.restSeconds, 0, "rest must not interrupt members of the same superset round");
   assert.equal(firstMemberResult.restEndsAt, null);
+  const afterFirstMember = await database.prepare(`SELECT started_at AS startedAt,
+    elapsed_seconds AS elapsedSeconds FROM workout_sets
+    WHERE workout_id = ? ORDER BY position`).bind(started.session.id).all();
+  assert.ok(afterFirstMember.results[0].elapsedSeconds !== null);
+  assert.ok(afterFirstMember.results[1].startedAt, "a no-rest transition starts the next set immediately");
   const finalMemberResult = expectStatus(await request(`/api/v1/workouts/${started.session.id}/sets`, {
     method: "POST",
     body: {
@@ -343,6 +352,9 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
   }), 200);
   assert.equal(finalMemberResult.restSeconds, 180, "the deferred superset rest must begin after the final member");
   assert.ok(finalMemberResult.restEndsAt);
+  const restingSet = await database.prepare(`SELECT started_at AS startedAt FROM workout_sets
+    WHERE workout_id = ? AND position = 3`).bind(started.session.id).first();
+  assert.equal(restingSet.startedAt, null, "the next set does not start while prescribed rest is active");
   const missingRounds = await request(`/api/v1/workouts/${started.session.id}/sets`, {
     method: "POST",
     body: { prescribedSetId: activeWorkout.sets[2].id, status: "Completed", actualWeight: 80, actualReps: null },
@@ -355,16 +367,23 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
   }), 200);
   assert.equal(roundsResult.nextSetIndex, 3, "round targets must advance through the explicit rounds path");
   assert.equal(roundsResult.workoutCompleted, true);
+  const timedSets = await database.prepare(`SELECT started_at AS startedAt,
+    elapsed_seconds AS elapsedSeconds FROM workout_sets
+    WHERE workout_id = ? ORDER BY position`).bind(started.session.id).all();
+  assert.ok(timedSets.results.every((set) => set.startedAt && set.elapsedSeconds !== null));
 
   const completedSession = await database.prepare(`SELECT completed_at AS completedAt
     FROM workout_sessions WHERE id = ?`).bind(started.session.id).first();
   assert.ok(completedSession?.completedAt);
   const completedBootstrap = expectStatus(await request("/api/v1/bootstrap"), 200);
+  const completedRoutineSummary = completedBootstrap.routines.find((routine) => routine.code === "Q");
   assert.equal(
-    completedBootstrap.routines.find((routine) => routine.code === "Q")?.lastWorkoutAt,
+    completedRoutineSummary?.lastWorkoutAt,
     completedSession.completedAt,
     "routine cards must receive the exact latest completed workout date",
   );
+  assert.equal(completedRoutineSummary?.durationSampleCount, 1);
+  assert.ok(Number.isFinite(completedRoutineSummary?.averageDurationSeconds));
   assert.ok(
     completedBootstrap.routines.some((routine) => routine.code !== "Q" && routine.lastWorkoutAt === null),
     "routines without history must return a null last workout date",

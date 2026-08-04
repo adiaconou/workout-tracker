@@ -59,7 +59,8 @@ const createStatements = [
     exercise_name TEXT NOT NULL, set_order INTEGER NOT NULL, set_type TEXT NOT NULL,
     target_display TEXT NOT NULL, target_rest_sec INTEGER NOT NULL, rest_rule TEXT NOT NULL,
     actual_reps INTEGER, actual_duration_sec INTEGER, actual_weight REAL,
-    weight_unit TEXT NOT NULL DEFAULT 'lb', status TEXT NOT NULL, performed_at TEXT NOT NULL,
+    weight_unit TEXT NOT NULL DEFAULT 'lb', status TEXT NOT NULL, started_at TEXT,
+    performed_at TEXT NOT NULL, elapsed_seconds INTEGER, workout_elapsed_seconds INTEGER,
     rest_skipped INTEGER NOT NULL DEFAULT 0, notes TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
   )`,
@@ -142,7 +143,8 @@ const createStatements = [
     actual_weight REAL, weight_unit TEXT NOT NULL DEFAULT 'lb', actual_rir REAL,
     actual_rest_sec INTEGER, rest_started_at TEXT, rest_ended_at TEXT,
     rest_skipped INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'planned',
-    completed_at TEXT, notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    started_at TEXT, elapsed_seconds INTEGER, completed_at TEXT,
+    notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
   )`,
   "CREATE UNIQUE INDEX IF NOT EXISTS workout_sets_prescribed_idx ON workout_sets(workout_id, prescribed_set_id)",
   "CREATE UNIQUE INDEX IF NOT EXISTS workout_sets_position_idx ON workout_sets(workout_id, position)",
@@ -221,6 +223,15 @@ const additiveColumns: Record<string, Record<string, string>> = {
     weight_unit: "TEXT NOT NULL DEFAULT 'lb'",
     session_notes: "TEXT NOT NULL DEFAULT ''",
     is_archived: "INTEGER NOT NULL DEFAULT 0",
+  },
+  workout_sets: {
+    started_at: "TEXT",
+    elapsed_seconds: "INTEGER",
+  },
+  set_performances: {
+    started_at: "TEXT",
+    elapsed_seconds: "INTEGER",
+    workout_elapsed_seconds: "INTEGER",
   },
 };
 
@@ -440,10 +451,12 @@ export async function materializeWorkoutFromSnapshot(d1: D1Database, ownerEmail:
   const normalizedPrescription = getNormalizedWorkoutPrescription(routine);
   const performances = await d1.prepare(`SELECT prescribed_set_id AS prescribedSetId, actual_reps AS actualReps,
     actual_duration_sec AS actualDurationSec, actual_weight AS actualWeight, weight_unit AS weightUnit,
-    status, performed_at AS performedAt, rest_skipped AS restSkipped, notes
+    status, started_at AS startedAt, performed_at AS performedAt,
+    elapsed_seconds AS elapsedSeconds, rest_skipped AS restSkipped, notes
     FROM set_performances WHERE session_id = ? AND owner_email = ?`).bind(sessionId, ownerEmail).all<{
       prescribedSetId: string; actualReps: number | null; actualDurationSec: number | null; actualWeight: number | null;
-      weightUnit: string; status: string; performedAt: string; restSkipped: number; notes: string;
+      weightUnit: string; status: string; startedAt: string | null; performedAt: string;
+      elapsedSeconds: number | null; restSkipped: number; notes: string;
     }>();
   const performanceBySet = new Map(performances.results.map((item) => [item.prescribedSetId, item]));
   const sourceRows = versionExists ? await d1.prepare(`SELECT rve.id AS placementId, rve.position AS exercisePosition,
@@ -522,8 +535,8 @@ export async function materializeWorkoutFromSnapshot(d1: D1Database, ownerEmail:
         position, set_type, planned_target_type, planned_target_min, planned_target_max,
         planned_target_display, planned_rir_min, planned_rir_max, planned_rest_sec, planned_rest_rule,
         actual_reps, actual_duration_sec, actual_weight, weight_unit, rest_skipped, status,
-        completed_at, notes, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        started_at, elapsed_seconds, completed_at, notes, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .bind(`${sessionId}::set::${set.globalIndex + 1}`, ownerEmail, sessionId, workoutExerciseId,
           sourceSetId, set.id, set.globalIndex + 1, set.setType,
           set.targetType ?? (set.targetUnit === "seconds" ? "duration" : set.targetUnit === "rounds" || set.setType === "emom" ? "rounds" : "reps"),
@@ -532,6 +545,7 @@ export async function materializeWorkoutFromSnapshot(d1: D1Database, ownerEmail:
           performance?.actualReps ?? null, performance?.actualDurationSec ?? null,
           performance?.actualWeight ?? null, performance?.weightUnit ?? exercise.weightUnit,
           Number(performance?.restSkipped ?? 0), performance?.status?.toLowerCase() ?? "planned",
+          performance?.startedAt ?? null, performance?.elapsedSeconds ?? null,
           performance?.performedAt ?? null, performance?.notes || set.notes || "", session.startedAt,
           performance?.performedAt ?? session.startedAt));
     }

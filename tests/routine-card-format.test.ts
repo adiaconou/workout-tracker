@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  routineDurationLabel,
   routineElapsedLabel,
   routineLastDoneLabel,
 } from "../src/features/routines/routine-card-format";
@@ -30,4 +31,10 @@ test("formats elapsed boundaries without rounding or negative ages", () => {
 test("handles routines with no usable completion date", () => {
   assert.equal(routineLastDoneLabel(null, { now: NOW }), "Not done yet");
   assert.equal(routineLastDoneLabel("not-a-date", { now: NOW }), "Last workout date unavailable");
+});
+
+test("shows actual average duration with its sample count and falls back to the estimate", () => {
+  assert.equal(routineDurationLabel(3_121, 1, 60), "Avg 52 min (1 workout)");
+  assert.equal(routineDurationLabel(3_121, 6, 60), "Avg 52 min (6 workouts)");
+  assert.equal(routineDurationLabel(null, 0, 60), "Est. 60 min");
 });

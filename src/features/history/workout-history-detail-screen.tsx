@@ -29,9 +29,12 @@ import {
 import { colors, radii, spacing } from "../../theme/tokens";
 import { formatPreviousSetPerformance } from "../workouts/previous-performance";
 import {
+  formatElapsedDuration,
+  summarizeWorkoutTiming,
+} from "../workouts/workout-timing";
+import {
   formatHistoryDateTime,
   formatSetResult,
-  formatWorkoutDuration,
   historyStatusLabel,
 } from "./history-format";
 
@@ -180,16 +183,7 @@ export function WorkoutHistoryDetailScreen({
     (count, exercise) => count + exercise.sets.length,
     0,
   );
-  const durationSeconds = workout.completedAt
-    ? Math.max(
-      0,
-      Math.round(
-        (new Date(workout.completedAt).getTime() -
-          new Date(workout.startedAt).getTime()) /
-          1000,
-      ),
-    )
-    : 0;
+  const timing = summarizeWorkoutTiming(workout);
 
   return (
     <Screen>
@@ -211,8 +205,8 @@ export function WorkoutHistoryDetailScreen({
       <Card style={styles.summaryCard}>
         <View style={styles.summaryStats}>
           <SummaryStat
-            value={formatWorkoutDuration(durationSeconds)}
-            label="Duration"
+            value={formatElapsedDuration(timing.elapsedSeconds)}
+            label="Total elapsed"
           />
           <SummaryStat value={`${completedSets}/${totalSets}`} label="Completed sets" />
           <SummaryStat value={String(skippedSets)} label="Skipped" />
@@ -231,6 +225,11 @@ export function WorkoutHistoryDetailScreen({
         const exerciseCompletedSets = exercise.sets.filter(
           (set) => set.status === "completed",
         ).length;
+        const exerciseTiming = timing.exercises.find((item) => item.id === exercise.id);
+        const exerciseElapsed = exerciseTiming?.elapsedSeconds === null ||
+          exerciseTiming?.elapsedSeconds === undefined
+          ? "Elapsed —"
+          : `${formatElapsedDuration(exerciseTiming.elapsedSeconds)} elapsed`;
         return (
           <Card key={exercise.id} style={styles.exerciseCard}>
             <Pressable
@@ -249,7 +248,7 @@ export function WorkoutHistoryDetailScreen({
               <View style={styles.exerciseCopy}>
                 <Heading size="small">{exercise.exerciseNameSnapshot}</Heading>
                 <Body muted>
-                  {exerciseCompletedSets}/{exercise.sets.length} sets completed
+                  {exerciseCompletedSets}/{exercise.sets.length} sets completed · {exerciseElapsed}
                 </Body>
               </View>
               <View style={[
@@ -266,45 +265,51 @@ export function WorkoutHistoryDetailScreen({
             </Pressable>
             {expanded ? (
               <View style={styles.setList}>
-                {exercise.sets.map((set, index) => (
-                  <Pressable
-                    key={set.id}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Edit ${exercise.exerciseNameSnapshot} set ${index + 1}`}
-                    onPress={() => setEditing({
-                      set,
-                      exerciseName: exercise.exerciseNameSnapshot,
-                      loadType: exercise.loadTypeSnapshot,
-                    })}
-                    style={({ pressed }) => [
-                      styles.setRow,
-                      pressed && styles.setRowPressed,
-                    ]}
-                  >
-                    <View style={styles.setNumber}>
-                      <Text style={styles.setNumberText}>{index + 1}</Text>
-                    </View>
-                    <View style={styles.setCopy}>
-                      <View style={styles.setTopline}>
-                        <Text style={styles.setResult}>
-                          {formatSetResult(set, exercise.loadTypeSnapshot)}
+                {exercise.sets.map((set, index) => {
+                  const setTiming = exerciseTiming?.sets.find((item) => item.id === set.id);
+                  const elapsed = setTiming?.elapsedSeconds === null ||
+                    setTiming?.elapsedSeconds === undefined
+                    ? "Elapsed —"
+                    : `${formatElapsedDuration(setTiming.elapsedSeconds)} elapsed`;
+                  const rest = set.status === "skipped" || set.actualRestSec === null
+                    ? "Rest —"
+                    : `Rest ${formatElapsedDuration(set.actualRestSec)}`;
+                  return (
+                    <Pressable
+                      key={set.id}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Edit ${exercise.exerciseNameSnapshot} set ${index + 1}, ${elapsed}, ${rest}`}
+                      onPress={() => setEditing({
+                        set,
+                        exerciseName: exercise.exerciseNameSnapshot,
+                        loadType: exercise.loadTypeSnapshot,
+                      })}
+                      style={({ pressed }) => [
+                        styles.setRow,
+                        pressed && styles.setRowPressed,
+                      ]}
+                    >
+                      <View style={styles.setNumber}>
+                        <Text style={styles.setNumberText}>{index + 1}</Text>
+                      </View>
+                      <View style={styles.setCopy}>
+                        <View style={styles.setTopline}>
+                          <Text style={styles.setResult}>
+                            {formatSetResult(set, exercise.loadTypeSnapshot)}
+                          </Text>
+                          <Text style={styles.setRest}>{elapsed}</Text>
+                        </View>
+                        <Text numberOfLines={1} style={styles.setTarget}>
+                          Target {set.plannedTargetDisplay} · {set.setType} · {rest}
                         </Text>
-                        <Text style={styles.setRest}>
-                          {set.status === "skipped"
-                            ? "—"
-                            : `${set.actualRestSec ?? set.plannedRestSec} sec rest`}
+                        <Text numberOfLines={1} style={styles.setPrevious}>
+                          Previous: {formatPreviousSetPerformance(previous?.sets[index])}
                         </Text>
                       </View>
-                      <Text numberOfLines={1} style={styles.setTarget}>
-                        Target {set.plannedTargetDisplay} · {set.setType}
-                      </Text>
-                      <Text numberOfLines={1} style={styles.setPrevious}>
-                        Previous: {formatPreviousSetPerformance(previous?.sets[index])}
-                      </Text>
-                    </View>
-                    <Text style={styles.edit}>Edit</Text>
-                  </Pressable>
-                ))}
+                      <Text style={styles.edit}>Edit</Text>
+                    </Pressable>
+                  );
+                })}
               </View>
             ) : null}
           </Card>

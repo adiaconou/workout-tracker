@@ -59,6 +59,8 @@ export type RoutineSummary = Omit<Routine, "exercises"> & {
   exerciseCount: number;
   setCount: number;
   lastWorkoutAt: string | null;
+  averageDurationSeconds: number | null;
+  durationSampleCount: number;
 };
 
 type EditableRoutine = Pick<Routine, "focus" | "summary" | "durationMin"> & {
@@ -87,6 +89,8 @@ export type WorkoutView = Omit<RawWorkoutSession, "snapshotJson"> & {
   sets: GuidedSet[];
   currentSetIndex: number;
   currentRestSeconds: number;
+  workoutElapsedSeconds: number;
+  currentSetElapsedSeconds: number;
   previousPerformanceByExercise: Record<number, PreviousExercisePerformance>;
   lastCompletedSetByExercise: Record<number, {
     actualWeight: number;
@@ -170,7 +174,10 @@ export async function ensureWorkoutSchema() {
       actual_weight REAL,
       weight_unit TEXT NOT NULL DEFAULT 'lb',
       status TEXT NOT NULL,
+      started_at TEXT,
       performed_at TEXT NOT NULL,
+      elapsed_seconds INTEGER,
+      workout_elapsed_seconds INTEGER,
       rest_skipped INTEGER NOT NULL DEFAULT 0,
       notes TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL,
@@ -189,6 +196,25 @@ export async function ensureWorkoutSchema() {
   }
   if (!columnNames.has("completed_at")) {
     await d1.prepare("ALTER TABLE workout_sessions ADD COLUMN completed_at TEXT").run();
+  }
+  for (const [table, additions] of Object.entries({
+    set_performances: {
+      started_at: "TEXT",
+      elapsed_seconds: "INTEGER",
+      workout_elapsed_seconds: "INTEGER",
+    },
+    workout_sets: {
+      started_at: "TEXT",
+      elapsed_seconds: "INTEGER",
+    },
+  })) {
+    const info = await d1.prepare(`PRAGMA table_info(${table})`).all<{ name: string }>();
+    const existing = new Set(info.results.map((column) => column.name));
+    for (const [name, definition] of Object.entries(additions)) {
+      if (!existing.has(name) && info.results.length) {
+        await d1.prepare(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`).run();
+      }
+    }
   }
 }
 
@@ -247,15 +273,22 @@ export async function getRoutineList(ownerEmail: string): Promise<RoutineSummary
     .prepare(`SELECT r.code, r.version, r.focus, r.summary, r.duration_min AS durationMin,
       r.updated_at AS updatedAt, COUNT(e.id) AS exerciseCount,
       COALESCE(SUM(e.warmup_sets + e.regular_sets + e.failure_sets + e.drop_sets), 0) AS setCount,
-      last_workout.completed_at AS lastWorkoutAt
+      workout_history.completed_at AS lastWorkoutAt,
+      workout_history.average_duration_seconds AS averageDurationSeconds,
+      workout_history.duration_sample_count AS durationSampleCount
       FROM routines r
       LEFT JOIN exercises e ON e.owner_email = r.owner_email AND e.routine_code = r.code
       LEFT JOIN (
-        SELECT owner_email, routine_code, MAX(completed_at) AS completed_at
+        SELECT owner_email, routine_code,
+          MAX(completed_at) AS completed_at,
+          ROUND(AVG(CASE WHEN status = 'Completed' THEN
+            MAX(0, (julianday(completed_at) - julianday(started_at)) * 86400)
+          END)) AS average_duration_seconds,
+          SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) AS duration_sample_count
         FROM workout_sessions
         WHERE status IN ('Completed', 'Partial') AND completed_at IS NOT NULL
         GROUP BY owner_email, routine_code
-      ) last_workout ON last_workout.owner_email = r.owner_email AND last_workout.routine_code = r.code
+      ) workout_history ON workout_history.owner_email = r.owner_email AND workout_history.routine_code = r.code
       WHERE r.owner_email = ? AND r.is_active = 1
       GROUP BY r.id
       ORDER BY r.code`)
@@ -268,6 +301,11 @@ export async function getRoutineList(ownerEmail: string): Promise<RoutineSummary
     exerciseCount: Number(row.exerciseCount),
     setCount: Number(row.setCount),
     lastWorkoutAt: row.lastWorkoutAt ?? null,
+    averageDurationSeconds:
+      row.averageDurationSeconds === null || row.averageDurationSeconds === undefined
+        ? null
+        : Number(row.averageDurationSeconds),
+    durationSampleCount: Number(row.durationSampleCount ?? 0),
   }));
 }
 
@@ -495,6 +533,8 @@ export async function startWorkout(
     .bind(ownerEmail)
     .first<{ id: string; routineCode: string; startedAt: string; totalSets: number }>();
   if (active?.routineCode === requestedCode) {
+    await materializeWorkoutFromSnapshot(d1, ownerEmail, active.id);
+    await initializeFirstWorkoutSet(d1, ownerEmail, active.id, active.startedAt);
     return { created: false, requiresConfirmation: false, session: active };
   }
   if (active && !abandonActive) {
@@ -632,12 +672,31 @@ export async function startWorkout(
     throw new WorkoutRoutineVersionConflictError();
   }
   await materializeWorkoutFromSnapshot(d1, ownerEmail, id);
+  await initializeFirstWorkoutSet(d1, ownerEmail, id, now);
 
   return {
     created: true,
     requiresConfirmation: false,
     session: { id, routineCode: snapshotRoutine.code, startedAt: now, totalSets },
   };
+}
+
+async function initializeFirstWorkoutSet(
+  d1: D1Database,
+  ownerEmail: string,
+  sessionId: string,
+  startedAt: string,
+) {
+  await d1.batch([
+    d1.prepare(`UPDATE workout_sets SET started_at = COALESCE(started_at, ?),
+      status = CASE WHEN status = 'planned' THEN 'started' ELSE status END,
+      updated_at = ? WHERE workout_id = ? AND owner_email = ? AND position = 1`)
+      .bind(startedAt, startedAt, sessionId, ownerEmail),
+    d1.prepare(`UPDATE workout_exercises SET status = CASE
+      WHEN status = 'planned' THEN 'started' ELSE status END, updated_at = ?
+      WHERE workout_id = ? AND owner_email = ? AND position = 1`)
+      .bind(startedAt, sessionId, ownerEmail),
+  ]);
 }
 
 async function getRawWorkoutSession(ownerEmail: string, sessionId: string) {
@@ -661,10 +720,37 @@ export async function getWorkoutSession(ownerEmail: string, sessionId: string): 
   const sets = buildGuidedSets(routine);
   let restEndsAt = session.restEndsAt;
   if (restEndsAt && new Date(restEndsAt).getTime() <= Date.now()) {
+    const endedAt = restEndsAt;
     restEndsAt = null;
-    await db()
-      .prepare("UPDATE workout_sessions SET rest_ends_at = NULL WHERE id = ? AND owner_email = ?")
-      .bind(sessionId, ownerEmail)
+    const d1 = db();
+    const statements: D1PreparedStatement[] = [
+      d1.prepare("UPDATE workout_sessions SET rest_ends_at = NULL WHERE id = ? AND owner_email = ?")
+        .bind(sessionId, ownerEmail),
+      d1.prepare(`UPDATE workout_sets SET started_at = COALESCE(started_at, ?),
+        status = CASE WHEN status = 'planned' THEN 'started' ELSE status END,
+        updated_at = ? WHERE workout_id = ? AND owner_email = ? AND position = ?`)
+        .bind(endedAt, endedAt, sessionId, ownerEmail, Number(session.currentSet)),
+    ];
+    if (session.lastPerformanceId) {
+      statements.push(d1.prepare(`UPDATE workout_sets SET
+        actual_rest_sec = MAX(0, ROUND((julianday(?) - julianday(completed_at)) * 86400)),
+        rest_ended_at = ?, updated_at = ? WHERE workout_id = ? AND prescribed_set_id = (
+          SELECT prescribed_set_id FROM set_performances WHERE id = ? AND owner_email = ?
+        ) AND owner_email = ? AND rest_ended_at IS NULL`)
+        .bind(endedAt, endedAt, endedAt, sessionId, session.lastPerformanceId, ownerEmail, ownerEmail));
+    }
+    await d1.batch(statements);
+  }
+
+  if (session.status === "In Progress" && !restEndsAt && Number(session.currentSet) <= sets.length) {
+    const fallbackStart = Number(session.currentSet) === 1
+      ? session.startedAt
+      : new Date().toISOString();
+    await db().prepare(`UPDATE workout_sets SET started_at = COALESCE(started_at, ?),
+      status = CASE WHEN status = 'planned' THEN 'started' ELSE status END,
+      updated_at = CASE WHEN started_at IS NULL THEN ? ELSE updated_at END
+      WHERE workout_id = ? AND owner_email = ? AND position = ?`)
+      .bind(fallbackStart, fallbackStart, sessionId, ownerEmail, Number(session.currentSet))
       .run();
   }
 
@@ -703,6 +789,22 @@ export async function getWorkoutSession(ownerEmail: string, sessionId: string): 
     };
   }
 
+  const timingNow = Date.now();
+  const workoutStart = new Date(session.startedAt).getTime();
+  const workoutEnd = session.completedAt
+    ? new Date(session.completedAt).getTime()
+    : timingNow;
+  const workoutElapsedSeconds = elapsedSecondsBetween(workoutStart, workoutEnd);
+  const currentSetTiming = Number(session.currentSet) <= sets.length
+    ? await db().prepare(`SELECT started_at AS startedAt FROM workout_sets
+        WHERE workout_id = ? AND owner_email = ? AND position = ?`)
+      .bind(sessionId, ownerEmail, Number(session.currentSet))
+      .first<{ startedAt: string | null }>()
+    : null;
+  const currentSetElapsedSeconds = currentSetTiming?.startedAt && !restEndsAt
+    ? elapsedSecondsBetween(new Date(currentSetTiming.startedAt).getTime(), timingNow)
+    : 0;
+
   return {
     ...session,
     routineVersion: Number(session.routineVersion),
@@ -716,9 +818,21 @@ export async function getWorkoutSession(ownerEmail: string, sessionId: string): 
     sets,
     currentSetIndex: Math.max(0, Math.min(sets.length, Number(session.currentSet) - 1)),
     currentRestSeconds,
+    workoutElapsedSeconds,
+    currentSetElapsedSeconds,
     previousPerformanceByExercise,
     lastCompletedSetByExercise,
   };
+}
+
+function elapsedSecondsBetween(startMs: number, endMs: number) {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return 0;
+  return Math.max(0, Math.round((endMs - startMs) / 1000));
+}
+
+function wholeElapsedSecondsBetween(startMs: number, endMs: number) {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return 0;
+  return Math.max(0, Math.floor((endMs - startMs) / 1000));
 }
 
 type RecordSetInput = {
@@ -727,6 +841,7 @@ type RecordSetInput = {
   actualReps?: number | null;
   actualDurationSec?: number | null;
   actualWeight?: number | null;
+  workoutElapsedSeconds?: number | null;
 };
 
 function cleanNonNegativeNumber(value: unknown, allowDecimal = false) {
@@ -769,11 +884,12 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
   if (!session) return null;
   if (session.status !== "In Progress") {
     const existing = input.prescribedSetId
-      ? await db().prepare(`SELECT id AS performanceId
+      ? await db().prepare(`SELECT id AS performanceId,
+          workout_elapsed_seconds AS workoutElapsedSeconds
           FROM set_performances WHERE session_id = ? AND owner_email = ?
           AND prescribed_set_id = ?`)
         .bind(sessionId, ownerEmail, input.prescribedSetId)
-        .first<{ performanceId: string }>()
+        .first<{ performanceId: string; workoutElapsedSeconds: number | null }>()
       : null;
     if (existing) {
       return {
@@ -785,6 +901,11 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
         restEndsAt: null,
         workoutCompleted:
           session.status === "Completed" || session.status === "Partial",
+        workoutElapsedSeconds: Number(existing.workoutElapsedSeconds ??
+          elapsedSecondsBetween(
+            new Date(session.startedAt).getTime(),
+            new Date(session.completedAt ?? session.startedAt).getTime(),
+          )),
       };
     }
     throw new Error("This workout is no longer in progress.");
@@ -797,11 +918,12 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
   if (!prescribedSet) throw new Error("This workout has no remaining sets.");
   if (input.prescribedSetId !== prescribedSet.id) {
     const existing = input.prescribedSetId
-      ? await db().prepare(`SELECT id AS performanceId, target_rest_sec AS restSeconds
+      ? await db().prepare(`SELECT id AS performanceId, target_rest_sec AS restSeconds,
+          workout_elapsed_seconds AS workoutElapsedSeconds
           FROM set_performances WHERE session_id = ? AND owner_email = ?
           AND prescribed_set_id = ?`)
         .bind(sessionId, ownerEmail, input.prescribedSetId)
-        .first<{ performanceId: string; restSeconds: number }>()
+        .first<{ performanceId: string; restSeconds: number; workoutElapsedSeconds: number | null }>()
       : null;
     if (existing) {
       return {
@@ -812,6 +934,10 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
         restSeconds: session.restEndsAt ? Number(existing.restSeconds) : 0,
         restEndsAt: session.restEndsAt,
         workoutCompleted: false,
+        workoutElapsedSeconds: elapsedSecondsBetween(
+          new Date(session.startedAt).getTime(),
+          session.completedAt ? new Date(session.completedAt).getTime() : Date.now(),
+        ),
       };
     }
     throw new Error("The workout has already advanced. Refresh to continue from the current set.");
@@ -829,81 +955,137 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
     throw new Error("Enter the seconds completed for this set.");
   }
 
-  const now = new Date().toISOString();
+  const receivedAtMs = Date.now();
+  const receivedAt = new Date(receivedAtMs).toISOString();
+  const sessionStartedAtMs = new Date(session.startedAt).getTime();
+  const serverWorkoutElapsedSeconds = wholeElapsedSecondsBetween(sessionStartedAtMs, receivedAtMs);
+  const suppliedWorkoutElapsedSeconds = cleanNonNegativeNumber(input.workoutElapsedSeconds);
+  const priorRestEndsAtMs = session.restEndsAt ? new Date(session.restEndsAt).getTime() : Number.NaN;
+  const priorRestWasSkipped = Number.isFinite(priorRestEndsAtMs) && priorRestEndsAtMs > receivedAtMs;
+  const priorRestFinishedAt = Number.isFinite(priorRestEndsAtMs)
+    ? priorRestWasSkipped ? receivedAt : session.restEndsAt
+    : null;
+  const currentTiming = await db().prepare(`SELECT started_at AS startedAt
+      FROM workout_sets WHERE workout_id = ? AND owner_email = ? AND prescribed_set_id = ?`)
+    .bind(sessionId, ownerEmail, prescribedSet.id)
+    .first<{ startedAt: string | null }>();
+  const setStartedAt = currentTiming?.startedAt
+    ?? priorRestFinishedAt
+    ?? (currentIndex === 0 ? session.startedAt : receivedAt);
+  const setStartedOffsetSeconds = wholeElapsedSecondsBetween(
+    sessionStartedAtMs,
+    new Date(setStartedAt).getTime(),
+  );
+  const requestedWorkoutElapsedSeconds = Math.max(
+    setStartedOffsetSeconds,
+    Math.min(suppliedWorkoutElapsedSeconds ?? serverWorkoutElapsedSeconds, serverWorkoutElapsedSeconds),
+  );
+  const setStartedAtMs = new Date(setStartedAt).getTime();
+  const occurredAtMs = Math.min(
+    receivedAtMs,
+    Math.max(setStartedAtMs, sessionStartedAtMs + requestedWorkoutElapsedSeconds * 1000),
+  );
+  const workoutElapsedSeconds = wholeElapsedSecondsBetween(sessionStartedAtMs, occurredAtMs);
+  const occurredAt = new Date(occurredAtMs).toISOString();
+  const setElapsedSeconds = elapsedSecondsBetween(setStartedAtMs, occurredAtMs);
   const effectiveRestSeconds = effectiveRestSecondsForSet(sets, currentIndex);
   const performanceId = `${sessionId}::${prescribedSet.id}`;
   const d1 = db();
-  await d1
-    .prepare(`INSERT INTO set_performances (
+  const nextSetIndex = currentIndex + 1;
+  const workoutCompleted = nextSetIndex >= sets.length;
+  const plannedRestEndsAtMs = occurredAtMs + effectiveRestSeconds * 1000;
+  const restIsActive = !workoutCompleted && effectiveRestSeconds > 0 && plannedRestEndsAtMs > receivedAtMs;
+  const restEndsAt = restIsActive ? new Date(plannedRestEndsAtMs).toISOString() : null;
+  const restSeconds = restEndsAt
+    ? Math.max(0, Math.ceil((plannedRestEndsAtMs - receivedAtMs) / 1000))
+    : 0;
+  const restEndedAt = effectiveRestSeconds > 0 && !workoutCompleted && !restIsActive
+    ? receivedAt
+    : null;
+  const actualRestSeconds = effectiveRestSeconds === 0 || workoutCompleted
+    ? 0
+    : restEndedAt
+      ? elapsedSecondsBetween(occurredAtMs, receivedAtMs)
+      : null;
+  const nextSet = sets[nextSetIndex];
+  const completedSets = Number(session.completedSets) + (status === "Completed" ? 1 : 0);
+  const skippedSets = Number(session.skippedSets) + (status === "Skipped" ? 1 : 0);
+  const statements: D1PreparedStatement[] = [
+    d1.prepare(`INSERT INTO set_performances (
       id, owner_email, session_id, prescribed_set_id, exercise_id, exercise_order,
       exercise_name, set_order, set_type, target_display, target_rest_sec, rest_rule,
       actual_reps, actual_duration_sec, actual_weight, weight_unit, status,
-      performed_at, rest_skipped, notes, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'lb', ?, ?, 0, '', ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      actual_reps = excluded.actual_reps,
-      actual_duration_sec = excluded.actual_duration_sec,
-      actual_weight = excluded.actual_weight,
-      status = excluded.status,
-      performed_at = excluded.performed_at,
-      updated_at = excluded.updated_at`)
-    .bind(
+      performed_at, started_at, elapsed_seconds, workout_elapsed_seconds,
+      rest_skipped, notes, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'lb', ?, ?, ?, ?, ?, 0, '', ?, ?)
+    ON CONFLICT(id) DO NOTHING`)
+      .bind(
       performanceId, ownerEmail, sessionId, prescribedSet.id, prescribedSet.exerciseId,
       prescribedSet.exerciseOrder, prescribedSet.exerciseName, prescribedSet.globalIndex + 1,
       prescribedSet.setType, prescribedSet.target, effectiveRestSeconds,
       prescribedSet.restRule, status === "Completed" ? actualReps : null,
       status === "Completed" ? actualDurationSec : null,
-      status === "Completed" ? actualWeight : null, status, now, now, now,
-    )
-    .run();
-
-  const counts = await d1
-    .prepare(`SELECT
-      SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) AS completedSets,
-      SUM(CASE WHEN status = 'Skipped' THEN 1 ELSE 0 END) AS skippedSets
-      FROM set_performances WHERE session_id = ? AND owner_email = ?`)
-    .bind(sessionId, ownerEmail)
-    .first<{ completedSets: number | null; skippedSets: number | null }>();
-  const completedSets = Number(counts?.completedSets ?? 0);
-  const skippedSets = Number(counts?.skippedSets ?? 0);
-  const nextSetIndex = currentIndex + 1;
-  const workoutCompleted = nextSetIndex >= sets.length;
-  const restSeconds = workoutCompleted ? 0 : effectiveRestSeconds;
-  const restEndsAt = restSeconds > 0 ? new Date(Date.now() + restSeconds * 1000).toISOString() : null;
-  const nextSet = sets[nextSetIndex];
-
-  if (workoutCompleted) {
-    await d1
-      .prepare(`UPDATE workout_sessions SET status = 'Completed', current_set = ?,
-        completed_sets = ?, skipped_sets = ?, rest_ends_at = NULL,
-        last_performance_id = ?, completed_at = ?, updated_at = ?
-        WHERE id = ? AND owner_email = ?`)
-      .bind(sets.length + 1, completedSets, skippedSets, performanceId, now, now, sessionId, ownerEmail)
-      .run();
-  } else {
-    await d1
-      .prepare(`UPDATE workout_sessions SET current_exercise = ?, current_set = ?,
-        completed_sets = ?, skipped_sets = ?, rest_ends_at = ?,
-        last_performance_id = ?, updated_at = ?
-        WHERE id = ? AND owner_email = ?`)
-      .bind(nextSet.exerciseOrder, nextSetIndex + 1, completedSets, skippedSets, restEndsAt, performanceId, now, sessionId, ownerEmail)
-      .run();
+      status === "Completed" ? actualWeight : null, status, occurredAt, setStartedAt,
+      setElapsedSeconds, workoutElapsedSeconds, receivedAt, receivedAt),
+    d1.prepare(`UPDATE workout_sets SET actual_reps = ?, actual_duration_sec = ?, actual_weight = ?,
+      started_at = COALESCE(started_at, ?), elapsed_seconds = COALESCE(elapsed_seconds, ?),
+      status = ?, completed_at = COALESCE(completed_at, ?), rest_started_at = ?,
+      rest_ended_at = ?, actual_rest_sec = ?, updated_at = ?
+      WHERE workout_id = ? AND prescribed_set_id = ? AND owner_email = ?
+        AND status IN ('planned', 'started')`)
+      .bind(status === "Completed" ? actualReps : null, status === "Completed" ? actualDurationSec : null,
+        status === "Completed" ? actualWeight : null, setStartedAt, setElapsedSeconds,
+        status.toLowerCase(), occurredAt, effectiveRestSeconds > 0 && !workoutCompleted ? occurredAt : null,
+        restEndedAt, actualRestSeconds, receivedAt, sessionId, prescribedSet.id, ownerEmail),
+  ];
+  if (priorRestFinishedAt && session.lastPerformanceId) {
+    statements.unshift(d1.prepare(`UPDATE workout_sets SET
+      actual_rest_sec = MAX(0, ROUND((julianday(?) - julianday(completed_at)) * 86400)),
+      rest_ended_at = ?, rest_skipped = CASE WHEN ? THEN 1 ELSE rest_skipped END,
+      updated_at = ? WHERE workout_id = ? AND prescribed_set_id = (
+        SELECT prescribed_set_id FROM set_performances WHERE id = ? AND owner_email = ?
+      ) AND owner_email = ? AND rest_ended_at IS NULL`)
+      .bind(priorRestFinishedAt, priorRestFinishedAt, priorRestWasSkipped ? 1 : 0,
+        receivedAt, sessionId,
+        session.lastPerformanceId, ownerEmail, ownerEmail));
+    if (priorRestWasSkipped) {
+      statements.unshift(d1.prepare(`UPDATE set_performances SET rest_skipped = 1,
+        updated_at = ? WHERE id = ? AND owner_email = ?`)
+        .bind(receivedAt, session.lastPerformanceId, ownerEmail));
+    }
   }
 
-  await d1.prepare(`UPDATE workout_sets SET actual_reps = ?, actual_duration_sec = ?, actual_weight = ?,
-    status = ?, completed_at = ?, rest_started_at = ?, rest_ended_at = ?, updated_at = ?
-    WHERE workout_id = ? AND prescribed_set_id = ? AND owner_email = ?`)
-    .bind(status === "Completed" ? actualReps : null, status === "Completed" ? actualDurationSec : null,
-      status === "Completed" ? actualWeight : null, status.toLowerCase(), now,
-      restEndsAt ? now : null, restEndsAt ?? now, now, sessionId, prescribedSet.id, ownerEmail).run();
-  await d1.prepare(`UPDATE workout_sets SET actual_rest_sec = CASE WHEN ? IS NULL THEN 0 ELSE ? END
-    WHERE workout_id = ? AND prescribed_set_id = ? AND owner_email = ?`)
-    .bind(restEndsAt, effectiveRestSeconds, sessionId, prescribedSet.id, ownerEmail).run();
-  await d1.prepare(`UPDATE workout_exercises SET status = CASE
-      WHEN NOT EXISTS (SELECT 1 FROM workout_sets ws WHERE ws.workout_exercise_id = workout_exercises.id AND ws.status = 'planned') THEN 'completed'
+  if (workoutCompleted) {
+    statements.push(d1.prepare(`UPDATE workout_sessions SET status = 'Completed', current_set = ?,
+        completed_sets = ?, skipped_sets = ?, rest_ends_at = NULL,
+        last_performance_id = ?, completed_at = ?, updated_at = ?
+        WHERE id = ? AND owner_email = ? AND status = 'In Progress' AND current_set = ?`)
+      .bind(sets.length + 1, completedSets, skippedSets, performanceId, occurredAt,
+        receivedAt, sessionId, ownerEmail, currentIndex + 1));
+  } else {
+    statements.push(d1.prepare(`UPDATE workout_sessions SET current_exercise = ?, current_set = ?,
+        completed_sets = ?, skipped_sets = ?, rest_ends_at = ?,
+        last_performance_id = ?, updated_at = ?
+        WHERE id = ? AND owner_email = ? AND status = 'In Progress' AND current_set = ?`)
+      .bind(nextSet.exerciseOrder, nextSetIndex + 1, completedSets, skippedSets,
+        restEndsAt, performanceId, receivedAt, sessionId, ownerEmail, currentIndex + 1));
+    if (!restIsActive) {
+      statements.push(d1.prepare(`UPDATE workout_sets SET started_at = COALESCE(started_at, ?),
+        status = CASE WHEN status = 'planned' THEN 'started' ELSE status END, updated_at = ?
+        WHERE workout_id = ? AND owner_email = ? AND position = ?`)
+        .bind(receivedAt, receivedAt, sessionId, ownerEmail, nextSetIndex + 1));
+      statements.push(d1.prepare(`UPDATE workout_exercises SET status = CASE
+        WHEN status = 'planned' THEN 'started' ELSE status END, updated_at = ?
+        WHERE workout_id = ? AND owner_email = ? AND position = ?`)
+        .bind(receivedAt, sessionId, ownerEmail, nextSet.exerciseOrder));
+    }
+  }
+  statements.push(d1.prepare(`UPDATE workout_exercises SET status = CASE
+      WHEN NOT EXISTS (SELECT 1 FROM workout_sets ws WHERE ws.workout_exercise_id = workout_exercises.id AND ws.status IN ('planned', 'started')) THEN 'completed'
       ELSE 'started' END, updated_at = ?
     WHERE workout_id = ? AND position = ? AND owner_email = ?`)
-    .bind(now, sessionId, prescribedSet.exerciseOrder, ownerEmail).run();
+    .bind(receivedAt, sessionId, prescribedSet.exerciseOrder, ownerEmail));
+  await d1.batch(statements);
 
   return {
     performanceId,
@@ -913,6 +1095,7 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
     restSeconds,
     restEndsAt,
     workoutCompleted,
+    workoutElapsedSeconds,
   };
 }
 
@@ -920,33 +1103,55 @@ export async function skipWorkoutRest(ownerEmail: string, sessionId: string) {
   const session = await getRawWorkoutSession(ownerEmail, sessionId);
   if (!session) return null;
   if (session.status !== "In Progress") throw new Error("This workout is no longer in progress.");
-  const now = new Date().toISOString();
+  if (!session.restEndsAt) return { skipped: false };
+  const nowMs = Date.now();
+  const now = new Date(nowMs).toISOString();
+  const scheduledEndMs = new Date(session.restEndsAt).getTime();
+  const restWasSkipped = !Number.isFinite(scheduledEndMs) || scheduledEndMs > nowMs;
+  const restEndedAt = restWasSkipped ? now : session.restEndsAt;
   const d1 = db();
   const statements: D1PreparedStatement[] = [
     d1
       .prepare("UPDATE workout_sessions SET rest_ends_at = NULL, updated_at = ? WHERE id = ? AND owner_email = ?")
       .bind(now, sessionId, ownerEmail),
+    d1.prepare(`UPDATE workout_sets SET started_at = COALESCE(started_at, ?),
+      status = CASE WHEN status = 'planned' THEN 'started' ELSE status END,
+      updated_at = CASE WHEN started_at IS NULL THEN ? ELSE updated_at END
+      WHERE workout_id = ? AND owner_email = ? AND position = ?`)
+      .bind(restEndedAt, now, sessionId, ownerEmail, Number(session.currentSet)),
+    d1.prepare(`UPDATE workout_exercises SET status = CASE
+      WHEN status = 'planned' THEN 'started' ELSE status END, updated_at = ?
+      WHERE workout_id = ? AND owner_email = ? AND position = ?`)
+      .bind(now, sessionId, ownerEmail, Number(session.currentExercise)),
   ];
   if (session.lastPerformanceId) {
+    if (restWasSkipped) {
+      statements.push(
+        d1
+          .prepare("UPDATE set_performances SET rest_skipped = 1, updated_at = ? WHERE id = ? AND owner_email = ?")
+          .bind(now, session.lastPerformanceId, ownerEmail),
+      );
+    }
     statements.push(
-      d1
-        .prepare("UPDATE set_performances SET rest_skipped = 1, updated_at = ? WHERE id = ? AND owner_email = ?")
-        .bind(now, session.lastPerformanceId, ownerEmail),
-    );
-    statements.push(
-      d1.prepare(`UPDATE workout_sets SET rest_skipped = 1,
-        actual_rest_sec = MAX(0, CAST((julianday(?) - julianday(completed_at)) * 86400 AS INTEGER)),
+      d1.prepare(`UPDATE workout_sets SET
+        rest_skipped = CASE WHEN ? THEN 1 ELSE rest_skipped END,
+        actual_rest_sec = MAX(0, ROUND((julianday(?) - julianday(completed_at)) * 86400)),
         rest_ended_at = ?, updated_at = ? WHERE workout_id = ? AND prescribed_set_id = (
           SELECT prescribed_set_id FROM set_performances WHERE id = ? AND owner_email = ?
-        ) AND owner_email = ?`)
-        .bind(now, now, now, sessionId, session.lastPerformanceId, ownerEmail, ownerEmail),
+        ) AND owner_email = ? AND rest_ended_at IS NULL`)
+        .bind(restWasSkipped ? 1 : 0, restEndedAt, restEndedAt, now, sessionId,
+          session.lastPerformanceId, ownerEmail, ownerEmail),
     );
   }
   await d1.batch(statements);
-  return { skipped: true };
+  return { skipped: restWasSkipped };
 }
 
-export async function completeWorkoutEarly(ownerEmail: string, sessionId: string) {
+export async function completeWorkoutEarly(
+  ownerEmail: string,
+  sessionId: string,
+  input: { workoutElapsedSeconds?: number | null } = {},
+) {
   const session = await getRawWorkoutSession(ownerEmail, sessionId);
   if (!session) return null;
   if (session.status === "Completed" || session.status === "Partial") {
@@ -954,8 +1159,12 @@ export async function completeWorkoutEarly(ownerEmail: string, sessionId: string
       completedSets: Number(session.completedSets),
       skippedSets: Number(session.skippedSets),
       remainingSetsSkipped: 0,
-      workoutCompleted: true,
+      workoutCompleted: true as const,
       endedEarly: session.status === "Partial",
+      workoutElapsedSeconds: elapsedSecondsBetween(
+        new Date(session.startedAt).getTime(),
+        new Date(session.completedAt ?? session.startedAt).getTime(),
+      ),
     };
   }
   if (session.status !== "In Progress") {
@@ -964,121 +1173,128 @@ export async function completeWorkoutEarly(ownerEmail: string, sessionId: string
 
   const routine = JSON.parse(session.snapshotJson) as Routine;
   const sets = buildGuidedSets(routine);
-  const currentIndex = Math.max(
-    0,
-    Math.min(sets.length, Number(session.currentSet) - 1),
-  );
+  const currentIndex = Math.max(0, Math.min(sets.length, Number(session.currentSet) - 1));
   const remainingSets = sets.slice(currentIndex);
-  const now = new Date().toISOString();
+  const receivedAtMs = Date.now();
+  const receivedAt = new Date(receivedAtMs).toISOString();
+  const sessionStartedAtMs = new Date(session.startedAt).getTime();
+  const serverWorkoutElapsedSeconds = wholeElapsedSecondsBetween(sessionStartedAtMs, receivedAtMs);
+  const requestedWorkoutElapsedSeconds = Math.min(
+    cleanNonNegativeNumber(input.workoutElapsedSeconds) ?? serverWorkoutElapsedSeconds,
+    serverWorkoutElapsedSeconds,
+  );
   const d1 = db();
-  const statements: D1PreparedStatement[] = remainingSets.map((set) =>
-    d1
-      .prepare(`INSERT INTO set_performances (
-        id, owner_email, session_id, prescribed_set_id, exercise_id, exercise_order,
-        exercise_name, set_order, set_type, target_display, target_rest_sec, rest_rule,
-        actual_reps, actual_duration_sec, actual_weight, weight_unit, status,
-        performed_at, rest_skipped, notes, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, 'Skipped',
-        ?, 0, '', ?, ?)
-      ON CONFLICT(id) DO NOTHING`)
-      .bind(
-        `${sessionId}::${set.id}`,
-        ownerEmail,
-        sessionId,
-        set.id,
-        set.exerciseId,
-        set.exerciseOrder,
-        set.exerciseName,
-        set.globalIndex + 1,
-        set.setType,
-        set.target,
-        set.restSeconds,
-        set.restRule,
-        set.weightUnit,
-        now,
-        now,
-        now,
-      ),
-  );
-
-  statements.push(
-    d1
-      .prepare(`UPDATE workout_sets SET status = 'skipped', actual_reps = NULL,
-        actual_duration_sec = NULL, actual_weight = NULL, completed_at = ?,
-        rest_started_at = NULL, rest_ended_at = NULL, updated_at = ?
-        WHERE workout_id = ? AND owner_email = ? AND status = 'planned'`)
-      .bind(now, now, sessionId, ownerEmail),
-  );
-  if (session.lastPerformanceId && session.restEndsAt) {
-    statements.push(
-      d1
-        .prepare(`UPDATE set_performances SET rest_skipped = 1, updated_at = ?
-          WHERE id = ? AND owner_email = ?`)
-        .bind(now, session.lastPerformanceId, ownerEmail),
-    );
-    statements.push(
-      d1
-        .prepare(`UPDATE workout_sets SET rest_skipped = 1,
-          actual_rest_sec = MAX(0, CAST((julianday(?) - julianday(completed_at)) * 86400 AS INTEGER)),
-          rest_ended_at = ?, updated_at = ? WHERE workout_id = ? AND prescribed_set_id = (
-            SELECT prescribed_set_id FROM set_performances WHERE id = ? AND owner_email = ?
-          ) AND owner_email = ?`)
-        .bind(
-          now,
-          now,
-          now,
-          sessionId,
-          session.lastPerformanceId,
-          ownerEmail,
-          ownerEmail,
-        ),
-    );
-  }
-  await d1.batch(statements);
-
-  const counts = await d1
-    .prepare(`SELECT
-      SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) AS completedSets,
-      SUM(CASE WHEN status = 'Skipped' THEN 1 ELSE 0 END) AS skippedSets
-      FROM set_performances WHERE session_id = ? AND owner_email = ?`)
+  const timingRows = await d1.prepare(`SELECT prescribed_set_id AS prescribedSetId,
+      started_at AS startedAt FROM workout_sets WHERE workout_id = ? AND owner_email = ?`)
     .bind(sessionId, ownerEmail)
-    .first<{ completedSets: number | null; skippedSets: number | null }>();
-  const completedSets = Number(counts?.completedSets ?? 0);
-  const skippedSets = Number(counts?.skippedSets ?? 0);
+    .all<{ prescribedSetId: string; startedAt: string | null }>();
+  const timingBySet = new Map(timingRows.results.map((row) => [row.prescribedSetId, row.startedAt]));
+  const priorRestEndsAtMs = session.restEndsAt ? new Date(session.restEndsAt).getTime() : Number.NaN;
+  const requestedOccurredAtMs = sessionStartedAtMs + requestedWorkoutElapsedSeconds * 1000;
+  const naturallyStartedCurrentSetAt = Number.isFinite(priorRestEndsAtMs) &&
+      priorRestEndsAtMs <= requestedOccurredAtMs
+    ? session.restEndsAt
+    : null;
+  const currentStartedAt = remainingSets[0]
+    ? timingBySet.get(remainingSets[0].id) ?? naturallyStartedCurrentSetAt
+    : null;
+  const currentStartedOffsetSeconds = currentStartedAt
+    ? wholeElapsedSecondsBetween(sessionStartedAtMs, new Date(currentStartedAt).getTime())
+    : 0;
+  const resolvedWorkoutElapsedSeconds = Math.max(
+    requestedWorkoutElapsedSeconds,
+    currentStartedOffsetSeconds,
+  );
+  const currentStartedAtMs = currentStartedAt
+    ? new Date(currentStartedAt).getTime()
+    : sessionStartedAtMs;
+  const occurredAtMs = Math.min(
+    receivedAtMs,
+    Math.max(currentStartedAtMs, sessionStartedAtMs + resolvedWorkoutElapsedSeconds * 1000),
+  );
+  const workoutElapsedSeconds = wholeElapsedSecondsBetween(sessionStartedAtMs, occurredAtMs);
+  const occurredAt = new Date(occurredAtMs).toISOString();
+  const priorRestWasSkipped = Number.isFinite(priorRestEndsAtMs) && priorRestEndsAtMs > occurredAtMs;
+  const priorRestFinishedAt = Number.isFinite(priorRestEndsAtMs)
+    ? priorRestWasSkipped ? occurredAt : session.restEndsAt
+    : null;
 
-  await d1.batch([
-    d1
-      .prepare(`UPDATE workout_sessions SET status = 'Partial',
-        current_set = ?, completed_sets = ?, skipped_sets = ?,
-        rest_ends_at = NULL, completed_at = ?, updated_at = ?
-        WHERE id = ? AND owner_email = ?`)
-      .bind(
-        sets.length + 1,
-        completedSets,
-        skippedSets,
-        now,
-        now,
-        sessionId,
-        ownerEmail,
-      ),
-    d1
-      .prepare(`UPDATE workout_exercises SET status = CASE
-        WHEN EXISTS (
-          SELECT 1 FROM workout_sets ws
-          WHERE ws.workout_exercise_id = workout_exercises.id
-            AND ws.status = 'completed'
-        ) THEN 'completed'
-        ELSE 'skipped'
-        END, updated_at = ?
-        WHERE workout_id = ? AND owner_email = ?`)
-      .bind(now, sessionId, ownerEmail),
-  ]);
+  const statements: D1PreparedStatement[] = remainingSets.map((set) => {
+    const startedAt = timingBySet.get(set.id)
+      ?? (set.id === remainingSets[0]?.id ? naturallyStartedCurrentSetAt : null);
+    const elapsedSeconds = startedAt
+      ? elapsedSecondsBetween(new Date(startedAt).getTime(), occurredAtMs)
+      : null;
+    return d1.prepare(`INSERT INTO set_performances (
+      id, owner_email, session_id, prescribed_set_id, exercise_id, exercise_order,
+      exercise_name, set_order, set_type, target_display, target_rest_sec, rest_rule,
+      actual_reps, actual_duration_sec, actual_weight, weight_unit, status,
+      performed_at, started_at, elapsed_seconds, workout_elapsed_seconds,
+      rest_skipped, notes, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, 'Skipped',
+      ?, ?, ?, ?, 0, '', ?, ?)
+    ON CONFLICT(id) DO NOTHING`)
+      .bind(`${sessionId}::${set.id}`, ownerEmail, sessionId, set.id, set.exerciseId,
+        set.exerciseOrder, set.exerciseName, set.globalIndex + 1, set.setType,
+        set.target, set.restSeconds, set.restRule, set.weightUnit, occurredAt,
+        startedAt, elapsedSeconds, workoutElapsedSeconds, receivedAt, receivedAt);
+  });
+
+  if (naturallyStartedCurrentSetAt && remainingSets[0]) {
+    statements.unshift(d1.prepare(`UPDATE workout_sets SET started_at = COALESCE(started_at, ?),
+      status = CASE WHEN status = 'planned' THEN 'started' ELSE status END, updated_at = ?
+      WHERE workout_id = ? AND owner_email = ? AND prescribed_set_id = ?`)
+      .bind(naturallyStartedCurrentSetAt, receivedAt, sessionId, ownerEmail, remainingSets[0].id));
+  }
+
+  statements.push(d1.prepare(`UPDATE workout_sets SET status = 'skipped',
+      actual_reps = NULL, actual_duration_sec = NULL, actual_weight = NULL,
+      elapsed_seconds = CASE WHEN started_at IS NULL THEN NULL
+        ELSE COALESCE(elapsed_seconds,
+          MAX(0, ROUND((julianday(?) - julianday(started_at)) * 86400))) END,
+      completed_at = COALESCE(completed_at, ?), rest_started_at = NULL,
+      rest_ended_at = NULL, updated_at = ?
+      WHERE workout_id = ? AND owner_email = ? AND status IN ('planned', 'started')`)
+    .bind(occurredAt, occurredAt, receivedAt, sessionId, ownerEmail));
+
+  if (session.lastPerformanceId && priorRestFinishedAt) {
+    if (priorRestWasSkipped) {
+      statements.push(d1.prepare(`UPDATE set_performances SET rest_skipped = 1, updated_at = ?
+        WHERE id = ? AND owner_email = ?`).bind(receivedAt, session.lastPerformanceId, ownerEmail));
+    }
+    statements.push(d1.prepare(`UPDATE workout_sets SET
+      rest_skipped = CASE WHEN ? THEN 1 ELSE rest_skipped END,
+      actual_rest_sec = MAX(0, ROUND((julianday(?) - julianday(completed_at)) * 86400)),
+      rest_ended_at = ?, updated_at = ? WHERE workout_id = ? AND prescribed_set_id = (
+        SELECT prescribed_set_id FROM set_performances WHERE id = ? AND owner_email = ?
+      ) AND owner_email = ? AND rest_ended_at IS NULL`)
+      .bind(priorRestWasSkipped ? 1 : 0, priorRestFinishedAt, priorRestFinishedAt,
+        receivedAt, sessionId, session.lastPerformanceId,
+        ownerEmail, ownerEmail));
+  }
+
+  const completedSets = Number(session.completedSets);
+  const skippedSets = Number(session.skippedSets) + remainingSets.length;
+  statements.push(d1.prepare(`UPDATE workout_sessions SET status = 'Partial',
+      current_set = ?, completed_sets = ?, skipped_sets = ?, rest_ends_at = NULL,
+      completed_at = ?, updated_at = ?
+      WHERE id = ? AND owner_email = ? AND status = 'In Progress'`)
+    .bind(sets.length + 1, completedSets, skippedSets, occurredAt, receivedAt,
+      sessionId, ownerEmail));
+  statements.push(d1.prepare(`UPDATE workout_exercises SET status = CASE
+      WHEN EXISTS (SELECT 1 FROM workout_sets ws
+        WHERE ws.workout_exercise_id = workout_exercises.id AND ws.status = 'completed')
+      THEN 'completed' ELSE 'skipped' END, updated_at = ?
+      WHERE workout_id = ? AND owner_email = ?`)
+    .bind(receivedAt, sessionId, ownerEmail));
+  await d1.batch(statements);
 
   return {
     completedSets,
     skippedSets,
     remainingSetsSkipped: remainingSets.length,
-    workoutCompleted: true,
+    workoutCompleted: true as const,
     endedEarly: true,
+    workoutElapsedSeconds,
   };
 }

@@ -22,6 +22,7 @@ export type PendingSetWrite = {
     actualWeight: number | null;
     actualReps: number | null;
     actualDurationSec: number | null;
+    workoutElapsedSeconds: number;
   };
 };
 
@@ -54,7 +55,9 @@ export async function enqueueSetWrite(
     workoutId,
     prescribedSetId: body.prescribedSetId,
     createdAt: existing?.createdAt ?? new Date().toISOString(),
-    body,
+    body: existing
+      ? { ...body, workoutElapsedSeconds: existing.body.workoutElapsedSeconds }
+      : body,
   };
   await writeQueue([
     ...queue.filter((item) => item.operationId !== pending.operationId),

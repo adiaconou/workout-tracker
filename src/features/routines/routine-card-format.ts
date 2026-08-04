@@ -44,3 +44,21 @@ export function routineLastDoneLabel(
 
   return `Last done ${dateLabel} · ${routineElapsedLabel(completedAt, now)}`;
 }
+
+export function routineDurationLabel(
+  averageDurationSeconds: number | null,
+  durationSampleCount: number,
+  estimatedDurationMinutes: number,
+) {
+  if (
+    averageDurationSeconds !== null &&
+    Number.isFinite(averageDurationSeconds) &&
+    averageDurationSeconds >= 0 &&
+    durationSampleCount > 0
+  ) {
+    const minutes = Math.max(1, Math.round(averageDurationSeconds / 60));
+    const samples = Math.max(1, Math.round(durationSampleCount));
+    return `Avg ${minutes} min (${samples} ${samples === 1 ? "workout" : "workouts"})`;
+  }
+  return `Est. ${Math.max(1, Math.round(estimatedDurationMinutes))} min`;
+}

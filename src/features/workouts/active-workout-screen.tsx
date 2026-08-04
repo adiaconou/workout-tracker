@@ -17,7 +17,7 @@ import {
   removePendingSetWrite,
   removePendingSetWritesForWorkout,
 } from "../../api/pending-writes";
-import type { WorkoutView } from "../../api/types";
+import type { Workout, WorkoutView } from "../../api/types";
 import {
   Body,
   Button,
@@ -45,6 +45,11 @@ import {
   type CompletedSetInput,
 } from "./set-input-defaults";
 import { DiscardWorkoutModal } from "./discard-workout-modal";
+import {
+  formatElapsedDuration,
+  summarizeWorkoutTiming,
+  type WorkoutExerciseTimingSummary,
+} from "./workout-timing";
 
 type RecordSetResponse = {
   performanceId: string;
@@ -54,6 +59,7 @@ type RecordSetResponse = {
   restSeconds: number;
   restEndsAt: string | null;
   workoutCompleted: boolean;
+  workoutElapsedSeconds: number;
 };
 
 type CompleteWorkoutResponse = {
@@ -63,6 +69,15 @@ type CompleteWorkoutResponse = {
   workoutCompleted: true;
   endedEarly: boolean;
 };
+
+type ElapsedAnchor = {
+  seconds: number;
+  anchoredAt: number;
+};
+
+function elapsedFromAnchor(anchor: ElapsedAnchor, now: number) {
+  return Math.max(0, Math.floor(anchor.seconds + Math.max(0, now - anchor.anchoredAt) / 1000));
+}
 
 export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   const [workout, setWorkout] = useState<WorkoutView | null>(null);
@@ -80,11 +95,20 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   const [error, setError] = useState("");
   const [pendingCount, setPendingCount] = useState(0);
   const [workoutCompleted, setWorkoutCompleted] = useState(false);
+  const [completedWorkout, setCompletedWorkout] = useState<Workout | null>(null);
+  const [completionLoading, setCompletionLoading] = useState(false);
+  const [completionError, setCompletionError] = useState("");
+  const [expandedCompletionExerciseIds, setExpandedCompletionExerciseIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [showFullProgress, setShowFullProgress] = useState(false);
   const [showFinishEarly, setShowFinishEarly] = useState(false);
   const [showDiscardWorkout, setShowDiscardWorkout] = useState(false);
   const [stopwatchStartedAt, setStopwatchStartedAt] = useState<number | null>(null);
   const [stopwatchElapsedMs, setStopwatchElapsedMs] = useState(0);
+  const [timingNow, setTimingNow] = useState(() => Date.now());
+  const workoutElapsedAnchor = useRef<ElapsedAnchor>({ seconds: 0, anchoredAt: Date.now() });
+  const currentSetElapsedAnchor = useRef<ElapsedAnchor>({ seconds: 0, anchoredAt: Date.now() });
   const completedSetInputs = useRef<Record<string, CompletedSetInput>>({});
 
   const load = useCallback(async () => {
@@ -96,6 +120,17 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
         `/api/v1/workouts/${encodeURIComponent(sessionId)}`,
       );
       const next = payload.workout;
+      const loadedAt = Date.now();
+      const restEnd = next.restEndsAt ? Date.parse(next.restEndsAt) : Number.NaN;
+      workoutElapsedAnchor.current = {
+        seconds: next.workoutElapsedSeconds,
+        anchoredAt: loadedAt,
+      };
+      currentSetElapsedAnchor.current = {
+        seconds: next.currentSetElapsedSeconds,
+        anchoredAt: Number.isFinite(restEnd) ? Math.max(loadedAt, restEnd) : loadedAt,
+      };
+      setTimingNow(loadedAt);
       setWorkout(next);
       setCurrentIndex(next.currentSetIndex);
       setCompletedSets(next.completedSets);
@@ -116,9 +151,41 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
     }
   }, [sessionId]);
 
+  const loadCompletionSummary = useCallback(async () => {
+    setCompletionLoading(true);
+    setCompletionError("");
+    try {
+      const payload = await apiRequest<{ workout: Workout }>(
+        `/api/v1/workouts/${encodeURIComponent(sessionId)}/history`,
+      );
+      setCompletedWorkout(payload.workout);
+    } catch (caught) {
+      setCompletionError(
+        caught instanceof Error
+          ? caught.message
+          : "The workout timing summary could not be loaded.",
+      );
+    } finally {
+      setCompletionLoading(false);
+    }
+  }, [sessionId]);
+
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (!workoutCompleted) return;
+    void loadCompletionSummary();
+  }, [loadCompletionSummary, workoutCompleted]);
+
+  useEffect(() => {
+    if (!workout || workoutCompleted) return;
+    const tick = () => setTimingNow(Date.now());
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [workout?.id, workoutCompleted]);
 
   const currentSet = workout?.sets[currentIndex];
   const completedOrSkipped = completedSets + skippedSets;
@@ -142,6 +209,16 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
     () => buildWorkoutExerciseProgress(workout?.sets ?? [], currentIndex),
     [currentIndex, workout?.sets],
   );
+  const completionTiming = useMemo(
+    () => completedWorkout ? summarizeWorkoutTiming(completedWorkout) : null,
+    [completedWorkout],
+  );
+  const liveWorkoutElapsedSeconds = workoutCompleted
+    ? workoutElapsedAnchor.current.seconds
+    : elapsedFromAnchor(workoutElapsedAnchor.current, timingNow);
+  const liveCurrentSetElapsedSeconds = workoutCompleted
+    ? currentSetElapsedAnchor.current.seconds
+    : elapsedFromAnchor(currentSetElapsedAnchor.current, timingNow);
 
   useEffect(() => {
     if (!currentSet) return;
@@ -222,9 +299,12 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
       return;
     }
 
+    const recordedAt = Date.now();
+    const workoutElapsedSeconds = elapsedFromAnchor(workoutElapsedAnchor.current, recordedAt);
     const body = {
       prescribedSetId: currentSet.id,
       status,
+      workoutElapsedSeconds,
       actualWeight: status === "Completed" ? numericWeight : null,
       actualReps:
         status === "Completed" && currentSet.targetUnit !== "seconds" ? numericResult : null,
@@ -240,14 +320,20 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
         {
           method: "POST",
           headers: { "x-idempotency-key": pending.operationId },
-          body: JSON.stringify(body),
+          body: JSON.stringify(pending.body),
         },
       );
+      const respondedAt = Date.now();
       await removePendingSetWrite(pending.operationId);
       setPendingCount(await countPendingSetWrites(workout.id));
       setCompletedSets(payload.completedSets);
       setSkippedSets(payload.skippedSets);
       setSaveState("Saved");
+      workoutElapsedAnchor.current = {
+        seconds: payload.workoutElapsedSeconds,
+        anchoredAt: recordedAt,
+      };
+      setTimingNow(respondedAt);
       if (status === "Completed") {
         completedSetInputs.current[currentExerciseInputKey] = {
           actualWeight: numericWeight,
@@ -259,6 +345,13 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
         setWorkoutCompleted(true);
         setRestEndsAt(null);
       } else {
+        const nextSetStartedAt = payload.restEndsAt
+          ? Date.parse(payload.restEndsAt)
+          : respondedAt;
+        currentSetElapsedAnchor.current = {
+          seconds: 0,
+          anchoredAt: Number.isFinite(nextSetStartedAt) ? nextSetStartedAt : respondedAt,
+        };
         setCurrentIndex(payload.nextSetIndex);
         setRestDuration(payload.restSeconds);
         setRestEndsAt(payload.restEndsAt);
@@ -280,6 +373,12 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
       await apiRequest(`/api/v1/workouts/${encodeURIComponent(workout.id)}/rest/skip`, {
         method: "POST",
       });
+      const skippedAt = Date.now();
+      currentSetElapsedAnchor.current = {
+        seconds: currentSetElapsedAnchor.current.seconds,
+        anchoredAt: skippedAt,
+      };
+      setTimingNow(skippedAt);
       setRestEndsAt(null);
       setSecondsRemaining(0);
     } catch (caught) {
@@ -335,6 +434,8 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
 
   async function finishWorkoutEarly() {
     if (!workout || saving) return;
+    const completedAt = Date.now();
+    const workoutElapsedSeconds = elapsedFromAnchor(workoutElapsedAnchor.current, completedAt);
     setSaving(true);
     setError("");
     setSaveState("");
@@ -347,8 +448,16 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
       }
       const payload = await apiRequest<CompleteWorkoutResponse>(
         `/api/v1/workouts/${encodeURIComponent(workout.id)}/complete`,
-        { method: "POST" },
+        {
+          method: "POST",
+          body: JSON.stringify({ workoutElapsedSeconds }),
+        },
       );
+      workoutElapsedAnchor.current = {
+        seconds: workoutElapsedSeconds,
+        anchoredAt: completedAt,
+      };
+      setTimingNow(completedAt);
       setCompletedSets(payload.completedSets);
       setSkippedSets(payload.skippedSets);
       setRestEndsAt(null);
@@ -416,14 +525,76 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   if (workoutCompleted) {
     return (
       <Screen contentStyle={styles.completeScreen}>
-        <Eyebrow>Routine complete</Eyebrow>
+        <Eyebrow>Routine {workout.routineCode} complete</Eyebrow>
         <Heading>Workout saved.</Heading>
         <Body muted>
-          {completedSets} sets completed and {skippedSets} skipped. Every set is stored against
-          this routine snapshot.
+          Your session timing and every recorded set are saved to history.
         </Body>
         {pendingCount ? <Message tone="warning">{pendingCount} set action still needs to sync.</Message> : null}
-        <Button title="Back to routines →" onPress={() => router.replace("/routines")} />
+
+        <Card style={styles.completionSummaryCard}>
+          <View style={styles.completionStats}>
+            <CompletionStat
+              value={completionTiming ? formatElapsedDuration(completionTiming.elapsedSeconds) : "—"}
+              label="Total elapsed"
+            />
+            <CompletionStat
+              value={`${completedSets}/${workout.totalSets}`}
+              label="Completed sets"
+            />
+            <CompletionStat
+              value={String(completionTiming?.totalExercises ?? exerciseOrders.length)}
+              label="Exercises"
+            />
+          </View>
+          {skippedSets ? (
+            <Text style={styles.completionSkipped}>
+              {skippedSets} {skippedSets === 1 ? "set was" : "sets were"} skipped
+            </Text>
+          ) : null}
+        </Card>
+
+        <View style={styles.completionSectionHeading}>
+          <Eyebrow>Exercise timing</Eyebrow>
+          {completionLoading ? <Text style={styles.completionLoading}>Loading…</Text> : null}
+        </View>
+        {completionError ? (
+          <Card style={styles.completionErrorCard}>
+            <Body muted>Your workout is saved, but its timing details could not be loaded.</Body>
+            <Text style={styles.completionErrorDetail}>{completionError}</Text>
+            <Button
+              title="Try again"
+              variant="secondary"
+              loading={completionLoading}
+              onPress={() => void loadCompletionSummary()}
+            />
+          </Card>
+        ) : null}
+        {completionTiming?.exercises.map((exercise) => (
+          <CompletionExerciseTimingCard
+            key={exercise.id}
+            exercise={exercise}
+            expanded={expandedCompletionExerciseIds.has(exercise.id)}
+            onToggle={() => setExpandedCompletionExerciseIds((current) => {
+              const next = new Set(current);
+              if (next.has(exercise.id)) next.delete(exercise.id);
+              else next.add(exercise.id);
+              return next;
+            })}
+          />
+        ))}
+
+        <View style={styles.completionActions}>
+          <Button
+            title="View workout details →"
+            onPress={() => router.replace(`/history/${workout.id}`)}
+          />
+          <Button
+            title="Back to routines"
+            variant="secondary"
+            onPress={() => router.replace("/routines")}
+          />
+        </View>
       </Screen>
     );
   }
@@ -434,7 +605,9 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
         <Pressable accessibilityRole="link" onPress={() => router.replace(`/routines/${workout.routineCode}`)}>
           <Text style={styles.exit}>← Exit workout</Text>
         </Pressable>
-        <Text style={styles.routineLabel}>Routine {workout.routineCode} · v{workout.routineVersion}</Text>
+        <Text numberOfLines={1} style={styles.routineLabel}>
+          Routine {workout.routineCode} · Elapsed {formatElapsedDuration(liveWorkoutElapsedSeconds)}
+        </Text>
         <Text style={styles.setCounter}>{completedOrSkipped}/{workout.totalSets}</Text>
       </View>
       <View
@@ -448,6 +621,7 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
         <Text style={styles.progressCaption}>
           {exerciseProgress.filter((exercise) => exercise.status === "completed").length} of{" "}
           {exerciseProgress.length} exercises done
+          {!restEndsAt ? ` · Set ${formatElapsedDuration(liveCurrentSetElapsedSeconds)}` : ""}
         </Text>
         <Pressable
           accessibilityRole="button"
@@ -738,6 +912,85 @@ function SetStopwatch({
         </Pressable>
       </View>
     </View>
+  );
+}
+
+function CompletionStat({ value, label }: { value: string; label: string }) {
+  return (
+    <View style={styles.completionStat}>
+      <Text numberOfLines={1} style={styles.completionStatValue}>{value}</Text>
+      <Text style={styles.completionStatLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function CompletionExerciseTimingCard({
+  exercise,
+  expanded,
+  onToggle,
+}: {
+  exercise: WorkoutExerciseTimingSummary;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const exerciseElapsed = exercise.elapsedSeconds === null
+    ? "—"
+    : formatElapsedDuration(exercise.elapsedSeconds);
+  return (
+    <Card style={styles.completionExerciseCard}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${exercise.name} timing, ${exerciseElapsed}`}
+        accessibilityState={{ expanded }}
+        onPress={onToggle}
+        style={({ pressed }) => [
+          styles.completionExerciseHeader,
+          pressed && styles.completionExerciseHeaderPressed,
+        ]}
+      >
+        <View style={styles.completionExerciseOrder}>
+          <Text style={styles.completionExerciseOrderText}>{exercise.position}</Text>
+        </View>
+        <View style={styles.completionExerciseCopy}>
+          <Text numberOfLines={1} style={styles.completionExerciseName}>{exercise.name}</Text>
+          <Text style={styles.completionExerciseMeta}>
+            {exercise.completedSets}/{exercise.totalSets} sets completed
+            {exercise.skippedSets ? ` · ${exercise.skippedSets} skipped` : ""}
+          </Text>
+        </View>
+        <Text style={styles.completionExerciseElapsed}>{exerciseElapsed}</Text>
+        <Text style={styles.completionExerciseChevron}>{expanded ? "⌄" : "›"}</Text>
+      </Pressable>
+      {expanded ? (
+        <View style={styles.completionSetList}>
+          {exercise.sets.map((set, index) => {
+            const elapsed = set.elapsedSeconds === null
+              ? "Elapsed —"
+              : `${formatElapsedDuration(set.elapsedSeconds)} elapsed`;
+            const rest = set.restSeconds === null
+              ? "Rest —"
+              : set.restSeconds > 0
+                ? `${formatElapsedDuration(set.restSeconds)} rest`
+                : "No rest";
+            return (
+              <View key={set.id} style={styles.completionSetRow}>
+                <View style={styles.completionSetNumber}>
+                  <Text style={styles.completionSetNumberText}>{index + 1}</Text>
+                </View>
+                <View style={styles.completionSetCopy}>
+                  <Text style={styles.completionSetStatus}>
+                    {set.status === "skipped" ? `Skipped · ${elapsed}` : elapsed}
+                  </Text>
+                  <Text style={styles.completionSetRest}>
+                    {set.status === "skipped" ? "Rest —" : rest}
+                  </Text>
+                </View>
+              </View>
+            );
+          })}
+        </View>
+      ) : null}
+    </Card>
   );
 }
 
@@ -1032,7 +1285,88 @@ function formatRest(seconds: number, rule: string) {
 }
 
 const styles = StyleSheet.create({
-  completeScreen: { justifyContent: "center", minHeight: 520 },
+  completeScreen: { minHeight: 520 },
+  completionSummaryCard: { backgroundColor: colors.surfaceRaised, gap: spacing.md },
+  completionStats: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  completionStat: {
+    flexGrow: 1,
+    flexBasis: 120,
+    minWidth: 0,
+    padding: spacing.md,
+    borderRadius: radii.md,
+    backgroundColor: colors.background,
+    gap: spacing.xs,
+  },
+  completionStatValue: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: "800",
+    fontVariant: ["tabular-nums"],
+  },
+  completionStatLabel: { color: colors.textDim, fontSize: 10 },
+  completionSkipped: { color: colors.textMuted, fontSize: 11 },
+  completionSectionHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.md,
+  },
+  completionLoading: { color: colors.textDim, fontSize: 11 },
+  completionErrorCard: { gap: spacing.md },
+  completionErrorDetail: { color: colors.danger, fontSize: 11 },
+  completionExerciseCard: { padding: 0, overflow: "hidden", gap: 0 },
+  completionExerciseHeader: {
+    minHeight: 68,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    padding: spacing.md,
+    backgroundColor: colors.surfaceRaised,
+  },
+  completionExerciseHeaderPressed: { opacity: 0.76 },
+  completionExerciseOrder: {
+    width: 30,
+    height: 30,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.pill,
+    backgroundColor: colors.accentDark,
+  },
+  completionExerciseOrderText: { color: colors.accent, fontSize: 11, fontWeight: "900" },
+  completionExerciseCopy: { flex: 1, minWidth: 0, gap: 2 },
+  completionExerciseName: { color: colors.text, fontSize: 14, fontWeight: "800" },
+  completionExerciseMeta: { color: colors.textMuted, fontSize: 10 },
+  completionExerciseElapsed: {
+    color: colors.text,
+    fontSize: 12,
+    fontWeight: "800",
+    fontVariant: ["tabular-nums"],
+  },
+  completionExerciseChevron: { color: colors.textMuted, fontSize: 22 },
+  completionSetList: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
+  completionSetRow: {
+    minHeight: 56,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+  },
+  completionSetNumber: {
+    width: 26,
+    height: 26,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.sm,
+    backgroundColor: colors.background,
+  },
+  completionSetNumberText: { color: colors.textMuted, fontSize: 10, fontWeight: "800" },
+  completionSetCopy: { flex: 1, minWidth: 0, gap: 2 },
+  completionSetStatus: { color: colors.text, fontSize: 12, fontWeight: "700" },
+  completionSetRest: { color: colors.textDim, fontSize: 10 },
+  completionActions: { gap: spacing.sm, paddingTop: spacing.sm },
   topline: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.sm },
   exit: { color: colors.textMuted, fontSize: 12, fontWeight: "700" },
   routineLabel: { color: colors.textDim, fontSize: 11, flex: 1, textAlign: "center" },
