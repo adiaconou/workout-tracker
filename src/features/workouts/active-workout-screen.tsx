@@ -50,6 +50,7 @@ import {
   summarizeWorkoutTiming,
   type WorkoutExerciseTimingSummary,
 } from "./workout-timing";
+import { buildCompactSetDetails } from "./set-guidance";
 
 type RecordSetResponse = {
   performanceId: string;
@@ -690,30 +691,11 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
               onPress={() => void skipRest()}
             />
           </Card>
-          <Card>
-            <Eyebrow>Next set</Eyebrow>
-            <Heading size="medium">{currentSet.exerciseName}</Heading>
-            <Body muted>
-              {setTypeLabel(currentSet.setType)} {currentSet.typeSetNumber} of{" "}
-              {currentSet.typeSetTotal}
-            </Body>
-            <Fact label="Target" value={currentSet.target} />
-            <Fact label="Effort" value={currentSet.effort} />
-            {currentSet.purpose ? <Fact label="Purpose" value={currentSet.purpose} /> : null}
-            {currentSet.exerciseInstructions ? (
-              <Fact label="Exercise instructions" value={currentSet.exerciseInstructions} />
-            ) : null}
-            {currentSet.exerciseNotes ? (
-              <Fact label="Exercise notes" value={currentSet.exerciseNotes} />
-            ) : null}
-            {currentSet.sideMode && currentSet.sideMode !== "bilateral" ? (
-              <Fact label="Sides" value={sideModeLabel(currentSet.sideMode)} />
-            ) : null}
-            {currentSet.tempo ? <Fact label="Tempo" value={currentSet.tempo} /> : null}
-            {currentSet.loadInstruction ? (
-              <Fact label="Load" value={currentSet.loadInstruction} />
-            ) : null}
-            {currentSet.notes ? <Fact label="Set notes" value={currentSet.notes} /> : null}
+          <Card style={styles.setCard}>
+            <CompactSetOverview
+              eyebrow={`Next set · Exercise ${exercisePosition} of ${exerciseOrders.length}`}
+              workoutSet={currentSet}
+            />
             <PreviousPerformance
               sets={previousExerciseSets}
               setCount={currentSet.exerciseSetTotal}
@@ -722,38 +704,11 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
         </View>
       ) : currentSet ? (
         <>
-          <View style={styles.exerciseLine}>
-            <Eyebrow>Exercise {exercisePosition} of {exerciseOrders.length}</Eyebrow>
-            <Text style={styles.setType}>{setTypeLabel(currentSet.setType)}</Text>
-          </View>
           <Card style={styles.setCard}>
-            <Heading>{currentSet.exerciseName}</Heading>
-            <View style={styles.prescriptionGrid}>
-              <Prescription label="Target" value={currentSet.target} />
-              <Prescription label="Effort" value={currentSet.effort} />
-              {currentSet.purpose ? (
-                <Prescription label="Purpose" value={currentSet.purpose} />
-              ) : null}
-              {currentSet.exerciseInstructions ? (
-                <Prescription label="Exercise instructions" value={currentSet.exerciseInstructions} />
-              ) : null}
-              {currentSet.exerciseNotes ? (
-                <Prescription label="Exercise notes" value={currentSet.exerciseNotes} />
-              ) : null}
-              <Prescription label="Rest after" value={formatRest(currentSet.restSeconds, currentSet.restRule)} />
-              {currentSet.sideMode && currentSet.sideMode !== "bilateral" ? (
-                <Prescription label="Sides" value={sideModeLabel(currentSet.sideMode)} />
-              ) : null}
-              {currentSet.tempo ? <Prescription label="Tempo" value={currentSet.tempo} /> : null}
-              {currentSet.loadInstruction ? (
-                <Prescription label="Load" value={currentSet.loadInstruction} />
-              ) : null}
-              {currentSet.notes ? <Prescription label="Set notes" value={currentSet.notes} /> : null}
-            </View>
-            <Body muted>
-              Set {currentSet.exerciseSetNumber} of {currentSet.exerciseSetTotal} ·{" "}
-              {setTypeLabel(currentSet.setType)}
-            </Body>
+            <CompactSetOverview
+              eyebrow={`Exercise ${exercisePosition} of ${exerciseOrders.length}`}
+              workoutSet={currentSet}
+            />
           </Card>
 
           <Card>
@@ -994,21 +949,64 @@ function CompletionExerciseTimingCard({
   );
 }
 
-function Fact({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.fact}>
-      <Text style={styles.factLabel}>{label}</Text>
-      <Text style={styles.factValue}>{value}</Text>
-    </View>
-  );
-}
+function CompactSetOverview({
+  eyebrow,
+  workoutSet,
+}: {
+  eyebrow: string;
+  workoutSet: WorkoutView["sets"][number];
+}) {
+  const restLabel = formatRest(workoutSet.restSeconds, workoutSet.restRule);
+  const details = buildCompactSetDetails({
+    primaryValues: [workoutSet.target, restLabel],
+    details: [
+      { id: "effort", label: "Effort", value: workoutSet.effort },
+      { id: "load", label: "Load", value: workoutSet.loadInstruction },
+      {
+        id: "sides",
+        label: "Sides",
+        value: workoutSet.sideMode && workoutSet.sideMode !== "bilateral"
+          ? sideModeLabel(workoutSet.sideMode)
+          : null,
+      },
+      { id: "tempo", label: "Tempo", value: workoutSet.tempo },
+      { id: "instructions", label: "Cue", value: workoutSet.exerciseInstructions },
+      { id: "purpose", label: "Why", value: workoutSet.purpose },
+      { id: "set-notes", label: "Set note", value: workoutSet.notes },
+      { id: "exercise-notes", label: "Notes", value: workoutSet.exerciseNotes },
+    ],
+  });
 
-function Prescription({ label, value }: { label: string; value: string }) {
   return (
-    <View style={styles.prescription}>
-      <Text style={styles.prescriptionLabel}>{label}</Text>
-      <Text style={styles.prescriptionValue}>{value}</Text>
-    </View>
+    <>
+      <Eyebrow>{eyebrow}</Eyebrow>
+      <Heading size="medium">{workoutSet.exerciseName}</Heading>
+      <Text style={styles.setMeta}>
+        {setTypeLabel(workoutSet.setType)} · Set {workoutSet.exerciseSetNumber} of{" "}
+        {workoutSet.exerciseSetTotal}
+      </Text>
+      <View style={styles.setSummary}>
+        <View style={[styles.setMetric, styles.setMetricTarget]}>
+          <Text style={styles.setMetricLabel}>Target</Text>
+          <Text style={styles.setMetricValue}>{workoutSet.target}</Text>
+        </View>
+        <View style={styles.setMetricDivider} />
+        <View style={styles.setMetric}>
+          <Text style={styles.setMetricLabel}>Rest</Text>
+          <Text style={styles.setMetricValue}>{restLabel}</Text>
+        </View>
+      </View>
+      {details.length ? (
+        <View style={styles.setGuidance}>
+          {details.map((detail) => (
+            <View key={detail.id} style={styles.setGuidanceRow}>
+              <Text style={styles.setGuidanceLabel}>{detail.label}</Text>
+              <Text style={styles.setGuidanceValue}>{detail.value}</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+    </>
   );
 }
 
@@ -1609,9 +1607,6 @@ const styles = StyleSheet.create({
   timer: { color: colors.text, fontSize: 72, lineHeight: 80, fontWeight: "800", textAlign: "center", fontVariant: ["tabular-nums"], letterSpacing: -3 },
   timerTrack: { height: 6, borderRadius: radii.pill, backgroundColor: colors.background, overflow: "hidden", marginBottom: spacing.md },
   timerValue: { height: "100%", borderRadius: radii.pill, backgroundColor: colors.accent },
-  fact: { flexDirection: "row", justifyContent: "space-between", gap: spacing.lg, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, paddingTop: spacing.sm },
-  factLabel: { color: colors.textDim, fontSize: 11, textTransform: "uppercase", fontWeight: "700" },
-  factValue: { color: colors.text, fontSize: 13, fontWeight: "600", textAlign: "right", flex: 1 },
   previousPerformance: {
     gap: spacing.sm,
     borderTopWidth: StyleSheet.hairlineWidth,
@@ -1640,13 +1635,53 @@ const styles = StyleSheet.create({
     fontVariant: ["tabular-nums"],
     textAlign: "right",
   },
-  exerciseLine: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  setType: { color: colors.textMuted, fontSize: 12, fontWeight: "700" },
-  setCard: { backgroundColor: colors.surfaceRaised, paddingVertical: spacing.xl },
-  prescriptionGrid: { flexDirection: "row", gap: spacing.sm, flexWrap: "wrap" },
-  prescription: { flexGrow: 1, flexBasis: 110, minHeight: 76, backgroundColor: colors.background, borderRadius: radii.md, padding: spacing.md, gap: spacing.xs },
-  prescriptionLabel: { color: colors.textDim, fontSize: 10, fontWeight: "700", textTransform: "uppercase" },
-  prescriptionValue: { color: colors.text, fontSize: 15, lineHeight: 20, fontWeight: "700" },
+  setCard: { backgroundColor: colors.surfaceRaised, gap: spacing.sm },
+  setMeta: {
+    color: colors.textMuted,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "700",
+  },
+  setSummary: {
+    minHeight: 58,
+    flexDirection: "row",
+    alignItems: "stretch",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderStrong,
+    paddingVertical: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  setMetric: { flex: 1, justifyContent: "center", gap: 2, paddingHorizontal: spacing.md },
+  setMetricTarget: { flex: 2, paddingLeft: 0 },
+  setMetricDivider: { width: StyleSheet.hairlineWidth, backgroundColor: colors.borderStrong },
+  setMetricLabel: {
+    color: colors.textDim,
+    fontSize: 9,
+    lineHeight: 12,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+  },
+  setMetricValue: { color: colors.text, fontSize: 15, lineHeight: 20, fontWeight: "800" },
+  setGuidance: { gap: spacing.xs, paddingTop: spacing.xs },
+  setGuidanceRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
+  setGuidanceLabel: {
+    width: 58,
+    color: colors.textDim,
+    fontSize: 10,
+    lineHeight: 19,
+    fontWeight: "800",
+    textTransform: "uppercase",
+  },
+  setGuidanceValue: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.text,
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: "600",
+  },
   saveState: { textAlign: "center", color: colors.success, fontSize: 12, fontWeight: "700" },
   saveFailed: { color: colors.danger },
 });

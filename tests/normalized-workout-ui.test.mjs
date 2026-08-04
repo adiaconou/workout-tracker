@@ -8,17 +8,20 @@ test("active workout renders normalized exercise and set guidance", () => {
     "utf8",
   );
 
-  for (const label of [
-    "Purpose",
-    "Exercise instructions",
-    "Exercise notes",
-    "Sides",
-    "Tempo",
-    "Load",
-    "Set notes",
+  for (const field of [
+    "workoutSet.purpose",
+    "workoutSet.exerciseInstructions",
+    "workoutSet.exerciseNotes",
+    "workoutSet.sideMode",
+    "workoutSet.tempo",
+    "workoutSet.loadInstruction",
+    "workoutSet.notes",
   ]) {
-    assert.ok(source.includes(`label="${label}"`), `${label} must be visible during an active workout`);
+    assert.ok(source.includes(field), `${field} must be considered during an active workout`);
   }
+  assert.match(source, /buildCompactSetDetails/);
+  assert.match(source, /<CompactSetOverview/);
+  assert.doesNotMatch(source, /prescriptionGrid|<Prescription/);
   assert.match(source, /resultUnitName\(currentSet\.targetUnit/);
   assert.match(source, /currentSet\.sourceRoutineExerciseId \?\? `position:/);
 });
