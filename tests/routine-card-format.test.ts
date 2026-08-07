@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  recentWorkoutRangeStart,
   routineDurationLabel,
   routineElapsedLabel,
   routineLastDoneLabel,
@@ -37,4 +38,11 @@ test("shows actual average duration with its sample count and falls back to the 
   assert.equal(routineDurationLabel(3_121, 1, 60), "Avg 52 min (1 workout)");
   assert.equal(routineDurationLabel(3_121, 6, 60), "Avg 52 min (6 workouts)");
   assert.equal(routineDurationLabel(null, 0, 60), "Est. 60 min");
+});
+
+test("uses an exact rolling seven-day cutoff for recent workouts", () => {
+  assert.equal(
+    recentWorkoutRangeStart(new Date("2026-08-07T12:00:00.000Z")),
+    "2026-07-31T12:00:00.000Z",
+  );
 });

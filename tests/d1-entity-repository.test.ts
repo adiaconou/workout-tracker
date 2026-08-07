@@ -121,6 +121,127 @@ test("persists a Google profile photo across hosted-web and refreshed native ses
   }
 });
 
+test("workout history applies the rolling cutoff and returns finished sessions newest first", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "workout-history-window-"));
+  const database = join(directory, "history.sqlite");
+  const sqlite = new DatabaseSync(database);
+  const d1 = new SqliteD1(sqlite) as unknown as D1Database;
+  const owner = "history-window@example.com";
+
+  async function insertWorkout({
+    id,
+    routineCode,
+    status,
+    startedAt,
+    completedAt,
+    archived = false,
+  }: {
+    id: string;
+    routineCode: string;
+    status: "In Progress" | "Completed" | "Partial" | "Abandoned";
+    startedAt: string;
+    completedAt: string | null;
+    archived?: boolean;
+  }) {
+    await d1.prepare(`INSERT INTO workout_sessions (
+      id, owner_email, routine_code, routine_version, status, snapshot_json,
+      current_exercise, current_set, completed_sets, skipped_sets, total_sets,
+      started_at, completed_at, updated_at, is_archived
+    ) VALUES (?, ?, ?, 1, ?, ?, 1, 1, 4, 0, 5, ?, ?, ?, ?)`)
+      .bind(
+        id,
+        owner,
+        routineCode,
+        status,
+        JSON.stringify({
+          code: routineCode,
+          version: 1,
+          focus: `Routine ${routineCode}`,
+          summary: "History test",
+          durationMin: 30,
+          updatedAt: startedAt,
+          exercises: [],
+        }),
+        startedAt,
+        completedAt,
+        completedAt ?? startedAt,
+        archived ? 1 : 0,
+      ).run();
+  }
+
+  try {
+    await ensureEntitySchema(d1);
+    await insertWorkout({
+      id: "boundary-completed",
+      routineCode: "A",
+      status: "Completed",
+      startedAt: "2026-07-31T12:00:00.000Z",
+      completedAt: "2026-07-31T12:45:00.000Z",
+    });
+    await insertWorkout({
+      id: "recent-partial",
+      routineCode: "B",
+      status: "Partial",
+      startedAt: "2026-08-06T10:00:00.000Z",
+      completedAt: "2026-08-06T10:30:00.000Z",
+    });
+    await insertWorkout({
+      id: "recent-abandoned",
+      routineCode: "C",
+      status: "Abandoned",
+      startedAt: "2026-08-05T09:00:00.000Z",
+      completedAt: "2026-08-05T09:10:00.000Z",
+    });
+    await insertWorkout({
+      id: "outside-window",
+      routineCode: "D",
+      status: "Completed",
+      startedAt: "2026-07-31T11:59:59.999Z",
+      completedAt: "2026-07-31T12:20:00.000Z",
+    });
+    await insertWorkout({
+      id: "active-session",
+      routineCode: "A",
+      status: "In Progress",
+      startedAt: "2026-08-07T10:00:00.000Z",
+      completedAt: null,
+    });
+    await insertWorkout({
+      id: "archived-session",
+      routineCode: "A",
+      status: "Completed",
+      startedAt: "2026-08-07T11:00:00.000Z",
+      completedAt: "2026-08-07T11:30:00.000Z",
+      archived: true,
+    });
+
+    const repository = new D1EntityRepository(d1);
+    const page = await repository.listWorkoutHistory(owner, {
+      from: "2026-07-31T12:00:00.000Z",
+      limit: 50,
+    });
+    assert.deepEqual(
+      page.workouts.map((workout) => workout.id),
+      ["recent-partial", "recent-abandoned", "boundary-completed"],
+    );
+    assert.equal(page.stats.workoutCount, 3);
+    assert.equal(page.hasMore, false);
+
+    const completedOnly = await repository.listWorkoutHistory(owner, {
+      from: "2026-07-31T12:00:00.000Z",
+      status: "Completed",
+      limit: 50,
+    });
+    assert.deepEqual(
+      completedOnly.workouts.map((workout) => workout.id),
+      ["boundary-completed"],
+    );
+  } finally {
+    sqlite.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("D1 entity repository seeds, versions, publishes, materializes, discards, and archives normalized entities", async () => {
   const directory = await mkdtemp(join(tmpdir(), "workout-d1-repository-"));
   const database = join(directory, "repository.sqlite");

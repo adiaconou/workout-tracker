@@ -6,6 +6,7 @@ type RoutineLastDoneOptions = {
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_HOURS = 24;
+const RECENT_WORKOUT_WINDOW_MS = 7 * DAY_HOURS * HOUR_MS;
 
 function plural(value: number, unit: "day" | "hour") {
   return `${value} ${unit}${value === 1 ? "" : "s"}`;
@@ -61,4 +62,8 @@ export function routineDurationLabel(
     return `Avg ${minutes} min (${samples} ${samples === 1 ? "workout" : "workouts"})`;
   }
   return `Est. ${Math.max(1, Math.round(estimatedDurationMinutes))} min`;
+}
+
+export function recentWorkoutRangeStart(now = new Date()) {
+  return new Date(now.getTime() - RECENT_WORKOUT_WINDOW_MS).toISOString();
 }

@@ -11,7 +11,7 @@ import {
 import { router, useFocusEffect } from "expo-router";
 import { apiRequest } from "../../api/client";
 import { removePendingSetWritesForWorkout } from "../../api/pending-writes";
-import type { BootstrapPayload } from "../../api/types";
+import type { BootstrapPayload, WorkoutHistoryPage } from "../../api/types";
 import {
   Body,
   Button,
@@ -23,22 +23,29 @@ import {
   Screen,
 } from "../../components/ui";
 import { colors, radii, spacing } from "../../theme/tokens";
+import {
+  formatHistoryDateTime,
+  formatWorkoutDuration,
+  historyStatusLabel,
+} from "../history/history-format";
 import { DiscardWorkoutModal } from "../workouts/discard-workout-modal";
 import {
   routineDurationLabel,
   routineLastDoneLabel,
 } from "./routine-card-format";
+import { loadRoutinePageData } from "./routine-page-loader";
 
 export function RoutinesScreen() {
   const { width } = useWindowDimensions();
   const compactLayout = width < 720;
   const [data, setData] = useState<BootstrapPayload | null>(null);
+  const [recentHistory, setRecentHistory] = useState<WorkoutHistoryPage | null>(null);
+  const [recentHistoryError, setRecentHistoryError] = useState("");
+  const [recentHistoryLoading, setRecentHistoryLoading] = useState(false);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const [showDiscardWorkout, setShowDiscardWorkout] = useState(false);
   const [discardingWorkout, setDiscardingWorkout] = useState(false);
-  const [showRecommendationDetails, setShowRecommendationDetails] = useState(false);
-  const [showAvailabilityHelp, setShowAvailabilityHelp] = useState(false);
   const [focusedAction, setFocusedAction] = useState<string | null>(null);
   const latestRequest = useRef(0);
 
@@ -46,8 +53,23 @@ export function RoutinesScreen() {
     const requestId = latestRequest.current + 1;
     latestRequest.current = requestId;
     setRefreshing(true);
+    setRecentHistoryLoading(true);
     try {
-      const next = await apiRequest<BootstrapPayload>("/api/v1/bootstrap");
+      const next = await loadRoutinePageData({
+        request: apiRequest,
+        onRecentHistory: (history) => {
+          if (requestId !== latestRequest.current) return;
+          setRecentHistory(history);
+          setRecentHistoryError("");
+        },
+        onRecentHistoryError: () => {
+          if (requestId !== latestRequest.current) return;
+          setRecentHistoryError("Recent workouts could not be refreshed.");
+        },
+        onRecentHistorySettled: () => {
+          if (requestId === latestRequest.current) setRecentHistoryLoading(false);
+        },
+      });
       if (requestId === latestRequest.current) {
         setData(next);
         setError("");
@@ -127,12 +149,6 @@ export function RoutinesScreen() {
   if (!data && refreshing) return <LoadingView label="Loading your routines…" />;
 
   const recommendation = data?.recommendations;
-  const recommendedRoutine = data?.routines.find(
-    (routine) => routine.code === recommendation?.recommendedRoutineCode,
-  );
-  const recommendedGuidance = recommendation?.routines.find(
-    (routine) => routine.code === recommendation?.recommendedRoutineCode,
-  );
   const activeRoutine = data?.routines.find(
     (routine) => routine.code === data.activeWorkout?.routineCode,
   );
@@ -143,17 +159,15 @@ export function RoutinesScreen() {
     ? Math.min(1, activeRecordedSets / data.activeWorkout.totalSets)
     : 0;
   const renderedAt = new Date();
+  const recentWorkouts = recentHistory?.workouts ?? [];
 
   return (
     <Screen safeTop={false} contentStyle={styles.screenContent}>
       <View style={styles.header}>
         <Heading>Routines</Heading>
-        <View style={styles.headerStats}>
-          {data ? <Text style={styles.total}>{data.routines.length} total</Text> : null}
-          {refreshing ? (
-            <Text accessibilityLiveRegion="polite" style={styles.refreshing}>Refreshing…</Text>
-          ) : null}
-        </View>
+        {refreshing ? (
+          <Text accessibilityLiveRegion="polite" style={styles.refreshing}>Refreshing…</Text>
+        ) : null}
       </View>
 
       {!data && error ? (
@@ -403,72 +417,129 @@ export function RoutinesScreen() {
             </Card>
           )}
 
-          {recommendedRoutine && recommendedGuidance ? (
-            <>
+          <View style={styles.recentSection}>
+            <View style={styles.recentSectionHeader}>
+              <Heading level={2} size="small">Last 7 days</Heading>
               <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`Why Routine ${recommendedRoutine.code} is recommended`}
-                accessibilityState={{ expanded: showRecommendationDetails }}
-                onPress={() => setShowRecommendationDetails((current) => !current)}
+                accessibilityRole="link"
+                accessibilityLabel="View all workout history"
+                onPress={() => router.push("/history")}
                 onBlur={() => setFocusedAction(null)}
-                onFocus={() => setFocusedAction("recommendation-details")}
+                onFocus={() => setFocusedAction("view-history")}
                 style={({ pressed }) => [
-                  styles.disclosure,
+                  styles.viewHistoryAction,
                   pressed && styles.actionPressed,
-                  focusedAction === "recommendation-details" &&
+                  focusedAction === "view-history" &&
                     Platform.OS === "web" &&
                     styles.webFocusRing,
                 ]}
               >
-                <Text style={styles.disclosureText}>
-                  Why Routine {recommendedRoutine.code} is recommended
-                </Text>
-                <Text style={styles.disclosureIcon}>
-                  {showRecommendationDetails ? "−" : "+"}
-                </Text>
+                <Text style={styles.viewHistoryText}>View all history →</Text>
               </Pressable>
-              {showRecommendationDetails ? (
-                <View style={styles.detailPanel}>
-                  <Body>{recommendation?.summary ?? recommendedGuidance.goalReason}</Body>
-                  <Body muted>{recommendedGuidance.goalReason}</Body>
-                  {recommendedGuidance.availability !== "available" ? (
-                    <Body muted>{recommendedGuidance.availabilityReason}</Body>
-                  ) : null}
-                  <Body muted style={styles.detailNote}>
-                    This guidance informs your choice; it never locks a routine.
-                  </Body>
-                </View>
-              ) : null}
-            </>
-          ) : null}
+            </View>
 
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="How routine availability works"
-            accessibilityState={{ expanded: showAvailabilityHelp }}
-            onPress={() => setShowAvailabilityHelp((current) => !current)}
-            onBlur={() => setFocusedAction(null)}
-            onFocus={() => setFocusedAction("availability-help")}
-            style={({ pressed }) => [
-              styles.availabilityHelp,
-              pressed && styles.actionPressed,
-              focusedAction === "availability-help" &&
-                Platform.OS === "web" &&
-                styles.webFocusRing,
-            ]}
-          >
-            <Text style={styles.availabilityHelpText}>How availability works</Text>
-            <Text style={styles.availabilityHelpIcon}>
-              {showAvailabilityHelp ? "−" : "+"}
-            </Text>
-          </Pressable>
-          {showAvailabilityHelp ? (
-            <Body muted style={styles.guidanceNote}>
-              These overlap estimates use completed sets logged in the past 72 hours. They do
-              not measure soreness, pain, sleep, stress, injury, warm-up performance, or medical
-              readiness. You can always choose a different routine.
-            </Body>
-          ) : null}
+            {recentHistoryError && recentWorkouts.length > 0 ? (
+              <Text accessibilityLiveRegion="polite" style={styles.recentHistoryNotice}>
+                Recent workouts may be out of date.
+              </Text>
+            ) : null}
+
+            <View style={styles.table}>
+              <View style={styles.tableHeader}>
+                <Text style={[styles.headerCell, styles.codeCell]}>#</Text>
+                <Text style={[styles.headerCell, styles.recentWorkoutCell]}>Workout</Text>
+                {!compactLayout ? (
+                  <>
+                    <Text style={[styles.headerCell, styles.recentWhenCell]}>When</Text>
+                    <Text style={[styles.headerCell, styles.recentResultCell]}>Result</Text>
+                    <Text style={[styles.headerCell, styles.recentDurationCell]}>Time</Text>
+                  </>
+                ) : null}
+                <View style={styles.arrowCell} />
+              </View>
+
+              {recentWorkouts.length ? recentWorkouts.map((workout, index) => {
+                const workoutName = `Routine ${workout.routineCode}`;
+                const whenLabel = formatHistoryDateTime(workout.startedAt);
+                const statusLabel = historyStatusLabel(workout.status);
+                const workoutDuration = formatWorkoutDuration(workout.durationSeconds);
+                const skippedLabel = workout.skippedSets
+                  ? `, ${workout.skippedSets} skipped`
+                  : "";
+                return (
+                  <View key={workout.id} style={styles.recentWorkoutRow}>
+                    <Pressable
+                      accessibilityRole="link"
+                      accessibilityLabel={`Review Routine ${workout.routineCode} workout from ${whenLabel}. ${statusLabel}, ${workout.completedSets} of ${workout.totalSets} sets completed${skippedLabel}, ${workout.exerciseCount} exercises, ${workoutDuration}`}
+                      onPress={() => router.push(`/history/${workout.id}`)}
+                      onBlur={() => setFocusedAction(null)}
+                      onFocus={() => setFocusedAction(`history-${workout.id}`)}
+                      style={({ pressed }) => [
+                        styles.routineLink,
+                        styles.recentWorkoutLink,
+                        compactLayout && styles.recentWorkoutLinkCompact,
+                        pressed && styles.routineLinkPressed,
+                        focusedAction === `history-${workout.id}` &&
+                          Platform.OS === "web" &&
+                          styles.webFocusRing,
+                      ]}
+                    >
+                      <Text style={[styles.code, styles.codeCell]}>{index + 1}</Text>
+                      <View style={[
+                        styles.recentWorkoutCell,
+                        compactLayout && styles.recentWorkoutCellCompact,
+                      ]}>
+                        <Text numberOfLines={1} style={styles.routineName}>{workoutName}</Text>
+                        {compactLayout ? (
+                          <>
+                            <Text numberOfLines={1} style={styles.compactMeta}>{whenLabel}</Text>
+                            <Text numberOfLines={1} style={styles.recentCompactResult}>
+                              {statusLabel} · {workout.completedSets}/{workout.totalSets} sets · {workout.exerciseCount} exercises · {workoutDuration}
+                            </Text>
+                          </>
+                        ) : null}
+                      </View>
+                      {!compactLayout ? (
+                        <>
+                          <Text numberOfLines={1} style={[styles.value, styles.recentWhenCell]}>
+                            {whenLabel}
+                          </Text>
+                          <View style={[styles.recentResultCell, styles.recentResultCopy]}>
+                            <Text style={[
+                              styles.recentStatus,
+                              workout.status === "Partial" && styles.recentStatusPartial,
+                              workout.status === "Abandoned" && styles.recentStatusAbandoned,
+                            ]}>{statusLabel}</Text>
+                            <Text numberOfLines={1} style={styles.recentResultMeta}>
+                              {workout.completedSets}/{workout.totalSets} sets · {workout.exerciseCount} exercises
+                            </Text>
+                          </View>
+                          <Text style={[styles.value, styles.recentDurationCell]}>
+                            {workoutDuration}
+                          </Text>
+                        </>
+                      ) : null}
+                      <Text
+                        aria-hidden
+                        accessible={false}
+                        style={[styles.arrow, styles.arrowCell]}
+                      >→</Text>
+                    </Pressable>
+                  </View>
+                );
+              }) : (
+                <View style={styles.recentEmptyRow}>
+                  <Text accessibilityLiveRegion="polite" style={styles.recentEmptyText}>
+                    {recentHistoryLoading
+                      ? "Loading recent workouts…"
+                      : recentHistoryError
+                      ? "Recent workouts are temporarily unavailable."
+                      : "No workouts in the last 7 days."}
+                  </Text>
+                </View>
+              )}
+            </View>
+          </View>
         </>
       ) : null}
     </Screen>
@@ -514,8 +585,6 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: spacing.md,
   },
-  headerStats: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  total: { color: colors.textMuted, fontSize: 12, fontWeight: "700" },
   refreshing: { color: colors.textDim, fontSize: 12 },
   actionPressed: { opacity: 0.68 },
   actionDisabled: { opacity: 0.45 },
@@ -707,35 +776,55 @@ const styles = StyleSheet.create({
   },
   availabilityTextCaution: { color: colors.warning },
   availabilityTextRecovering: { color: colors.danger },
-  disclosure: {
+  recentSection: { gap: spacing.sm, marginTop: spacing.xs },
+  recentSectionHeader: {
     minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: spacing.md,
-    paddingHorizontal: spacing.xs,
-    borderRadius: radii.sm,
   },
-  disclosureText: { color: colors.textMuted, fontSize: 12, fontWeight: "700", flex: 1 },
-  disclosureIcon: { color: colors.textDim, fontSize: 18, fontWeight: "500" },
-  detailPanel: {
-    borderLeftWidth: 2,
-    borderLeftColor: colors.borderStrong,
-    paddingLeft: spacing.md,
-    gap: spacing.sm,
-  },
-  detailNote: { color: colors.textDim, fontSize: 12, lineHeight: 18 },
-  availabilityHelp: {
+  viewHistoryAction: {
     minHeight: 44,
-    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: spacing.xs,
+    justifyContent: "center",
+    paddingHorizontal: spacing.sm,
     borderRadius: radii.sm,
   },
-  availabilityHelpText: { color: colors.textDim, fontSize: 12, fontWeight: "700" },
-  availabilityHelpIcon: { color: colors.textDim, fontSize: 17 },
-  guidanceNote: { fontSize: 12, lineHeight: 18, paddingHorizontal: spacing.xs },
+  viewHistoryText: { color: colors.accent, fontSize: 12, fontWeight: "800" },
+  recentHistoryNotice: { color: colors.warning, fontSize: 11, lineHeight: 16 },
+  recentWorkoutRow: {
+    minHeight: 58,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  recentWorkoutLink: { minHeight: 58 },
+  recentWorkoutLinkCompact: { minHeight: 64, paddingVertical: 7 },
+  recentWorkoutCell: { flex: 1.8, minWidth: 140, gap: 3 },
+  recentWorkoutCellCompact: { minWidth: 0 },
+  recentWhenCell: { flex: 1.5, minWidth: 170 },
+  recentResultCell: { flex: 1.3, minWidth: 135 },
+  recentResultCopy: { gap: 2 },
+  recentDurationCell: { width: 64, flexShrink: 0 },
+  recentCompactResult: {
+    color: colors.textMuted,
+    fontSize: 9,
+    lineHeight: 12,
+    fontWeight: "700",
+  },
+  recentStatus: { color: colors.success, fontSize: 10, lineHeight: 14, fontWeight: "800" },
+  recentStatusPartial: { color: colors.warning },
+  recentStatusAbandoned: { color: colors.danger },
+  recentResultMeta: { color: colors.textDim, fontSize: 9, lineHeight: 12 },
+  recentEmptyRow: {
+    minHeight: 54,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  recentEmptyText: { color: colors.textDim, fontSize: 11, lineHeight: 16, textAlign: "center" },
   webFocusRing: {
     outlineColor: colors.accent,
     outlineOffset: 2,

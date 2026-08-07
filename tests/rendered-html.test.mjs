@@ -12,6 +12,7 @@ test("uses one Expo Router application for Android and hosted web", async () => 
     tabs,
     routines,
     routineCardFormat,
+    routinePageLoader,
     routineDetail,
     exerciseLibrary,
     exerciseDetail,
@@ -35,6 +36,7 @@ test("uses one Expo Router application for Android and hosted web", async () => 
     readFile(new URL("app/(tabs)/_layout.tsx", root), "utf8"),
     readFile(new URL("src/features/routines/routines-screen.tsx", root), "utf8"),
     readFile(new URL("src/features/routines/routine-card-format.ts", root), "utf8"),
+    readFile(new URL("src/features/routines/routine-page-loader.ts", root), "utf8"),
     readFile(new URL("src/features/routines/routine-detail-screen.tsx", root), "utf8"),
     readFile(new URL("src/features/exercises/exercise-library-screen.tsx", root), "utf8"),
     readFile(new URL("src/features/exercises/exercise-detail-screen.tsx", root), "utf8"),
@@ -81,25 +83,27 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.doesNotMatch(routines, /Choose a session, review recovery/);
   assert.doesNotMatch(routines, /<Heading size="small">Your routines<\/Heading>/);
   assert.doesNotMatch(routines, /accessibilityLabel="Sign out"/);
+  assert.doesNotMatch(routines, /data\.routines\.length\} total|styles\.total/);
   assert.match(routines, /tableHeader/);
   assert.match(routines, /compactLayout/);
   assert.match(routines, /styles\.planCell/);
   assert.doesNotMatch(routines, /<Heading>Today<\/Heading>|todayCard/);
   assert.match(routines, /Recommended today/);
   assert.match(routines, /recommendedRoutineRow/);
-  assert.match(routines, /Why Routine/);
+  assert.doesNotMatch(routines, /Why Routine/);
   assert.match(routines, /routine\.durationMin/);
   assert.match(routines, /routineLastDoneLabel\(routine\.lastWorkoutAt, \{ now: renderedAt \}\)/);
   assert.match(routineCardFormat, /Last done/);
   assert.match(routineCardFormat, /Not done yet/);
   assert.match(routineCardFormat, /plural\(days, "day"\)/);
   assert.match(routineCardFormat, /plural\(hours, "hour"\)/);
+  assert.match(routineCardFormat, /RECENT_WORKOUT_WINDOW_MS/);
   assert.match(routines, /guidance\.availabilityLabel/);
   assert.match(routines, /<AvailabilityLabel/);
   assert.match(routines, /!routine\.lastWorkoutAt && styles\.routineStatusLineWithoutHistory/);
   assert.match(routines, /routineStatusLineWithoutHistory: \{ flexDirection: "column"/);
-  assert.match(routines, /How availability works/);
-  assert.match(routines, /do\s+not measure soreness, pain, sleep, stress, injury, warm-up performance/);
+  assert.doesNotMatch(routines, /How availability works/);
+  assert.doesNotMatch(routines, /do\s+not measure soreness, pain, sleep, stress, injury, warm-up performance/);
   assert.match(routines, /No routines yet/);
   assert.match(routines, /temporarily unavailable/);
   assert.match(routines, /AppState\.addEventListener\("change"/);
@@ -108,7 +112,7 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(routines, /latestRequest/);
   assert.match(routines, /setData\(next\);\s*setError\(""\);/);
   assert.match(routines, /focusedAction === "resume"[\s\S]*styles\.webFocusRing/);
-  assert.match(routines, /focusedAction === "availability-help"[\s\S]*styles\.webFocusRing/);
+  assert.match(routines, /focusedAction === "view-history"[\s\S]*styles\.webFocusRing/);
   assert.match(routines, /recommendedBadgeText:[\s\S]*fontSize: 8/);
   assert.match(routines, /routineRow: \{[\s\S]*minHeight: 54/);
   assert.match(routines, /accessibilityRole="progressbar"/);
@@ -116,6 +120,21 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.doesNotMatch(routines, /Install the Android APK/);
   assert.match(routines, /Discard workout/);
   assert.match(routines, /DiscardWorkoutModal/);
+  assert.match(routines, /<Heading level=\{2\} size="small">Last 7 days<\/Heading>/);
+  assert.match(routinePageLoader, /view: "history"/);
+  assert.match(routinePageLoader, /from: recentWorkoutRangeStart\(now\)/);
+  assert.match(routinePageLoader, /limit: "50"/);
+  assert.match(routinePageLoader, /return request<BootstrapPayload>\("\/api\/v1\/bootstrap"\)/);
+  assert.doesNotMatch(routinePageLoader, /Promise\.all/);
+  assert.match(routines, /recentWorkouts\.length \? recentWorkouts\.map\(\(workout, index\)/);
+  assert.match(routines, /const workoutName = `Routine \$\{workout\.routineCode\}`/);
+  assert.doesNotMatch(routines, /data\.routines\.find\(\(item\) => item\.code === workout\.routineCode\)/);
+  assert.match(routines, /router\.push\(`\/history\/\$\{workout\.id\}`\)/);
+  assert.match(routines, /View all history →/);
+  assert.match(routines, /No workouts in the last 7 days\./);
+  assert.match(routines, /formatHistoryDateTime\(workout\.startedAt\)/);
+  assert.match(routines, /historyStatusLabel\(workout\.status\)/);
+  assert.ok((routines.match(/<View style=\{styles\.table\}>/g) ?? []).length >= 2);
   const routineListStart = routines.indexOf("{data.routines.map");
   const routineListEnd = routines.indexOf("<Eyebrow>Start your program</Eyebrow>", routineListStart);
   assert.ok(routineListStart >= 0 && routineListEnd > routineListStart);
