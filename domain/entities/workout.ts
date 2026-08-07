@@ -7,6 +7,7 @@ export type WorkoutItemStatus = "planned" | "started" | "completed" | "skipped";
 export type WorkoutHistorySummary = {
   id: string;
   routineCode: string;
+  routineTitle: string;
   status: Exclude<WorkoutStatus, "In Progress">;
   startedAt: string;
   completedAt: string | null;

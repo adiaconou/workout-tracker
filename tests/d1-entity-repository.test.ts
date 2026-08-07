@@ -134,6 +134,7 @@ test("workout history applies the rolling cutoff and returns finished sessions n
     status,
     startedAt,
     completedAt,
+    routineTitle,
     archived = false,
   }: {
     id: string;
@@ -141,6 +142,7 @@ test("workout history applies the rolling cutoff and returns finished sessions n
     status: "In Progress" | "Completed" | "Partial" | "Abandoned";
     startedAt: string;
     completedAt: string | null;
+    routineTitle: string;
     archived?: boolean;
   }) {
     await d1.prepare(`INSERT INTO workout_sessions (
@@ -156,7 +158,7 @@ test("workout history applies the rolling cutoff and returns finished sessions n
         JSON.stringify({
           code: routineCode,
           version: 1,
-          focus: `Routine ${routineCode}`,
+          focus: routineTitle,
           summary: "History test",
           durationMin: 30,
           updatedAt: startedAt,
@@ -177,6 +179,7 @@ test("workout history applies the rolling cutoff and returns finished sessions n
       status: "Completed",
       startedAt: "2026-07-31T12:00:00.000Z",
       completedAt: "2026-07-31T12:45:00.000Z",
+      routineTitle: "Upper strength",
     });
     await insertWorkout({
       id: "recent-partial",
@@ -184,6 +187,7 @@ test("workout history applies the rolling cutoff and returns finished sessions n
       status: "Partial",
       startedAt: "2026-08-06T10:00:00.000Z",
       completedAt: "2026-08-06T10:30:00.000Z",
+      routineTitle: "Pull and shoulders",
     });
     await insertWorkout({
       id: "recent-abandoned",
@@ -191,6 +195,7 @@ test("workout history applies the rolling cutoff and returns finished sessions n
       status: "Abandoned",
       startedAt: "2026-08-05T09:00:00.000Z",
       completedAt: "2026-08-05T09:10:00.000Z",
+      routineTitle: "Legs and core",
     });
     await insertWorkout({
       id: "outside-window",
@@ -198,6 +203,7 @@ test("workout history applies the rolling cutoff and returns finished sessions n
       status: "Completed",
       startedAt: "2026-07-31T11:59:59.999Z",
       completedAt: "2026-07-31T12:20:00.000Z",
+      routineTitle: "Outside window",
     });
     await insertWorkout({
       id: "active-session",
@@ -205,6 +211,7 @@ test("workout history applies the rolling cutoff and returns finished sessions n
       status: "In Progress",
       startedAt: "2026-08-07T10:00:00.000Z",
       completedAt: null,
+      routineTitle: "Active workout",
     });
     await insertWorkout({
       id: "archived-session",
@@ -212,6 +219,7 @@ test("workout history applies the rolling cutoff and returns finished sessions n
       status: "Completed",
       startedAt: "2026-08-07T11:00:00.000Z",
       completedAt: "2026-08-07T11:30:00.000Z",
+      routineTitle: "Archived workout",
       archived: true,
     });
 
@@ -221,8 +229,15 @@ test("workout history applies the rolling cutoff and returns finished sessions n
       limit: 50,
     });
     assert.deepEqual(
-      page.workouts.map((workout) => workout.id),
-      ["recent-partial", "recent-abandoned", "boundary-completed"],
+      page.workouts.map((workout) => ({
+        id: workout.id,
+        routineTitle: workout.routineTitle,
+      })),
+      [
+        { id: "recent-partial", routineTitle: "Pull and shoulders" },
+        { id: "recent-abandoned", routineTitle: "Legs and core" },
+        { id: "boundary-completed", routineTitle: "Upper strength" },
+      ],
     );
     assert.equal(page.stats.workoutCount, 3);
     assert.equal(page.hasMore, false);

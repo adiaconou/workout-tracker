@@ -447,7 +447,7 @@ export function RoutinesScreen() {
             <View style={styles.table}>
               <View style={styles.tableHeader}>
                 <Text style={[styles.headerCell, styles.codeCell]}>#</Text>
-                <Text style={[styles.headerCell, styles.recentWorkoutCell]}>Workout</Text>
+                <Text style={[styles.headerCell, styles.recentWorkoutCell]}>Routine</Text>
                 {!compactLayout ? (
                   <>
                     <Text style={[styles.headerCell, styles.recentWhenCell]}>When</Text>
@@ -458,8 +458,8 @@ export function RoutinesScreen() {
                 <View style={styles.arrowCell} />
               </View>
 
-              {recentWorkouts.length ? recentWorkouts.map((workout, index) => {
-                const workoutName = `Routine ${workout.routineCode}`;
+              {recentWorkouts.length ? recentWorkouts.map((workout) => {
+                const workoutName = workout.routineTitle;
                 const whenLabel = formatHistoryDateTime(workout.startedAt);
                 const statusLabel = historyStatusLabel(workout.status);
                 const workoutDuration = formatWorkoutDuration(workout.durationSeconds);
@@ -470,7 +470,7 @@ export function RoutinesScreen() {
                   <View key={workout.id} style={styles.recentWorkoutRow}>
                     <Pressable
                       accessibilityRole="link"
-                      accessibilityLabel={`Review Routine ${workout.routineCode} workout from ${whenLabel}. ${statusLabel}, ${workout.completedSets} of ${workout.totalSets} sets completed${skippedLabel}, ${workout.exerciseCount} exercises, ${workoutDuration}`}
+                      accessibilityLabel={`Review Routine ${workout.routineCode}, ${workoutName}, workout from ${whenLabel}. ${statusLabel}, ${workout.completedSets} of ${workout.totalSets} sets completed${skippedLabel}, ${workout.exerciseCount} exercises, ${workoutDuration}`}
                       onPress={() => router.push(`/history/${workout.id}`)}
                       onBlur={() => setFocusedAction(null)}
                       onFocus={() => setFocusedAction(`history-${workout.id}`)}
@@ -484,7 +484,9 @@ export function RoutinesScreen() {
                           styles.webFocusRing,
                       ]}
                     >
-                      <Text style={[styles.code, styles.codeCell]}>{index + 1}</Text>
+                      <Text numberOfLines={1} style={[styles.code, styles.codeCell]}>
+                        {workout.routineCode}
+                      </Text>
                       <View style={[
                         styles.recentWorkoutCell,
                         compactLayout && styles.recentWorkoutCellCompact,

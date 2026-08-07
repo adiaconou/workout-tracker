@@ -126,8 +126,11 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(routinePageLoader, /limit: "50"/);
   assert.match(routinePageLoader, /return request<BootstrapPayload>\("\/api\/v1\/bootstrap"\)/);
   assert.doesNotMatch(routinePageLoader, /Promise\.all/);
-  assert.match(routines, /recentWorkouts\.length \? recentWorkouts\.map\(\(workout, index\)/);
-  assert.match(routines, /const workoutName = `Routine \$\{workout\.routineCode\}`/);
+  assert.match(routines, /recentWorkouts\.length \? recentWorkouts\.map\(\(workout\)/);
+  assert.match(routines, /const workoutName = workout\.routineTitle/);
+  assert.match(routines, /<Text style=\{\[styles\.headerCell, styles\.recentWorkoutCell\]\}>Routine<\/Text>/);
+  assert.match(routines, /<Text numberOfLines=\{1\} style=\{\[styles\.code, styles\.codeCell\]\}>\s*\{workout\.routineCode\}\s*<\/Text>/);
+  assert.doesNotMatch(routines, /\{index \+ 1\}/);
   assert.doesNotMatch(routines, /data\.routines\.find\(\(item\) => item\.code === workout\.routineCode\)/);
   assert.match(routines, /router\.push\(`\/history\/\$\{workout\.id\}`\)/);
   assert.match(routines, /View all history →/);

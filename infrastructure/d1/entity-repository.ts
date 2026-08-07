@@ -51,6 +51,19 @@ function nextTimestamp(previous: string) {
   return new Date(Math.max(Date.now(), Number.isFinite(previousTime) ? previousTime + 1 : 0)).toISOString();
 }
 
+function routineTitleFromSnapshot(snapshotJson: unknown, routineCode: string) {
+  const fallback = `Routine ${routineCode}`;
+  if (typeof snapshotJson !== "string") return fallback;
+
+  try {
+    const snapshot = JSON.parse(snapshotJson) as { focus?: unknown };
+    const title = typeof snapshot.focus === "string" ? snapshot.focus.trim() : "";
+    return title || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export class D1EntityRepository implements EntityRepository {
   private readyOwners = new Set<string>();
   constructor(private readonly d1: D1Database) {}
@@ -736,6 +749,7 @@ export class D1EntityRepository implements EntityRepository {
       : 0;
     const rows = await this.d1
       .prepare(`SELECT ws.id, ws.routine_code AS routineCode, ws.status,
+        ws.snapshot_json AS snapshotJson,
         ws.started_at AS startedAt, ws.completed_at AS completedAt,
         ws.completed_sets AS completedSets, ws.skipped_sets AS skippedSets,
         ws.total_sets AS totalSets,
@@ -775,6 +789,7 @@ export class D1EntityRepository implements EntityRepository {
       return {
         id: String(row.id),
         routineCode: String(row.routineCode),
+        routineTitle: routineTitleFromSnapshot(row.snapshotJson, String(row.routineCode)),
         status: String(row.status) as WorkoutHistorySummary["status"],
         startedAt,
         completedAt,
