@@ -21,7 +21,9 @@ test("uses one Expo Router application for Android and hosted web", async () => 
     coach,
     coachMarkdown,
     discardWorkoutModal,
+    accountMenu,
     authContext,
+    serverAuth,
     pendingWrites,
     worker,
     buildScript,
@@ -42,7 +44,9 @@ test("uses one Expo Router application for Android and hosted web", async () => 
     readFile(new URL("src/features/coach/coach-screen.tsx", root), "utf8"),
     readFile(new URL("src/features/coach/coach-markdown.tsx", root), "utf8"),
     readFile(new URL("src/features/workouts/discard-workout-modal.tsx", root), "utf8"),
+    readFile(new URL("src/components/account-menu.tsx", root), "utf8"),
     readFile(new URL("src/auth/auth-context.tsx", root), "utf8"),
+    readFile(new URL("server/auth.ts", root), "utf8"),
     readFile(new URL("src/api/pending-writes.ts", root), "utf8"),
     readFile(new URL("worker/index.ts", root), "utf8"),
     readFile(new URL("scripts/build-sites.mjs", root), "utf8"),
@@ -64,7 +68,22 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(tabs, /tabBarActiveBackgroundColor/);
   assert.match(tabs, /TabGlyph/);
   assert.match(tabs, /Math\.max\(insets\.bottom, 8\)/);
+  assert.match(rootLayout, /header: \(\) => <AccountHeader/);
+  assert.match(rootLayout, /name="routines\/\[routineId\]" options=\{accountHeaderOptions\}/);
+  assert.match(rootLayout, /name="exercises\/\[exerciseId\]" options=\{accountHeaderOptions\}/);
+  assert.match(rootLayout, /name="history\/\[workoutId\]" options=\{accountHeaderOptions\}/);
+  assert.doesNotMatch(tabs, /AccountHeader/);
+  assert.match(accountMenu, /Account menu for/);
+  assert.match(accountMenu, /ProfileAvatar/);
+  assert.match(accountMenu, /Sign out/);
+  assert.match(accountMenu, /accessibilityViewIsModal/);
   assert.match(routines, /<Heading>Routines<\/Heading>/);
+  assert.doesNotMatch(routines, /Choose a session, review recovery/);
+  assert.doesNotMatch(routines, /<Heading size="small">Your routines<\/Heading>/);
+  assert.doesNotMatch(routines, /accessibilityLabel="Sign out"/);
+  assert.match(routines, /tableHeader/);
+  assert.match(routines, /compactLayout/);
+  assert.match(routines, /styles\.planCell/);
   assert.doesNotMatch(routines, /<Heading>Today<\/Heading>|todayCard/);
   assert.match(routines, /Recommended today/);
   assert.match(routines, /recommendedRoutineRow/);
@@ -90,15 +109,15 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(routines, /setData\(next\);\s*setError\(""\);/);
   assert.match(routines, /focusedAction === "resume"[\s\S]*styles\.webFocusRing/);
   assert.match(routines, /focusedAction === "availability-help"[\s\S]*styles\.webFocusRing/);
-  assert.match(routines, /recommendedBadgeText:[\s\S]*fontSize: 11/);
-  assert.doesNotMatch(routines, /listCard: \{[^}]*overflow: "hidden"/);
+  assert.match(routines, /recommendedBadgeText:[\s\S]*fontSize: 8/);
+  assert.match(routines, /routineRow: \{[\s\S]*minHeight: 54/);
   assert.match(routines, /accessibilityRole="progressbar"/);
   assert.doesNotMatch(routines, /A → B → C → D/);
   assert.doesNotMatch(routines, /Install the Android APK/);
   assert.match(routines, /Discard workout/);
   assert.match(routines, /DiscardWorkoutModal/);
   const routineListStart = routines.indexOf("{data.routines.map");
-  const routineListEnd = routines.indexOf("</Card>", routineListStart);
+  const routineListEnd = routines.indexOf("<Eyebrow>Start your program</Eyebrow>", routineListStart);
   assert.ok(routineListStart >= 0 && routineListEnd > routineListStart);
   const routineList = routines.slice(routineListStart, routineListEnd);
   assert.match(routineList, /AvailabilityLabel/);
@@ -213,6 +232,8 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(discardWorkoutModal, /cannot\s+be undone/);
   assert.match(authContext, /SecureStore|session-storage/);
   assert.match(authContext, /google\/exchange/);
+  assert.match(serverAuth, /claims\.picture/);
+  assert.match(serverAuth, /photo_url AS photoUrl/);
   assert.match(pendingWrites, /AsyncStorage/);
   assert.match(pendingWrites, /x-idempotency-key/);
   assert.match(pendingWrites, /removePendingSetWritesForWorkout/);

@@ -6,6 +6,7 @@ import { Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { AuthProvider, useAuth } from "../src/auth/auth-context";
+import { AccountHeader } from "../src/components/account-menu";
 import { LoadingView } from "../src/components/ui";
 import { colors } from "../src/theme/tokens";
 
@@ -41,6 +42,11 @@ function AuthenticatedNavigator() {
   const { isLoading, user } = useAuth();
   if (isLoading) return <LoadingView label="Opening Workout Tracker…" />;
 
+  const accountHeaderOptions = {
+    headerShown: true,
+    header: () => <AccountHeader />,
+  };
+
   return (
     <Stack
       screenOptions={{
@@ -54,10 +60,10 @@ function AuthenticatedNavigator() {
       </Stack.Protected>
       <Stack.Protected guard={Boolean(user)}>
         <Stack.Screen name="index" />
-        <Stack.Screen name="(tabs)" />
-        <Stack.Screen name="routines/[routineId]" />
-        <Stack.Screen name="exercises/[exerciseId]" />
-        <Stack.Screen name="history/[workoutId]" />
+        <Stack.Screen name="(tabs)" options={accountHeaderOptions} />
+        <Stack.Screen name="routines/[routineId]" options={accountHeaderOptions} />
+        <Stack.Screen name="exercises/[exerciseId]" options={accountHeaderOptions} />
+        <Stack.Screen name="history/[workoutId]" options={accountHeaderOptions} />
         <Stack.Screen name="workouts/[sessionId]" options={{ gestureEnabled: false }} />
       </Stack.Protected>
     </Stack>

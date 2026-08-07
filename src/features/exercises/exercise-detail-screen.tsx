@@ -109,7 +109,7 @@ export function ExerciseDetailScreen({ exerciseId }: { exerciseId: string }) {
   if (loading) return <LoadingView label="Loading exercise…" />;
   if (!exercise) {
     return (
-      <Screen>
+      <Screen safeTop={false}>
         <Message>{error || "Exercise not found."}</Message>
         <Button title="Back to library" variant="secondary" onPress={() => router.back()} />
       </Screen>
@@ -117,7 +117,7 @@ export function ExerciseDetailScreen({ exerciseId }: { exerciseId: string }) {
   }
 
   return (
-    <Screen>
+    <Screen safeTop={false}>
       <Pressable accessibilityRole="link" onPress={() => router.back()}>
         <Text style={styles.back}>← Exercise Library</Text>
       </Pressable>

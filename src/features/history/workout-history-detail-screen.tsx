@@ -159,7 +159,7 @@ export function WorkoutHistoryDetailScreen({
   if (loading && !data) return <LoadingView label="Loading workout review…" />;
   if (!data) {
     return (
-      <Screen>
+      <Screen safeTop={false}>
         <Pressable accessibilityRole="link" onPress={() => router.back()}>
           <Text style={styles.back}>← History</Text>
         </Pressable>
@@ -186,7 +186,7 @@ export function WorkoutHistoryDetailScreen({
   const timing = summarizeWorkoutTiming(workout);
 
   return (
-    <Screen>
+    <Screen safeTop={false}>
       <View style={styles.topline}>
         <Pressable accessibilityRole="link" onPress={() => router.back()} hitSlop={8}>
           <Text style={styles.back}>← History</Text>

@@ -6,6 +6,7 @@ export const appUsers = sqliteTable(
     id: text("id").primaryKey(),
     ownerEmail: text("owner_email").notNull(),
     displayName: text("display_name").notNull(),
+    photoUrl: text("photo_url"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },

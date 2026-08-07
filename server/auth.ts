@@ -13,10 +13,16 @@ type UserRow = {
   id: string;
   ownerEmail: string;
   displayName: string;
+  photoUrl: string | null;
 };
 
 function normalizedEmail(value: string) {
   return value.trim().toLowerCase();
+}
+
+function normalizedPhotoUrl(value?: string | null) {
+  const photoUrl = value?.trim() ?? "";
+  return /^https:\/\/\S+$/i.test(photoUrl) ? photoUrl : null;
 }
 
 function configuredOwner(env: WorkerEnv) {
@@ -34,20 +40,24 @@ export async function ensureAppUser(
   env: WorkerEnv,
   email: string,
   displayName?: string | null,
+  photoUrl?: string | null,
 ) {
   await ensureEntitySchema(env.DB);
   const ownerEmail = normalizedEmail(email);
   const now = new Date().toISOString();
   const existing = await env.DB.prepare(`SELECT id, owner_email AS ownerEmail,
-    display_name AS displayName FROM app_users WHERE owner_email = ?`)
+    display_name AS displayName, photo_url AS photoUrl
+    FROM app_users WHERE owner_email = ?`)
     .bind(ownerEmail)
     .first<UserRow>();
   if (existing) {
     const nextName = displayName?.trim() || existing.displayName;
-    if (nextName !== existing.displayName) {
-      await env.DB.prepare("UPDATE app_users SET display_name = ?, updated_at = ? WHERE id = ?")
-        .bind(nextName, now, existing.id).run();
-      return { ...existing, displayName: nextName };
+    const nextPhotoUrl = normalizedPhotoUrl(photoUrl) ?? existing.photoUrl;
+    if (nextName !== existing.displayName || nextPhotoUrl !== existing.photoUrl) {
+      await env.DB.prepare(`UPDATE app_users SET display_name = ?, photo_url = ?,
+        updated_at = ? WHERE id = ?`)
+        .bind(nextName, nextPhotoUrl, now, existing.id).run();
+      return { ...existing, displayName: nextName, photoUrl: nextPhotoUrl };
     }
     return existing;
   }
@@ -56,11 +66,12 @@ export async function ensureAppUser(
     id: crypto.randomUUID(),
     ownerEmail,
     displayName: displayName?.trim() || ownerEmail,
+    photoUrl: normalizedPhotoUrl(photoUrl),
   };
   await env.DB.prepare(`INSERT INTO app_users (
-    id, owner_email, display_name, created_at, updated_at
-  ) VALUES (?, ?, ?, ?, ?)`)
-    .bind(user.id, user.ownerEmail, user.displayName, now, now)
+    id, owner_email, display_name, photo_url, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?)`)
+    .bind(user.id, user.ownerEmail, user.displayName, user.photoUrl, now, now)
     .run();
   return user;
 }
@@ -77,11 +88,11 @@ export async function authenticateRequest(
         authorization.slice("Bearer ".length),
       );
       const session = await env.DB.prepare(`SELECT s.id, u.id AS userId,
-        u.owner_email AS ownerEmail, u.display_name AS displayName
+        u.owner_email AS ownerEmail, u.display_name AS displayName, u.photo_url AS photoUrl
         FROM auth_sessions s INNER JOIN app_users u ON u.id = s.user_id
         WHERE s.id = ? AND u.id = ? AND s.revoked_at IS NULL AND s.expires_at > ?`)
         .bind(claims.sid, claims.sub, new Date().toISOString())
-        .first<{ id: string; userId: string; ownerEmail: string; displayName: string }>();
+        .first<{ id: string; userId: string; ownerEmail: string; displayName: string; photoUrl: string | null }>();
       if (!session || normalizedEmail(session.ownerEmail) !== normalizedEmail(claims.email)) {
         return null;
       }
@@ -89,6 +100,7 @@ export async function authenticateRequest(
         id: session.userId,
         email: session.ownerEmail,
         displayName: session.displayName,
+        photoUrl: session.photoUrl,
         provider: "session",
         sessionId: session.id,
       };
@@ -114,6 +126,7 @@ export async function authenticateRequest(
     id: user.id,
     email: user.ownerEmail,
     displayName: user.displayName,
+    photoUrl: user.photoUrl,
     provider: "chatgpt",
     sessionId: null,
   };
@@ -128,7 +141,7 @@ export async function linkGoogleIdentity(
     throw new Error("This Google account is not authorized for this workout tracker.");
   }
   const now = new Date().toISOString();
-  const user = await ensureAppUser(env, email, claims.name);
+  const user = await ensureAppUser(env, email, claims.name, claims.picture);
   const identity = await env.DB.prepare(`SELECT id, user_id AS userId
     FROM auth_identities WHERE provider = 'google' AND provider_subject = ?`)
     .bind(claims.sub)
@@ -187,6 +200,7 @@ export async function createNativeSession(
       id: user.id,
       email: user.ownerEmail,
       displayName: user.displayName,
+      photoUrl: user.photoUrl,
     },
   };
 }
@@ -195,11 +209,11 @@ export async function rotateNativeSession(env: WorkerEnv, refreshToken: string) 
   const oldHash = await hashRefreshToken(refreshToken);
   const now = new Date().toISOString();
   const session = await env.DB.prepare(`SELECT s.id, s.user_id AS userId,
-    u.owner_email AS ownerEmail, u.display_name AS displayName
+    u.owner_email AS ownerEmail, u.display_name AS displayName, u.photo_url AS photoUrl
     FROM auth_sessions s INNER JOIN app_users u ON u.id = s.user_id
     WHERE s.refresh_token_hash = ? AND s.revoked_at IS NULL AND s.expires_at > ?`)
     .bind(oldHash, now)
-    .first<{ id: string; userId: string; ownerEmail: string; displayName: string }>();
+    .first<{ id: string; userId: string; ownerEmail: string; displayName: string; photoUrl: string | null }>();
   if (!session) return null;
 
   const nextRefreshToken = generateRefreshToken();
@@ -223,6 +237,7 @@ export async function rotateNativeSession(env: WorkerEnv, refreshToken: string) 
       id: session.userId,
       email: session.ownerEmail,
       displayName: session.displayName,
+      photoUrl: session.photoUrl,
     },
   };
 }

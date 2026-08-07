@@ -151,7 +151,7 @@ export function HistoryScreen() {
   }
 
   return (
-    <Screen>
+    <Screen safeTop={false}>
       <View style={styles.header}>
         <View style={styles.headerCopy}>
           <Eyebrow>Your training</Eyebrow>

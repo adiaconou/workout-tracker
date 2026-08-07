@@ -9,7 +9,7 @@ import { expandLegacyPrescription } from "../../domain/prescription";
 const createStatements = [
   `CREATE TABLE IF NOT EXISTS app_users (
     id TEXT PRIMARY KEY, owner_email TEXT NOT NULL, display_name TEXT NOT NULL,
-    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    photo_url TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
   )`,
   "CREATE UNIQUE INDEX IF NOT EXISTS app_users_owner_email_idx ON app_users(owner_email)",
   `CREATE TABLE IF NOT EXISTS auth_identities (
@@ -208,6 +208,9 @@ const createStatements = [
 ];
 
 const additiveColumns: Record<string, Record<string, string>> = {
+  app_users: {
+    photo_url: "TEXT",
+  },
   routines: {
     current_version_id: "TEXT",
     is_active: "INTEGER NOT NULL DEFAULT 1",

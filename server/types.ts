@@ -13,6 +13,7 @@ export type ApiUser = {
   id: string;
   email: string;
   displayName: string;
+  photoUrl: string | null;
   provider: "chatgpt" | "google" | "session";
   sessionId: string | null;
 };

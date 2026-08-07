@@ -8,6 +8,13 @@ import { D1EntityRepository } from "../infrastructure/d1/entity-repository";
 import { ensureEntityData, ensureEntitySchema, materializeWorkoutFromSnapshot } from "../infrastructure/d1/entity-schema";
 import { getPreviousPerformanceByExercise } from "../infrastructure/d1/previous-performance";
 import type { RoutineVersionInput } from "../domain/entities";
+import {
+  createNativeSession,
+  ensureAppUser,
+  linkGoogleIdentity,
+  rotateNativeSession,
+} from "../server/auth";
+import type { WorkerEnv } from "../server/types";
 
 type SqliteValue = null | number | bigint | string | Uint8Array;
 
@@ -64,6 +71,54 @@ const singleSetRoutine = (exerciseId: string, focus: string): RoutineVersionInpu
       notes: "",
     }],
   }],
+});
+
+test("persists a Google profile photo across hosted-web and refreshed native sessions", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "workout-profile-photo-"));
+  const database = join(directory, "profile.sqlite");
+  const sqlite = new DatabaseSync(database);
+  const d1 = new SqliteD1(sqlite) as unknown as D1Database;
+  const owner = "owner@example.com";
+  const photoUrl = "https://lh3.googleusercontent.com/workout-owner";
+  const env = {
+    DB: d1,
+    OWNER_EMAIL: owner,
+    AUTH_SESSION_SECRET: "test-session-secret-that-is-long-enough-for-signing",
+  } as unknown as WorkerEnv;
+
+  try {
+    const googleUser = await linkGoogleIdentity(env, {
+      sub: "google-owner",
+      email: owner,
+      email_verified: true,
+      name: "Workout Owner",
+      picture: photoUrl,
+    });
+    assert.equal(googleUser.photoUrl, photoUrl);
+
+    const hostedWebUser = await ensureAppUser(env, owner, "Workout Owner Updated");
+    assert.equal(hostedWebUser.photoUrl, photoUrl);
+
+    const nativeSession = await createNativeSession(env, hostedWebUser, "Test device");
+    assert.equal(nativeSession.user.photoUrl, photoUrl);
+    const rotatedSession = await rotateNativeSession(env, nativeSession.refreshToken);
+    assert.equal(rotatedSession?.user.photoUrl, photoUrl);
+
+    const invalidPhotoUpdate = await ensureAppUser(
+      env,
+      owner,
+      "Workout Owner Updated",
+      "javascript:alert(1)",
+    );
+    assert.equal(invalidPhotoUpdate.photoUrl, photoUrl);
+    const stored = await d1.prepare(
+      "SELECT photo_url AS photoUrl FROM app_users WHERE owner_email = ?",
+    ).bind(owner).first<{ photoUrl: string | null }>();
+    assert.equal(stored?.photoUrl, photoUrl);
+  } finally {
+    sqlite.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("D1 entity repository seeds, versions, publishes, materializes, discards, and archives normalized entities", async () => {

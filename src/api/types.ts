@@ -22,6 +22,7 @@ export type SessionUser = {
   id: string;
   email: string;
   displayName: string;
+  photoUrl: string | null;
 };
 
 export type NativeSession = {

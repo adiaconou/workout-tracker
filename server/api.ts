@@ -125,7 +125,12 @@ async function handleRefresh(request: Request, env: WorkerEnv) {
 async function handleAuthenticatedAuth({ request, env, user, segments }: RouteContext) {
   if (segments[1] === "session" && request.method === "GET") {
     return apiResponse(request, {
-      user: { id: user.id, email: user.email, displayName: user.displayName },
+      user: {
+        id: user.id,
+        email: user.email,
+        displayName: user.displayName,
+        photoUrl: user.photoUrl,
+      },
       provider: user.provider,
     });
   }
@@ -150,7 +155,12 @@ async function handleBootstrap({ request, user }: RouteContext) {
     ? await getWorkoutSession(user.email, active[0].id)
     : null;
   return apiResponse(request, {
-    user: { id: user.id, email: user.email, displayName: user.displayName },
+    user: {
+      id: user.id,
+      email: user.email,
+      displayName: user.displayName,
+      photoUrl: user.photoUrl,
+    },
     routines,
     recommendations,
     activeWorkout,

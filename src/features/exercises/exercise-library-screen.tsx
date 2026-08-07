@@ -99,7 +99,7 @@ export function ExerciseLibraryScreen() {
   if (loading && !exercises.length) return <LoadingView label="Loading exercise library…" />;
 
   return (
-    <Screen scroll={false} contentStyle={styles.screen}>
+    <Screen scroll={false} safeTop={false} contentStyle={styles.screen}>
       <View style={styles.header}>
         <View>
           <Eyebrow>Movement catalog</Eyebrow>

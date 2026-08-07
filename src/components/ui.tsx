@@ -30,13 +30,17 @@ type FieldProps = TextInputProps & WebFieldAriaProps & {
 export function Screen({
   children,
   scroll = true,
+  safeTop = true,
   contentStyle,
-}: PropsWithChildren<{ scroll?: boolean; contentStyle?: ViewStyle }>) {
+}: PropsWithChildren<{ scroll?: boolean; safeTop?: boolean; contentStyle?: ViewStyle }>) {
   const content = (
     <View style={[styles.content, contentStyle]}>{children}</View>
   );
   return (
-    <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
+    <SafeAreaView
+      style={styles.safe}
+      edges={safeTop ? ["top", "left", "right"] : ["left", "right"]}
+    >
       {scroll ? (
         <ScrollView
           contentContainerStyle={styles.scrollContent}

@@ -57,6 +57,13 @@
       "when": 1785806435675,
       "tag": "0007_glorious_vermin",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1786080103653,
+      "tag": "0008_nervous_selene",
+      "breakpoints": true
     }
   ]
 }

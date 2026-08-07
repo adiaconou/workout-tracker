@@ -433,7 +433,7 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
   if (loading) return <LoadingView label={`Loading Routine ${routineId}…`} />;
   if (!routine || !currentVersion || !draft) {
     return (
-      <Screen>
+      <Screen safeTop={false}>
         <Message>{error || "Routine not found."}</Message>
         <Button title="Back to routines" variant="secondary" onPress={() => router.back()} />
       </Screen>
@@ -444,7 +444,7 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
   const startTitle = sameRoutineActive ? "Resume workout →" : starting ? "Creating workout…" : "Start workout →";
 
   return (
-    <Screen>
+    <Screen safeTop={false}>
       <Pressable
         accessibilityRole="link"
         accessibilityLabel="Back to all routines"

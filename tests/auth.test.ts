@@ -40,9 +40,13 @@ test("accepts only verified Google identity claims for the configured audience",
     sub: "google-subject-1",
     email: "owner@example.com",
     email_verified: true,
+    name: "Owner Name",
+    picture: "https://lh3.googleusercontent.com/avatar",
   }, AUDIENCE);
   assert.equal(claims.sub, "google-subject-1");
   assert.equal(claims.email_verified, true);
+  assert.equal(claims.name, "Owner Name");
+  assert.equal(claims.picture, "https://lh3.googleusercontent.com/avatar");
 
   assert.throws(() => validateGoogleClaims({
     iss: "https://accounts.google.com",

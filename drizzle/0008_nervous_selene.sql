@@ -1,0 +1,1 @@
+ALTER TABLE `app_users` ADD `photo_url` text;

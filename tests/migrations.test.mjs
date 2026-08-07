@@ -20,6 +20,7 @@ test("applies the complete migration chain and creates the normalized entity mod
       "drizzle/0005_plain_rocket_raccoon.sql",
       "drizzle/0006_freezing_betty_ross.sql",
       "drizzle/0007_glorious_vermin.sql",
+      "drizzle/0008_nervous_selene.sql",
     ];
     const sql = (await Promise.all(filenames.map((filename) => readFile(new URL(filename, root), "utf8"))))
       .join("\n").replaceAll("--> statement-breakpoint", "\n");
@@ -28,8 +29,10 @@ test("applies the complete migration chain and creates the normalized entity mod
     const tables = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all();
     const workoutSetColumns = sqlite.prepare("PRAGMA table_info(workout_sets)").all();
     const setPerformanceColumns = sqlite.prepare("PRAGMA table_info(set_performances)").all();
+    const appUserColumns = sqlite.prepare("PRAGMA table_info(app_users)").all();
     const inspected = JSON.stringify({
       tables,
+      appUsers: appUserColumns,
       routines: sqlite.prepare("PRAGMA table_info(routines)").all(),
       workoutSessions: sqlite.prepare("PRAGMA table_info(workout_sessions)").all(),
       workoutSets: workoutSetColumns,
@@ -50,6 +53,7 @@ test("applies the complete migration chain and creates the normalized entity mod
     assert.match(inspected, /started_at/);
     assert.match(inspected, /elapsed_seconds/);
     assert.match(inspected, /workout_elapsed_seconds/);
+    assert.match(inspected, /photo_url/);
     assert.match(inspected, /workout_exercises/);
     assert.match(inspected, /routine_set_templates/);
     assert.match(inspected, /refresh_token_hash/);

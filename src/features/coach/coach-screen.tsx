@@ -302,7 +302,7 @@ export function CoachScreen() {
   if (loading && !data) return <LoadingView label="Opening Coach…" />;
   if (!data || !selection) {
     return (
-      <Screen scroll={false} contentStyle={styles.errorScreen}>
+      <Screen scroll={false} safeTop={false} contentStyle={styles.errorScreen}>
         <Text style={styles.errorText}>{error || "The coach could not be loaded."}</Text>
         <CompactAction title="Try again" onPress={() => void load()} />
       </Screen>
@@ -312,7 +312,7 @@ export function CoachScreen() {
   const hasConversation = data.messages.length > 0 || pendingPlans.length > 0;
 
   return (
-    <Screen scroll={false} contentStyle={styles.screen}>
+    <Screen scroll={false} safeTop={false} contentStyle={styles.screen}>
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         style={styles.keyboardView}

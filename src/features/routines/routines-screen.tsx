@@ -5,13 +5,13 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { apiRequest } from "../../api/client";
 import { removePendingSetWritesForWorkout } from "../../api/pending-writes";
 import type { BootstrapPayload } from "../../api/types";
-import { useAuth } from "../../auth/auth-context";
 import {
   Body,
   Button,
@@ -20,7 +20,6 @@ import {
   Heading,
   LoadingView,
   Message,
-  RowLink,
   Screen,
 } from "../../components/ui";
 import { colors, radii, spacing } from "../../theme/tokens";
@@ -31,7 +30,8 @@ import {
 } from "./routine-card-format";
 
 export function RoutinesScreen() {
-  const { signOut } = useAuth();
+  const { width } = useWindowDimensions();
+  const compactLayout = width < 720;
   const [data, setData] = useState<BootstrapPayload | null>(null);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
@@ -145,27 +145,15 @@ export function RoutinesScreen() {
   const renderedAt = new Date();
 
   return (
-    <Screen contentStyle={styles.screenContent}>
+    <Screen safeTop={false} contentStyle={styles.screenContent}>
       <View style={styles.header}>
-        <View style={styles.headerCopy}>
-          <Heading>Routines</Heading>
-          <Body muted>Choose a session, review recovery, or continue your workout.</Body>
+        <Heading>Routines</Heading>
+        <View style={styles.headerStats}>
+          {data ? <Text style={styles.total}>{data.routines.length} total</Text> : null}
+          {refreshing ? (
+            <Text accessibilityLiveRegion="polite" style={styles.refreshing}>Refreshing…</Text>
+          ) : null}
         </View>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Sign out"
-          onPress={() => void signOut()}
-          onBlur={() => setFocusedAction(null)}
-          onFocus={() => setFocusedAction("sign-out")}
-          hitSlop={12}
-          style={({ pressed }) => [
-            styles.signOutAction,
-            pressed && styles.actionPressed,
-            focusedAction === "sign-out" && Platform.OS === "web" && styles.webFocusRing,
-          ]}
-        >
-          <Text style={styles.signOut}>Sign out</Text>
-        </Pressable>
       </View>
 
       {!data && error ? (
@@ -294,16 +282,21 @@ export function RoutinesScreen() {
             </View>
           ) : null}
 
-          <View style={styles.sectionHeading}>
-            <Heading size="small">Your routines</Heading>
-            {refreshing ? (
-              <Text accessibilityLiveRegion="polite" style={styles.refreshing}>Refreshing…</Text>
-            ) : null}
-          </View>
-
           {data.routines.length ? (
-            <Card style={styles.listCard}>
-              {data.routines.map((routine, index) => {
+            <View style={styles.table}>
+              <View style={styles.tableHeader}>
+                <Text style={[styles.headerCell, styles.codeCell]}>#</Text>
+                <Text style={[styles.headerCell, styles.routineCell]}>Routine</Text>
+                {!compactLayout ? (
+                  <>
+                    <Text style={[styles.headerCell, styles.planCell]}>Plan</Text>
+                    <Text style={[styles.headerCell, styles.lastDoneCell]}>Last done</Text>
+                    <Text style={[styles.headerCell, styles.statusCell]}>Status</Text>
+                  </>
+                ) : null}
+                <View style={styles.arrowCell} />
+              </View>
+              {data.routines.map((routine) => {
                 const guidance = recommendation?.routines.find((item) => item.code === routine.code);
                 const isRecommended = routine.code === recommendation?.recommendedRoutineCode;
                 const lastDoneLabel = routineLastDoneLabel(routine.lastWorkoutAt, { now: renderedAt });
@@ -317,60 +310,90 @@ export function RoutinesScreen() {
                     key={routine.code}
                     style={[
                       styles.routineRow,
-                      index === 0 && styles.firstRoutineRow,
-                      index === data.routines.length - 1 && styles.lastRoutineRow,
                       isRecommended && styles.recommendedRoutineRow,
                     ]}
                   >
-                    <RowLink
-                      label={`Open Routine ${routine.code}, ${routine.focus}. ${durationLabel}, ${routine.exerciseCount} exercises, ${routine.setCount} sets${
+                    <Pressable
+                      accessibilityRole="link"
+                      accessibilityLabel={`Open Routine ${routine.code}, ${routine.focus}. ${durationLabel}, ${routine.exerciseCount} exercises, ${routine.setCount} sets${
                         isRecommended ? ". Recommended today" : ""
                       }. ${lastDoneLabel}${guidance ? `. ${guidance.availabilityLabel}` : ""}`}
                       onPress={() => router.push(`/routines/${routine.code}`)}
+                      onBlur={() => setFocusedAction(null)}
+                      onFocus={() => setFocusedAction(`routine-${routine.code}`)}
+                      style={({ pressed }) => [
+                        styles.routineLink,
+                        pressed && styles.routineLinkPressed,
+                        focusedAction === `routine-${routine.code}` &&
+                          Platform.OS === "web" &&
+                          styles.webFocusRing,
+                      ]}
                     >
+                      <Text style={[
+                        styles.code,
+                        styles.codeCell,
+                        isRecommended && styles.recommendedCode,
+                      ]}>{routine.code}</Text>
                       <View style={[
-                        styles.codeBox,
-                        isRecommended && styles.recommendedCodeBox,
+                        styles.routineCell,
+                        compactLayout && styles.routineCellCompact,
                       ]}>
-                        <Text style={[
-                          styles.code,
-                          isRecommended && styles.recommendedCode,
-                        ]}>{routine.code}</Text>
-                      </View>
-                      <View style={styles.rowCopy}>
                         <View style={styles.routineTitleLine}>
-                          <Text numberOfLines={2} style={styles.routineName}>{routine.focus}</Text>
+                          <Text numberOfLines={1} style={styles.routineName}>{routine.focus}</Text>
                           {isRecommended ? (
                             <View style={styles.recommendedBadge}>
                               <Text style={styles.recommendedBadgeText}>Recommended today</Text>
                             </View>
                           ) : null}
                         </View>
-                        <View style={styles.routineMeta}>
-                          <Text style={styles.meta}>{durationLabel}</Text>
-                          <Text style={styles.dot}>·</Text>
-                          <Text style={styles.meta}>{routine.exerciseCount} exercises</Text>
-                          <Text style={styles.dot}>·</Text>
-                          <Text style={styles.meta}>{routine.setCount} sets</Text>
-                        </View>
-                        <View style={[
-                          styles.routineStatusLine,
-                          !routine.lastWorkoutAt && styles.routineStatusLineWithoutHistory,
-                        ]}>
-                          <Text style={styles.lastDone}>{lastDoneLabel}</Text>
-                          {guidance ? (
-                            <AvailabilityLabel
-                              status={guidance.availability}
-                              label={guidance.availabilityLabel}
-                            />
-                          ) : null}
-                        </View>
+                        {compactLayout ? (
+                          <>
+                            <Text numberOfLines={1} style={styles.compactMeta}>
+                              {durationLabel} · {routine.exerciseCount} exercises · {routine.setCount} sets
+                            </Text>
+                            <View style={[
+                              styles.routineStatusLine,
+                              !routine.lastWorkoutAt && styles.routineStatusLineWithoutHistory,
+                            ]}>
+                              <Text style={styles.lastDone}>{lastDoneLabel}</Text>
+                              {guidance ? (
+                                <AvailabilityLabel
+                                  status={guidance.availability}
+                                  label={guidance.availabilityLabel}
+                                />
+                              ) : null}
+                            </View>
+                          </>
+                        ) : null}
                       </View>
-                    </RowLink>
+                      {!compactLayout ? (
+                        <>
+                          <Text numberOfLines={1} style={[styles.value, styles.planCell]}>
+                            {durationLabel} · {routine.exerciseCount} exercises · {routine.setCount} sets
+                          </Text>
+                          <Text numberOfLines={1} style={[styles.value, styles.lastDoneCell]}>
+                            {lastDoneLabel}
+                          </Text>
+                          <View style={styles.statusCell}>
+                            {guidance ? (
+                              <AvailabilityLabel
+                                status={guidance.availability}
+                                label={guidance.availabilityLabel}
+                              />
+                            ) : <Text style={styles.value}>—</Text>}
+                          </View>
+                        </>
+                      ) : null}
+                      <Text
+                        aria-hidden
+                        accessible={false}
+                        style={[styles.arrow, styles.arrowCell]}
+                      >→</Text>
+                    </Pressable>
                   </View>
                 );
               })}
-            </Card>
+            </View>
           ) : (
             <Card style={styles.stateCard}>
               <Eyebrow>Start your program</Eyebrow>
@@ -472,7 +495,7 @@ function AvailabilityLabel({
         status === "caution" && styles.availabilityDotCaution,
         status === "recovering" && styles.availabilityDotRecovering,
       ]} />
-      <Text style={[
+      <Text numberOfLines={2} style={[
         styles.availabilityText,
         status === "caution" && styles.availabilityTextCaution,
         status === "recovering" && styles.availabilityTextRecovering,
@@ -487,18 +510,13 @@ const styles = StyleSheet.create({
   screenContent: { paddingTop: spacing.lg, gap: spacing.md },
   header: {
     flexDirection: "row",
-    alignItems: "flex-start",
+    alignItems: "flex-end",
     justifyContent: "space-between",
     gap: spacing.md,
   },
-  headerCopy: { flex: 1, minWidth: 0, gap: spacing.xs },
-  signOutAction: {
-    minHeight: 44,
-    justifyContent: "center",
-    paddingHorizontal: spacing.sm,
-    borderRadius: radii.sm,
-  },
-  signOut: { color: colors.textMuted, fontSize: 13, fontWeight: "700" },
+  headerStats: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  total: { color: colors.textMuted, fontSize: 12, fontWeight: "700" },
+  refreshing: { color: colors.textDim, fontSize: 12 },
   actionPressed: { opacity: 0.68 },
   actionDisabled: { opacity: 0.45 },
   stateCard: { alignItems: "flex-start", gap: spacing.md },
@@ -587,44 +605,66 @@ const styles = StyleSheet.create({
   recoveryCopy: { flex: 1, minWidth: 0, gap: 2 },
   recoveryTitle: { color: colors.warning, fontSize: 13, fontWeight: "800" },
   recoveryText: { color: colors.textMuted, fontSize: 12, lineHeight: 18 },
-  sectionHeading: {
+  table: {
+    overflow: "hidden",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    backgroundColor: colors.surface,
+  },
+  tableHeader: {
+    minHeight: 28,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.md,
-    marginTop: spacing.xs,
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingRight: spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.borderStrong,
+    backgroundColor: colors.surfaceRaised,
   },
-  refreshing: { color: colors.textDim, fontSize: 12 },
-  listCard: { padding: 0, gap: 0 },
-  routineRow: { backgroundColor: colors.surface },
-  firstRoutineRow: { borderTopLeftRadius: radii.lg, borderTopRightRadius: radii.lg },
-  lastRoutineRow: { borderBottomLeftRadius: radii.lg, borderBottomRightRadius: radii.lg },
+  headerCell: {
+    color: colors.textDim,
+    fontSize: 9,
+    fontWeight: "800",
+    letterSpacing: 0.7,
+    textTransform: "uppercase",
+  },
+  routineRow: {
+    minHeight: 54,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+    backgroundColor: colors.surface,
+  },
   recommendedRoutineRow: {
-    backgroundColor: colors.accentDark,
     borderLeftWidth: 3,
     borderLeftColor: colors.accent,
   },
-  codeBox: {
-    width: 34,
-    height: 34,
-    flexShrink: 0,
-    borderRadius: radii.sm,
-    borderWidth: 1,
-    borderColor: colors.borderStrong,
+  routineLink: {
+    minHeight: 54,
+    flex: 1,
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingRight: spacing.sm,
+    paddingVertical: 6,
   },
-  recommendedCodeBox: { borderColor: colors.accent, backgroundColor: colors.background },
-  code: { color: colors.text, fontSize: 13, fontWeight: "900" },
+  routineLinkPressed: { backgroundColor: colors.surfaceRaised },
+  codeCell: { width: 24 },
+  code: { color: colors.textDim, fontSize: 10, fontWeight: "900" },
   recommendedCode: { color: colors.accent },
-  rowCopy: { flex: 1, gap: 5, minWidth: 0 },
+  routineCell: { flex: 2.2, minWidth: 140, gap: 3 },
+  routineCellCompact: { minWidth: 0 },
+  planCell: { flex: 1.8, minWidth: 150 },
+  lastDoneCell: { flex: 1.25, minWidth: 112 },
+  statusCell: { flex: 1.1, minWidth: 94 },
   routineTitleLine: {
     flexDirection: "row",
     alignItems: "center",
-    flexWrap: "wrap",
     gap: spacing.sm,
   },
-  routineName: { color: colors.text, fontSize: 15, lineHeight: 19, fontWeight: "800", flexShrink: 1 },
+  routineName: { color: colors.text, fontSize: 12, lineHeight: 15, fontWeight: "700", flexShrink: 1 },
   recommendedBadge: {
     borderRadius: radii.pill,
     backgroundColor: colors.accent,
@@ -633,23 +673,38 @@ const styles = StyleSheet.create({
   },
   recommendedBadgeText: {
     color: colors.background,
-    fontSize: 11,
-    lineHeight: 16,
+    fontSize: 8,
+    lineHeight: 12,
     fontWeight: "900",
     letterSpacing: 0.35,
     textTransform: "uppercase",
   },
-  routineMeta: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 4 },
-  meta: { color: colors.textDim, fontSize: 11 },
-  dot: { color: colors.borderStrong, fontSize: 11 },
+  compactMeta: { color: colors.textDim, fontSize: 9, lineHeight: 12 },
+  value: { color: colors.textMuted, fontSize: 10, lineHeight: 15 },
+  arrow: { color: colors.textDim, fontSize: 13 },
+  arrowCell: { width: 13, flexShrink: 0 },
   routineStatusLine: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: spacing.sm },
   routineStatusLineWithoutHistory: { flexDirection: "column", alignItems: "flex-start", gap: 2 },
-  lastDone: { color: colors.textMuted, fontSize: 11, lineHeight: 18, fontWeight: "700" },
-  availabilityLabel: { flexDirection: "row", alignItems: "center", gap: 5, minHeight: 18 },
+  lastDone: { color: colors.textMuted, fontSize: 9, lineHeight: 15, fontWeight: "700" },
+  availabilityLabel: {
+    minWidth: 0,
+    minHeight: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    flexShrink: 1,
+  },
   availabilityDot: { width: 6, height: 6, borderRadius: radii.pill, backgroundColor: colors.success },
   availabilityDotCaution: { backgroundColor: colors.warning },
   availabilityDotRecovering: { backgroundColor: colors.danger },
-  availabilityText: { color: colors.textMuted, fontSize: 10, lineHeight: 16, fontWeight: "800" },
+  availabilityText: {
+    minWidth: 0,
+    color: colors.textMuted,
+    fontSize: 10,
+    lineHeight: 16,
+    fontWeight: "800",
+    flexShrink: 1,
+  },
   availabilityTextCaution: { color: colors.warning },
   availabilityTextRecovering: { color: colors.danger },
   disclosure: {
