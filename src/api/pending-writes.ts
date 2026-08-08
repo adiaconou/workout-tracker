@@ -1,7 +1,19 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { apiRequest } from "./client";
 
-const STORAGE_KEY = "workout-tracker.pending-set-writes.v1";
+const LEGACY_STORAGE_KEY = "workout-tracker.pending-set-writes.v1";
+const STORAGE_KEY_PREFIX = "workout-tracker.pending-set-writes.v2";
+let activeStorageKey: string | null = null;
+
+export async function configurePendingSetWriteOwner(userId: string | null) {
+  const normalizedUserId = userId?.trim() ?? "";
+  activeStorageKey = normalizedUserId
+    ? `${STORAGE_KEY_PREFIX}.${encodeURIComponent(normalizedUserId)}`
+    : null;
+  // The legacy queue was shared by every account on the device, so it cannot
+  // be safely attributed after multi-user sign-in becomes available.
+  await AsyncStorage.removeItem(LEGACY_STORAGE_KEY).catch(() => undefined);
+}
 
 function createOperationId() {
   return [
@@ -26,8 +38,9 @@ export type PendingSetWrite = {
   };
 };
 
-async function readQueue(): Promise<PendingSetWrite[]> {
-  const value = await AsyncStorage.getItem(STORAGE_KEY);
+async function readQueue(storageKey: string | null = activeStorageKey): Promise<PendingSetWrite[]> {
+  if (!storageKey) return [];
+  const value = await AsyncStorage.getItem(storageKey);
   if (!value) return [];
   try {
     const parsed = JSON.parse(value) as PendingSetWrite[];
@@ -37,16 +50,22 @@ async function readQueue(): Promise<PendingSetWrite[]> {
   }
 }
 
-async function writeQueue(queue: PendingSetWrite[]) {
-  if (queue.length) await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(queue));
-  else await AsyncStorage.removeItem(STORAGE_KEY);
+async function writeQueue(queue: PendingSetWrite[], storageKey: string | null = activeStorageKey) {
+  if (!storageKey) {
+    if (queue.length) throw new Error("A signed-in user is required to queue workout data.");
+    return;
+  }
+  if (queue.length) await AsyncStorage.setItem(storageKey, JSON.stringify(queue));
+  else await AsyncStorage.removeItem(storageKey);
 }
 
 export async function enqueueSetWrite(
   workoutId: string,
   body: PendingSetWrite["body"],
 ) {
-  const queue = await readQueue();
+  const storageKey = activeStorageKey;
+  if (!storageKey) throw new Error("A signed-in user is required to queue workout data.");
+  const queue = await readQueue(storageKey);
   const existing = queue.find(
     (item) => item.workoutId === workoutId && item.prescribedSetId === body.prescribedSetId,
   );
@@ -62,18 +81,20 @@ export async function enqueueSetWrite(
   await writeQueue([
     ...queue.filter((item) => item.operationId !== pending.operationId),
     pending,
-  ]);
+  ], storageKey);
   return pending;
 }
 
 export async function removePendingSetWrite(operationId: string) {
-  const queue = await readQueue();
-  await writeQueue(queue.filter((item) => item.operationId !== operationId));
+  const storageKey = activeStorageKey;
+  const queue = await readQueue(storageKey);
+  await writeQueue(queue.filter((item) => item.operationId !== operationId), storageKey);
 }
 
 export async function removePendingSetWritesForWorkout(workoutId: string) {
-  const queue = await readQueue();
-  await writeQueue(queue.filter((item) => item.workoutId !== workoutId));
+  const storageKey = activeStorageKey;
+  const queue = await readQueue(storageKey);
+  await writeQueue(queue.filter((item) => item.workoutId !== workoutId), storageKey);
 }
 
 export async function countPendingSetWrites(workoutId?: string) {
@@ -82,7 +103,8 @@ export async function countPendingSetWrites(workoutId?: string) {
 }
 
 export async function flushPendingSetWrites() {
-  const queue = await readQueue();
+  const storageKey = activeStorageKey;
+  const queue = await readQueue(storageKey);
   for (const pending of queue) {
     try {
       await apiRequest(`/api/v1/workouts/${encodeURIComponent(pending.workoutId)}/sets`, {
@@ -90,7 +112,10 @@ export async function flushPendingSetWrites() {
         headers: { "x-idempotency-key": pending.operationId },
         body: JSON.stringify(pending.body),
       });
-      await removePendingSetWrite(pending.operationId);
+      await writeQueue(
+        (await readQueue(storageKey)).filter((item) => item.operationId !== pending.operationId),
+        storageKey,
+      );
     } catch {
       break;
     }

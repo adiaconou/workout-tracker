@@ -6,7 +6,7 @@ import { Miniflare } from "miniflare";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const firstEmail = "primary@example.com";
-const secondEmail = "chcrosbi@dal.ca";
+const secondEmail = "partner@example.com";
 
 const exerciseInput = (name, muscleGroup) => ({
   name,
@@ -17,6 +17,39 @@ const exerciseInput = (name, muscleGroup) => ({
   sideMode: "bilateral",
   instructions: `Private instructions for ${name}.`,
   muscles: [{ muscleGroup, role: "primary", weight: 1 }],
+});
+
+const versionInput = (version) => ({
+  focus: version.focus,
+  summary: version.summary,
+  durationMin: version.durationMin,
+  exercises: [...version.exercises]
+    .sort((left, right) => left.position - right.position)
+    .map((exercise) => ({
+      exerciseId: exercise.exerciseId,
+      position: exercise.position,
+      supersetGroup: exercise.supersetGroup,
+      instructions: exercise.instructions,
+      notes: exercise.notes,
+      sets: [...exercise.sets]
+        .sort((left, right) => left.position - right.position)
+        .map((set) => ({
+          position: set.position,
+          setType: set.setType,
+          targetType: set.targetType,
+          targetMin: set.targetMin,
+          targetMax: set.targetMax,
+          targetDisplay: set.targetDisplay,
+          targetRirMin: set.targetRirMin,
+          targetRirMax: set.targetRirMax,
+          restAfterSec: set.restAfterSec,
+          restRule: set.restRule,
+          loadInstruction: set.loadInstruction,
+          sideMode: set.sideMode,
+          tempo: set.tempo,
+          notes: set.notes,
+        })),
+    })),
 });
 
 test("allowed ChatGPT users have isolated seeded data, resources, workouts, and coach state", async (context) => {
@@ -47,7 +80,8 @@ test("allowed ChatGPT users have isolated seeded data, resources, workouts, and 
   const database = await miniflare.getD1Database("DB");
 
   async function request(email, path, { method = "GET", body } = {}) {
-    const headers = new Headers({ "oai-authenticated-user-email": email });
+    const headers = new Headers();
+    if (email) headers.set("oai-authenticated-user-email", email);
     if (body !== undefined) headers.set("content-type", "application/json");
     const response = await miniflare.dispatchFetch(`https://workout.test${path}`, {
       method,
@@ -63,6 +97,17 @@ test("allowed ChatGPT users have isolated seeded data, resources, workouts, and 
     return result.body;
   }
 
+  const anonymousSession = await request(null, "/api/v1/auth/session");
+  expectStatus(anonymousSession, 401);
+  assert.equal(anonymousSession.body.error.code, "authentication_required");
+  expectStatus(await request(null, "/api/v1/bootstrap"), 401);
+  expectStatus(await request(null, "/api/v1/exercises", {
+    method: "POST",
+    body: exerciseInput("Anonymous write attempt", "core"),
+  }), 401);
+  const unapprovedEmail = "not-approved@example.com";
+  expectStatus(await request(unapprovedEmail, "/api/v1/bootstrap"), 401);
+
   const firstSession = expectStatus(await request(firstEmail, "/api/v1/auth/session"), 200);
   const secondSession = expectStatus(await request(secondEmail, "/api/v1/auth/session"), 200);
   assert.equal(firstSession.provider, "chatgpt");
@@ -70,6 +115,13 @@ test("allowed ChatGPT users have isolated seeded data, resources, workouts, and 
   assert.equal(firstSession.user.email, firstEmail);
   assert.equal(secondSession.user.email, secondEmail);
   assert.notEqual(firstSession.user.id, secondSession.user.id);
+  assert.equal(
+    await database.prepare("SELECT id FROM app_users WHERE owner_email = ?")
+      .bind(unapprovedEmail)
+      .first(),
+    null,
+    "a disallowed ChatGPT identity must not create an application user",
+  );
 
   const firstBootstrap = expectStatus(await request(firstEmail, "/api/v1/bootstrap"), 200);
   const secondBootstrap = expectStatus(await request(secondEmail, "/api/v1/bootstrap"), 200);
@@ -90,6 +142,94 @@ test("allowed ChatGPT users have isolated seeded data, resources, workouts, and 
   assert.ok(
     secondSeededRoutines.every((routine) => !firstRoutineIds.has(routine.id)),
     "starter routines must be independently owned records",
+  );
+  const firstRoutine = firstSeededRoutines[0];
+  const secondRoutine = secondSeededRoutines[0];
+  const encodedFirstRoutineId = encodeURIComponent(firstRoutine.id);
+  const encodedSecondRoutineId = encodeURIComponent(secondRoutine.id);
+  expectStatus(await request(secondEmail, `/api/v1/routines/${encodedFirstRoutineId}`), 404);
+  expectStatus(await request(secondEmail, `/api/v1/routines/${encodedFirstRoutineId}/editor`), 404);
+  assert.deepEqual(
+    expectStatus(
+      await request(secondEmail, `/api/v1/routines/${encodedFirstRoutineId}/versions`),
+      200,
+    ).versions,
+    [],
+    "a routine version listing for another owner must disclose no versions",
+  );
+  const encodedFirstVersionId = encodeURIComponent(firstRoutine.currentVersionId);
+  expectStatus(
+    await request(
+      secondEmail,
+      `/api/v1/routines/${encodedFirstRoutineId}/versions/${encodedFirstVersionId}`,
+    ),
+    404,
+  );
+  expectStatus(
+    await request(
+      secondEmail,
+      `/api/v1/routines/${encodedFirstRoutineId}/versions/${encodedFirstVersionId}`,
+      { method: "DELETE" },
+    ),
+    404,
+  );
+  const crossAccountPublish = await request(
+    secondEmail,
+    `/api/v1/routines/${encodedFirstRoutineId}/versions/${encodedFirstVersionId}/publish`,
+    { method: "POST" },
+  );
+  expectStatus(crossAccountPublish, 404);
+  assert.equal(crossAccountPublish.body.error.code, "routine_version_not_found");
+  const ownerRoutine = expectStatus(
+    await request(firstEmail, `/api/v1/routines/${encodedFirstRoutineId}`),
+    200,
+  ).routine;
+  const draftInput = versionInput(ownerRoutine.currentVersion);
+  draftInput.summary = `${draftInput.summary} Owner-only draft.`;
+  const ownerDraft = expectStatus(
+    await request(firstEmail, `/api/v1/routines/${encodedFirstRoutineId}/versions`, {
+      method: "POST",
+      body: draftInput,
+    }),
+    201,
+  ).version;
+  assert.equal(ownerDraft.status, "draft");
+  const encodedOwnerDraftId = encodeURIComponent(ownerDraft.id);
+  const crossDraftInput = structuredClone(draftInput);
+  crossDraftInput.summary = "Cross-account overwrite attempt.";
+  const crossAccountDraftUpdate = await request(
+    secondEmail,
+    `/api/v1/routines/${encodedFirstRoutineId}/versions/${encodedOwnerDraftId}`,
+    { method: "PATCH", body: crossDraftInput },
+  );
+  expectStatus(crossAccountDraftUpdate, 404);
+  assert.equal(crossAccountDraftUpdate.body.error.code, "routine_version_not_found");
+  assert.equal(
+    expectStatus(
+      await request(
+        firstEmail,
+        `/api/v1/routines/${encodedFirstRoutineId}/versions/${encodedOwnerDraftId}`,
+      ),
+      200,
+    ).version.summary,
+    draftInput.summary,
+    "a cross-account draft update must leave the owner's draft unchanged",
+  );
+  expectStatus(await request(secondEmail, `/api/v1/routines/${encodedFirstRoutineId}`, {
+    method: "PATCH",
+    body: { code: "CROSS-ACCOUNT" },
+  }), 404);
+  expectStatus(await request(secondEmail, `/api/v1/routines/${encodedFirstRoutineId}`, {
+    method: "DELETE",
+  }), 404);
+  expectStatus(await request(firstEmail, `/api/v1/routines/${encodedSecondRoutineId}`), 404);
+  assert.equal(
+    expectStatus(
+      await request(firstEmail, `/api/v1/routines/${encodedFirstRoutineId}`),
+      200,
+    ).routine.code,
+    firstRoutine.code,
+    "cross-account routine mutations must leave the owner's routine unchanged",
   );
 
   const firstSeededExercises = expectStatus(await request(firstEmail, "/api/v1/exercises"), 200).exercises;

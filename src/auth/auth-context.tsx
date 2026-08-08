@@ -10,6 +10,7 @@ import {
 } from "react";
 import { Platform } from "react-native";
 import {
+  ApiError,
   apiRequest,
   configureApiSession,
   rawApiRequest,
@@ -22,6 +23,7 @@ import {
   getRefreshToken,
   setRefreshToken,
 } from "./session-storage";
+import { configurePendingSetWriteOwner } from "../api/pending-writes";
 
 type AuthContextValue = {
   isLoading: boolean;
@@ -44,6 +46,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const applySession = useCallback(async (session: NativeSession) => {
     tokenRef.current = session.accessToken;
     await setRefreshToken(session.refreshToken);
+    await configurePendingSetWriteOwner(session.user.id);
     setUser(session.user);
     configureApiSession({
       token: session.accessToken,
@@ -63,12 +66,14 @@ export function AuthProvider({ children }: PropsWithChildren) {
         const session = await refreshWithToken(refreshToken);
         tokenRef.current = session.accessToken;
         await setRefreshToken(session.refreshToken);
+        await configurePendingSetWriteOwner(session.user.id);
         setUser(session.user);
         configureApiSession({ token: session.accessToken, refresh });
         return true;
       } catch {
         tokenRef.current = null;
         await deleteRefreshToken();
+        await configurePendingSetWriteOwner(null);
         setUser(null);
         configureApiSession({ token: null, refresh });
         return false;
@@ -86,12 +91,23 @@ export function AuthProvider({ children }: PropsWithChildren) {
     try {
       if (Platform.OS === "web") {
         const session = await rawApiRequest<{ user: SessionUser }>("/api/v1/auth/session");
+        await configurePendingSetWriteOwner(session.user.id);
         setUser(session.user);
       } else {
         await refresh();
       }
-    } catch {
+    } catch (caught) {
+      await configurePendingSetWriteOwner(null);
       setUser(null);
+      if (
+        Platform.OS === "web" &&
+        caught instanceof ApiError &&
+        caught.status === 401 &&
+        typeof window !== "undefined" &&
+        new URLSearchParams(window.location.search).get("auth") === "returned"
+      ) {
+        setError("This ChatGPT account is not authorized for this tracker.");
+      }
     } finally {
       setIsLoading(false);
     }
@@ -106,9 +122,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     setError("");
     try {
       if (Platform.OS === "web") {
-        const returnTo = encodeURIComponent(
-          typeof window === "undefined" ? "/routines" : window.location.pathname,
-        );
+        const returnTo = encodeURIComponent("/sign-in?auth=returned");
         window.location.assign(`/signin-with-chatgpt?return_to=${returnTo}`);
         return;
       }
@@ -134,6 +148,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       tokenRef.current = null;
       configureApiSession({ token: null, refresh });
       await deleteRefreshToken();
+      await configurePendingSetWriteOwner(null);
       setUser(null);
       if (Platform.OS === "web") {
         window.location.assign("/signout-with-chatgpt?return_to=/");

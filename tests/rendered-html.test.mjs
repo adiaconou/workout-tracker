@@ -23,6 +23,7 @@ test("uses one Expo Router application for Android and hosted web", async () => 
     coachMarkdown,
     discardWorkoutModal,
     accountMenu,
+    signIn,
     authContext,
     serverAuth,
     pendingWrites,
@@ -47,6 +48,7 @@ test("uses one Expo Router application for Android and hosted web", async () => 
     readFile(new URL("src/features/coach/coach-markdown.tsx", root), "utf8"),
     readFile(new URL("src/features/workouts/discard-workout-modal.tsx", root), "utf8"),
     readFile(new URL("src/components/account-menu.tsx", root), "utf8"),
+    readFile(new URL("app/sign-in.tsx", root), "utf8"),
     readFile(new URL("src/auth/auth-context.tsx", root), "utf8"),
     readFile(new URL("server/auth.ts", root), "utf8"),
     readFile(new URL("src/api/pending-writes.ts", root), "utf8"),
@@ -79,6 +81,12 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(accountMenu, /ProfileAvatar/);
   assert.match(accountMenu, /Sign out/);
   assert.match(accountMenu, /accessibilityViewIsModal/);
+  assert.match(signIn, /Sign in with ChatGPT/);
+  assert.match(signIn, /This page is public/);
+  assert.match(authContext, /\/signin-with-chatgpt\?return_to=/);
+  assert.match(authContext, /\/signout-with-chatgpt\?return_to=\//);
+  assert.match(authContext, /\/sign-in\?auth=returned/);
+  assert.match(authContext, /This ChatGPT account is not authorized/);
   assert.match(routines, /<Heading>Routines<\/Heading>/);
   assert.doesNotMatch(routines, /Choose a session, review recovery/);
   assert.doesNotMatch(routines, /<Heading size="small">Your routines<\/Heading>/);
@@ -264,6 +272,12 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(serverAuth, /claims\.picture/);
   assert.match(serverAuth, /photo_url AS photoUrl/);
   assert.match(pendingWrites, /AsyncStorage/);
+  assert.match(pendingWrites, /pending-set-writes\.v2/);
+  assert.match(pendingWrites, /configurePendingSetWriteOwner/);
+  assert.match(pendingWrites, /encodeURIComponent\(normalizedUserId\)/);
+  assert.match(pendingWrites, /removeItem\(LEGACY_STORAGE_KEY\)/);
+  assert.match(authContext, /configurePendingSetWriteOwner\(session\.user\.id\)/);
+  assert.match(authContext, /configurePendingSetWriteOwner\(null\)/);
   assert.match(pendingWrites, /x-idempotency-key/);
   assert.match(pendingWrites, /removePendingSetWritesForWorkout/);
   assert.match(worker, /handleApiRequest/);

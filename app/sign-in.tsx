@@ -26,15 +26,15 @@ export default function SignInRoute() {
         with recovery-aware guidance.
       </Body>
       <Card style={styles.authCard}>
-        <Heading size="small">{isWeb ? "Private web access" : "Sign in on Android"}</Heading>
+        <Heading size="small">{isWeb ? "Sign in with ChatGPT" : "Sign in on Android"}</Heading>
         <Body muted>
           {isWeb
-            ? "Continue with the ChatGPT account authorized for this tracker."
+            ? "Use a ChatGPT account approved for this tracker. Routines, workouts, and coaching history stay separate for each account."
             : "Continue with your authorized Google account. Workout data remains in your private API and is not stored by Google."}
         </Body>
         {error ? <Message>{error}</Message> : null}
         <Button
-          title={isWeb ? "Continue with ChatGPT →" : "Continue with Google"}
+          title={isWeb ? "Sign in with ChatGPT →" : "Continue with Google"}
           loading={isLoading}
           onPress={() => void signIn()}
         />
@@ -49,8 +49,9 @@ export default function SignInRoute() {
         ) : null}
       </Card>
       <Body muted style={styles.footer}>
-        Authentication identifies the owner; authorization is enforced again by the API on
-        every request.
+        {isWeb
+          ? "This page is public; workout data and changes are available only after sign-in to an approved account."
+          : "Authentication identifies the account; authorization is enforced again by the API on every request."}
       </Body>
     </Screen>
   );

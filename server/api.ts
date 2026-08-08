@@ -379,7 +379,14 @@ async function handleRoutines({ request, user, segments }: RouteContext) {
     } else if (action === "publish" && request.method === "POST") {
       try {
         const routine = await service.publish(user.email, routineId, childId);
-        return apiResponse(request, { routine });
+        return routine
+          ? apiResponse(request, { routine })
+          : apiError(
+            request,
+            404,
+            "routine_version_not_found",
+            "Routine version not found.",
+          );
       } catch (error) {
         return apiError(request, 400, "routine_publish_failed", errorMessage(error, "Routine version could not be published."));
       }
