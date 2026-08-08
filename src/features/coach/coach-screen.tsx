@@ -49,6 +49,7 @@ type ChangePlanBase = {
 
 type RoutineChangePlan = ChangePlanBase & {
   kind: "routine";
+  action: "create" | "update";
   routineCode: string;
   proposedRoutine: {
     focus: string;
@@ -92,7 +93,7 @@ const quickPrompts = [
   "What should I train today?",
   "Review my recent workouts",
   "Improve my next routine",
-  "Adjust my sets and rest for strength",
+  "Build me a new routine",
 ];
 
 export function CoachScreen() {
@@ -134,7 +135,10 @@ export function CoachScreen() {
     [data?.models, selection?.model],
   );
   const reasoningEfforts = selectedModel?.reasoningEfforts ?? ["auto"];
-  const pendingPlans = data?.plans.filter((plan) => plan.status === "pending") ?? [];
+  const reviewPlans = data?.plans.filter((plan) => (
+    plan.status === "pending"
+    || (plan.kind === "routine" && plan.action === "create" && plan.status === "applying")
+  )) ?? [];
 
   async function persistModelSettings(next: ModelSelection) {
     if (!data || !selection) return;
@@ -309,7 +313,7 @@ export function CoachScreen() {
     );
   }
 
-  const hasConversation = data.messages.length > 0 || pendingPlans.length > 0;
+  const hasConversation = data.messages.length > 0 || reviewPlans.length > 0;
 
   return (
     <Screen scroll={false} safeTop={false} contentStyle={styles.screen}>
@@ -387,20 +391,28 @@ export function CoachScreen() {
                 )
               ))}
 
-              {pendingPlans.map((plan) => (
+              {reviewPlans.map((plan) => (
                 <View key={plan.id} style={styles.planCard}>
                   <View style={styles.planHeader}>
                     <View style={styles.planBadge}>
                       <Text style={styles.planBadgeText}>
-                        {plan.kind === "routine" ? "Review routine change" : `Review exercise ${exerciseActionLabel(plan.action).toLowerCase()}`}
+                        {plan.kind === "routine"
+                          ? plan.action === "create" ? "Review new routine" : "Review routine change"
+                          : `Review exercise ${exerciseActionLabel(plan.action).toLowerCase()}`}
                       </Text>
                     </View>
                     <Text style={styles.planTitle}>
-                      {plan.kind === "exercise" ? `${plan.exerciseName}: ${plan.summary}` : `Routine ${plan.routineCode}: ${plan.summary}`}
+                      {plan.kind === "exercise"
+                        ? `${plan.exerciseName}: ${plan.summary}`
+                        : `${plan.action === "create" ? "New routine" : "Routine"} ${plan.routineCode}: ${plan.summary}`}
                     </Text>
                   </View>
                   <Text style={styles.planRationale}>{plan.rationale}</Text>
-                  <Text style={styles.planSafety}>Nothing changes until you choose an action.</Text>
+                  <Text style={styles.planSafety}>
+                    {plan.kind === "routine" && plan.action === "create" && plan.status === "applying"
+                      ? "Creation was interrupted or is still finishing. Retry shortly; the same routine will not be created twice."
+                      : "Nothing changes until you choose an action."}
+                  </Text>
                   <View style={styles.planDiff}>
                     {plan.diff.map((change, index) => (
                       <Text key={`${plan.id}:${index}`} style={styles.planDiffText}>• {change}</Text>
@@ -408,13 +420,17 @@ export function CoachScreen() {
                   </View>
                   <View style={styles.planActions}>
                     <CompactAction
-                      title={plan.kind === "exercise" ? exerciseApplyLabel(plan.action) : "Apply & publish"}
+                      title={plan.kind === "exercise"
+                        ? exerciseApplyLabel(plan.action)
+                        : plan.action === "create"
+                          ? plan.status === "applying" ? "Retry creation" : "Create routine"
+                          : "Apply & publish"}
                       primary
                       loading={planBusy === `${plan.id}:apply:true`}
                       disabled={Boolean(planBusy)}
                       onPress={() => void handlePlan(plan.id, "apply", true)}
                     />
-                    {plan.kind === "routine" ? (
+                    {plan.kind === "routine" && plan.action === "update" ? (
                       <CompactAction
                         title="Save as draft"
                         loading={planBusy === `${plan.id}:apply:false`}
@@ -422,13 +438,15 @@ export function CoachScreen() {
                         onPress={() => void handlePlan(plan.id, "apply", false)}
                       />
                     ) : null}
-                    <CompactAction
-                      title="Dismiss"
-                      subtle
-                      loading={planBusy === `${plan.id}:reject:true`}
-                      disabled={Boolean(planBusy)}
-                      onPress={() => void handlePlan(plan.id, "reject")}
-                    />
+                    {plan.status === "pending" ? (
+                      <CompactAction
+                        title="Dismiss"
+                        subtle
+                        loading={planBusy === `${plan.id}:reject:true`}
+                        disabled={Boolean(planBusy)}
+                        onPress={() => void handlePlan(plan.id, "reject")}
+                      />
+                    ) : null}
                   </View>
                 </View>
               ))}

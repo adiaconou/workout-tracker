@@ -154,7 +154,7 @@ test("forces a final response when the same tool call repeats without progress",
 });
 
 test("a successful proposal ends tool use and forces final synthesis", async (context) => {
-  const proposalTools = ["propose_routine_change", "propose_exercise_change"];
+  const proposalTools = ["propose_new_routine", "propose_routine_change", "propose_exercise_change"];
   for (const toolName of proposalTools) {
     await context.test(toolName, async () => {
       const responses: CoachResponse[] = [{

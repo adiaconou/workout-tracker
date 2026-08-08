@@ -25,6 +25,8 @@ export type CoachRoutineProposal = Omit<RoutineVersionInput, "exercises"> & {
   exercises: CoachRoutineExerciseProposal[];
 };
 
+type RoutineProposalMode = "create" | "update";
+
 const setFields = [
   ["position", "position"],
   ["setType", "type"],
@@ -43,13 +45,25 @@ const setFields = [
 ] as const satisfies ReadonlyArray<readonly [keyof RoutineSetInput, string]>;
 
 export function completeRoutineChangeProposal(current: RoutineVersion, value: unknown) {
+  return completeRoutineProposal(current, value, "update");
+}
+
+export function completeRoutineCreationProposal(value: unknown) {
+  return completeRoutineProposal(null, value, "create");
+}
+
+function completeRoutineProposal(
+  current: RoutineVersion | null,
+  value: unknown,
+  mode: RoutineProposalMode,
+) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("A complete proposed routine is required.");
   }
   const raw = value as Record<string, unknown>;
   if (!Array.isArray(raw.exercises)) throw new Error("A proposed routine needs exercises.");
 
-  const currentPlacements = new Map(current.exercises.map((exercise) => [exercise.id, exercise]));
+  const currentPlacements = new Map(current?.exercises.map((exercise) => [exercise.id, exercise]) ?? []);
   const usedPlacementIds = new Set<string>();
   const usedSetIds = new Set<string>();
   const identityExercises = raw.exercises.map((exerciseValue, exerciseIndex) => {
@@ -61,6 +75,9 @@ export function completeRoutineChangeProposal(current: RoutineVersion, value: un
       exercise.sourceRoutineExerciseId,
       `Proposed exercise ${exerciseIndex + 1} source`,
     );
+    if (mode === "create" && sourceRoutineExerciseId !== null) {
+      throw new Error("Every exercise in a new routine must have a null source routine exercise ID.");
+    }
     const currentPlacement = sourceRoutineExerciseId
       ? currentPlacements.get(sourceRoutineExerciseId)
       : null;
@@ -80,6 +97,9 @@ export function completeRoutineChangeProposal(current: RoutineVersion, value: un
         set.sourceRoutineSetId,
         `Proposed set ${setIndex + 1} source`,
       );
+      if (mode === "create" && sourceRoutineSetId !== null) {
+        throw new Error("Every set in a new routine must have a null source routine set ID.");
+      }
       if (sourceRoutineSetId) {
         if (!currentPlacement || !currentSets.has(sourceRoutineSetId)) {
           throw new Error("A proposed set references a set outside its current routine exercise.");
@@ -113,6 +133,25 @@ export function completeRoutineChangeProposal(current: RoutineVersion, value: un
     })),
   };
   return { proposal, input };
+}
+
+export function buildRoutineCreationDiff(
+  routineCode: string,
+  proposed: CoachRoutineProposal,
+  exerciseLibrary: ExerciseLibraryEntry[],
+) {
+  const changes: string[] = [`Create routine code ${formatValue(routineCode)}.`];
+  pushFieldChange(changes, "Routine name", null, proposed.focus);
+  pushFieldChange(changes, "Routine summary", null, proposed.summary);
+  pushFieldChange(changes, "Estimated duration (minutes)", null, proposed.durationMin);
+
+  const names = new Map(exerciseLibrary.map((exercise) => [exercise.id, exercise.name]));
+  for (const exercise of sortedPlacements(proposed.exercises)) {
+    const label = JSON.stringify(names.get(exercise.exerciseId) ?? exercise.exerciseId);
+    changes.push(`Add ${label}: ${formatPlacement(exercise)}.`);
+    for (const set of sortedSets(exercise.sets)) changes.push(`${label} · add set: ${formatSet(set)}.`);
+  }
+  return changes;
 }
 
 export function buildRoutineChangeDiff(

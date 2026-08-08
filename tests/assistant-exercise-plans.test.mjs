@@ -51,6 +51,18 @@ const singleSetRoutine = (exerciseId, focus) => ({
   }],
 });
 
+const newRoutineProposal = (exerciseId, focus) => {
+  const routine = singleSetRoutine(exerciseId, focus);
+  return {
+    ...routine,
+    exercises: routine.exercises.map((exercise) => ({
+      ...exercise,
+      sourceRoutineExerciseId: null,
+      sets: exercise.sets.map((set) => ({ ...set, sourceRoutineSetId: null })),
+    })),
+  };
+};
+
 function responseText(id, text) {
   return {
     id,
@@ -220,6 +232,41 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
     return { thread, plan };
   }
 
+  async function stageRoutineCreation({ code, exercise, focus = "Coach-built strength" }) {
+    const thread = await createThread();
+    const plansBefore = await count(
+      "SELECT COUNT(*) AS count FROM assistant_change_plans WHERE owner_email = ?",
+      ownerEmail,
+    );
+    enqueueTool("get_coaching_context", {});
+    enqueueTool("search_exercises", { query: exercise.name, includeArchived: false });
+    enqueueTool("propose_new_routine", {
+      routineCode: code,
+      proposedRoutine: newRoutineProposal(exercise.id, focus),
+      summary: `Create ${focus}`,
+      rationale: "Create a complete routine from active exercises after the user reviews every field.",
+    });
+    enqueueText("The new-routine review card is ready. Nothing has changed yet.");
+    const payload = assertStatus(await sendMessage(thread.id, `Create a new ${focus} routine.`), 201);
+    assert.equal(queuedResponses.length, 0, "Every queued model response should be consumed");
+    assert.equal(
+      await count("SELECT COUNT(*) AS count FROM assistant_change_plans WHERE owner_email = ?", ownerEmail),
+      plansBefore + 1,
+      "One request should stage one new-routine review card",
+    );
+    assert.equal(
+      await count("SELECT COUNT(*) AS count FROM assistant_messages WHERE owner_email = ? AND thread_id = ? AND role = 'user'", ownerEmail, thread.id),
+      1,
+      "Routine creation must not require a second verbal approval message",
+    );
+    const plan = payload.plans.find((candidate) => (
+      candidate.kind === "routine" && candidate.action === "create" && candidate.routineCode === code.trim().toUpperCase()
+    ));
+    assert.ok(plan, "A pending routine-creation plan should be returned");
+    assert.equal(plan.status, "pending");
+    return { thread, plan, proposedRoutine: newRoutineProposal(exercise.id, focus) };
+  }
+
   async function createExercise(name, overrides = {}) {
     const result = await request("/api/v1/exercises", {
       method: "POST",
@@ -228,8 +275,7 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
     return assertStatus(result, 201).exercise;
   }
 
-  async function createOtherOwnerToken() {
-    const otherEmail = "other@example.com";
+  async function createOtherOwnerToken(otherEmail = "other@example.com") {
     const userId = randomUUID();
     const sessionId = randomUUID();
     const now = new Date().toISOString();
@@ -267,7 +313,7 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
       "Staging must not create the exercise",
     );
 
-    const otherToken = await createOtherOwnerToken();
+    const otherToken = await createOtherOwnerToken("routine-other@example.com");
     const otherHeaders = { authorization: `Bearer ${otherToken}` };
     assertStatus(await request(`/api/v1/assistant?threadId=${encodeURIComponent(thread.id)}`, { headers: otherHeaders }), 404);
     assertStatus(await request(`/api/v1/assistant/plans/${plan.id}/apply`, {
@@ -309,6 +355,127 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
       await count("SELECT COUNT(*) AS count FROM exercise_catalog WHERE owner_email = ? AND normalized_name = ?", ownerEmail, name.toLowerCase()),
       0,
     );
+  });
+
+  await context.test("one request stages and one approval creates a complete published routine", async () => {
+    const exercise = await createExercise("Coach New Routine Exercise");
+    const code = "coach-new";
+    const { thread, plan, proposedRoutine } = await stageRoutineCreation({
+      code,
+      exercise,
+      focus: "Coach-created upper body",
+    });
+
+    assert.equal(plan.routineId, null);
+    assert.match(plan.diff.join("\n"), /Create routine code "COACH-NEW"/i);
+    assert.match(plan.diff.join("\n"), /Add "Coach New Routine Exercise"/i);
+    assert.equal(await count("SELECT COUNT(*) AS count FROM routines WHERE owner_email = ? AND code = 'COACH-NEW'", ownerEmail), 0);
+    assert.equal(await count("SELECT COUNT(*) AS count FROM routine_versions WHERE routine_id = ?", plan.id), 0);
+
+    const otherToken = await createOtherOwnerToken();
+    const otherHeaders = { authorization: `Bearer ${otherToken}` };
+    assertStatus(await request(`/api/v1/assistant?threadId=${encodeURIComponent(thread.id)}`, { headers: otherHeaders }), 404);
+    assertStatus(await request(`/api/v1/assistant/plans/${plan.id}/apply`, {
+      method: "POST",
+      body: {},
+      headers: otherHeaders,
+    }), 404);
+    assert.equal((await first("SELECT status FROM assistant_change_plans WHERE id = ?", plan.id))?.status, "pending");
+
+    assertStatus(await request(`/api/v1/assistant/plans/${plan.id}/apply`, {
+      method: "POST",
+      body: { publish: false },
+    }), 400);
+    assert.equal(await count("SELECT COUNT(*) AS count FROM routines WHERE owner_email = ? AND code = 'COACH-NEW'", ownerEmail), 0);
+
+    const attempts = await Promise.all([
+      request(`/api/v1/assistant/plans/${plan.id}/apply`, { method: "POST", body: {} }),
+      request(`/api/v1/assistant/plans/${plan.id}/apply`, { method: "POST", body: {} }),
+    ]);
+    assert.deepEqual(attempts.map((attempt) => attempt.status).sort(), [200, 409]);
+
+    const created = assertStatus(await request("/api/v1/routines/COACH-NEW/editor"), 200).routine;
+    assert.equal(created.id, plan.id, "The staged plan ID should preallocate the new routine identity");
+    assert.equal(created.code, "COACH-NEW");
+    assert.equal(created.currentVersion?.status, "published");
+    assert.equal(created.currentVersion?.versionNumber, 1);
+    assert.equal(created.currentVersion?.focus, proposedRoutine.focus);
+    assert.equal(created.currentVersion?.summary, proposedRoutine.summary);
+    assert.equal(created.currentVersion?.durationMin, proposedRoutine.durationMin);
+    assert.equal(created.currentVersion?.exercises[0]?.exerciseId, exercise.id);
+    assert.equal(created.currentVersion?.exercises[0]?.sets[0]?.targetDisplay, "8-10 reps");
+    assert.equal(await count("SELECT COUNT(*) AS count FROM routine_versions WHERE routine_id = ?", created.id), 1);
+    assert.equal((await first("SELECT status FROM assistant_change_plans WHERE id = ?", plan.id))?.status, "applied");
+  });
+
+  await context.test("dismissing a new-routine card is terminal and creates nothing", async () => {
+    const exercise = await createExercise("Coach Dismissed Routine Exercise");
+    const { plan } = await stageRoutineCreation({ code: "COACH-DISMISSED", exercise });
+
+    assertStatus(await request(`/api/v1/assistant/plans/${plan.id}/reject`, { method: "POST", body: {} }), 200);
+    assert.equal((await first("SELECT status FROM assistant_change_plans WHERE id = ?", plan.id))?.status, "rejected");
+    assertStatus(await request(`/api/v1/assistant/plans/${plan.id}/apply`, { method: "POST", body: {} }), 409);
+    assert.equal(await count("SELECT COUNT(*) AS count FROM routines WHERE owner_email = ? AND code = 'COACH-DISMISSED'", ownerEmail), 0);
+    assert.equal(await count("SELECT COUNT(*) AS count FROM routine_versions WHERE routine_id = ?", plan.id), 0);
+  });
+
+  await context.test("interrupted routine creation resumes before or after the domain write", async () => {
+    const beforeExercise = await createExercise("Coach Resume Before Creation Exercise");
+    const before = await stageRoutineCreation({ code: "COACH-RESUME-BEFORE", exercise: beforeExercise });
+    const expiredAt = new Date(Date.now() - 2 * 60_000).toISOString();
+    await database.prepare(`UPDATE assistant_change_plans
+      SET status = 'applying', updated_at = ? WHERE id = ?`).bind(expiredAt, before.plan.id).run();
+
+    const [reloaded, firstRetry] = await Promise.all([
+      request(`/api/v1/assistant?threadId=${encodeURIComponent(before.thread.id)}`),
+      request(`/api/v1/assistant/plans/${before.plan.id}/apply`, { method: "POST", body: {} }),
+    ]);
+    assertStatus(reloaded, 200);
+    assert.ok([200, 409].includes(firstRetry.status), JSON.stringify(firstRetry.body));
+    if (firstRetry.status === 409) {
+      assertStatus(await request(`/api/v1/assistant/plans/${before.plan.id}/apply`, { method: "POST", body: {} }), 200);
+    }
+    assert.equal(await count("SELECT COUNT(*) AS count FROM routines WHERE id = ? AND owner_email = ?", before.plan.id, ownerEmail), 1);
+    assert.equal(await count("SELECT COUNT(*) AS count FROM routine_versions WHERE routine_id = ?", before.plan.id), 1);
+    assert.equal((await first("SELECT status FROM assistant_change_plans WHERE id = ?", before.plan.id))?.status, "applied");
+
+    const afterExercise = await createExercise("Coach Resume After Creation Exercise");
+    const after = await stageRoutineCreation({ code: "COACH-RESUME-AFTER", exercise: afterExercise });
+    assertStatus(await request(`/api/v1/assistant/plans/${after.plan.id}/apply`, { method: "POST", body: {} }), 200);
+    const versionCount = await count("SELECT COUNT(*) AS count FROM routine_versions WHERE routine_id = ?", after.plan.id);
+    await database.prepare(`UPDATE assistant_change_plans
+      SET status = 'applying', applied_version_id = NULL, updated_at = ? WHERE id = ?`)
+      .bind(expiredAt, after.plan.id).run();
+
+    assertStatus(await request(`/api/v1/assistant/plans/${after.plan.id}/apply`, { method: "POST", body: {} }), 200);
+    assert.equal(await count("SELECT COUNT(*) AS count FROM routines WHERE id = ? AND owner_email = ?", after.plan.id, ownerEmail), 1);
+    assert.equal(await count("SELECT COUNT(*) AS count FROM routine_versions WHERE routine_id = ?", after.plan.id), versionCount);
+    assert.equal((await first("SELECT status FROM assistant_change_plans WHERE id = ?", after.plan.id))?.status, "applied");
+  });
+
+  await context.test("a new-routine plan becomes stale when its code is claimed before Apply", async () => {
+    const exercise = await createExercise("Coach Claimed Code Exercise");
+    const { plan } = await stageRoutineCreation({ code: "COACH-CLAIMED", exercise });
+    assertStatus(await request("/api/v1/routines", {
+      method: "POST",
+      body: { code: "COACH-CLAIMED", version: singleSetRoutine(exercise.id, "Claimed first") },
+    }), 201);
+
+    assertStatus(await request(`/api/v1/assistant/plans/${plan.id}/apply`, { method: "POST", body: {} }), 409);
+    assert.equal((await first("SELECT status FROM assistant_change_plans WHERE id = ?", plan.id))?.status, "stale");
+    assert.equal(await count("SELECT COUNT(*) AS count FROM routines WHERE owner_email = ? AND code = 'COACH-CLAIMED'", ownerEmail), 1);
+    assert.equal(await count("SELECT COUNT(*) AS count FROM routine_versions WHERE routine_id = ?", plan.id), 0);
+  });
+
+  await context.test("an unavailable exercise makes routine creation stale without leaving an orphan", async () => {
+    const exercise = await createExercise("Coach Archived Routine Exercise");
+    const { plan } = await stageRoutineCreation({ code: "COACH-ARCHIVED", exercise });
+    assertStatus(await request(`/api/v1/exercises/${encodeURIComponent(exercise.id)}`, { method: "DELETE" }), 200);
+
+    assertStatus(await request(`/api/v1/assistant/plans/${plan.id}/apply`, { method: "POST", body: {} }), 409);
+    assert.equal((await first("SELECT status FROM assistant_change_plans WHERE id = ?", plan.id))?.status, "stale");
+    assert.equal(await count("SELECT COUNT(*) AS count FROM routines WHERE owner_email = ? AND code = 'COACH-ARCHIVED'", ownerEmail), 0);
+    assert.equal(await count("SELECT COUNT(*) AS count FROM routine_versions WHERE routine_id = ?", plan.id), 0);
   });
 
   await context.test("one routine request stages an exact review card without creating a version", async () => {

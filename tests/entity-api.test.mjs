@@ -103,12 +103,13 @@ test("runs an owner-scoped coaching assistant with strict review cards and user-
   assert.match(toolLoop, /repeatedCallCount >= repeatedCallLimit/);
   assert.match(toolLoop, /proposalStaged = true/);
   assert.match(toolLoop, /forceFinalResponse = true/);
-  assert.match(assistant, /isProposalTool: \(name\) => \["propose_routine_change", "propose_exercise_change"\]\.includes\(name\)/);
+  assert.match(assistant, /isProposalTool: \(name\) => \["propose_new_routine", "propose_routine_change", "propose_exercise_change"\]\.includes\(name\)/);
   assert.match(toolLoop, /forceFinalResponse \? "none" : "auto"/);
   assert.match(toolLoop, /response\.status === "incomplete"/);
   assert.match(toolLoop, /response\.status !== "completed"/);
   assert.match(toolLoop, /reason === "max_output_tokens"/);
   assert.match(assistant, /strict: true/);
+  assert.match(assistant, /propose_new_routine/);
   assert.match(assistant, /propose_routine_change/);
   assert.match(assistant, /Change review policy \(always follow this policy\)/);
   assert.match(assistant, /read-only tools to inspect and verify/);
@@ -119,11 +120,13 @@ test("runs an owner-scoped coaching assistant with strict review cards and user-
   assert.match(assistant, /asks only for advice or options.*without staging a review card/is);
   assert.match(assistant, /sourceRoutineExerciseId/);
   assert.match(assistant, /sourceRoutineSetId/);
+  assert.match(assistant, /sourceRoutineExerciseId: \{ type: "null"/);
+  assert.match(assistant, /sourceRoutineSetId: \{ type: "null"/);
   assert.match(assistant, /required: \["sourceRoutineExerciseId", "exerciseId"/);
   assert.match(assistant, /"sourceRoutineSetId", "position", "setType"/);
   assert.match(assistant, /only approval actions that mutate domain data/);
   assert.match(assistant, /prior chat approval is not required/);
-  assert.match(assistant, /cannot create or publish a routine version or change the current routine/);
+  assert.match(assistant, /cannot create or publish the routine/);
   assert.match(assistant, /status: "ready_for_review"/);
   assert.doesNotMatch(assistant, /explicit approval in a later message/);
   assert.doesNotMatch(assistant, /Only after the user explicitly approves a plan/);
@@ -135,6 +138,10 @@ test("runs an owner-scoped coaching assistant with strict review cards and user-
   assert.match(assistant, /status = 'stale'/);
   assert.match(assistant, /createVersion/);
   assert.match(assistant, /services\.routines\.publish/);
+  assert.match(assistant, /services\.routines\.create\(user\.email, plan\.routineCode, proposed, plan\.routineId\)/);
+  assert.match(assistant, /routineCreationApplyLeaseMs = 60_000/);
+  assert.match(assistant, /recoverRoutineCreationPlan/);
+  assert.match(assistant, /services\.routines\.deleteUnpublished/);
   assert.match(assistant, /services\.routines\.publish\([^;]*plan\.baseVersionId/s);
   assert.match(assistant, /publish && !publishedRoutine/);
   assert.match(assistant, /services\.exercises\.create/);
@@ -169,6 +176,7 @@ test("runs an owner-scoped coaching assistant with strict review cards and user-
     "get_exercise",
     "get_workout_history",
     "get_active_workout",
+    "propose_new_routine",
     "propose_routine_change",
     "propose_exercise_change",
   ]);

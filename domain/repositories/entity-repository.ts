@@ -46,7 +46,8 @@ export interface ExerciseRepository {
 export interface RoutineRepository {
   listRoutineAggregates(ownerEmail: string, includeArchived?: boolean): Promise<RoutineAggregate[]>;
   getRoutineAggregate(ownerEmail: string, idOrCode: string): Promise<RoutineAggregate | null>;
-  createRoutine(ownerEmail: string, code: string, input: RoutineVersionInput): Promise<RoutineAggregate>;
+  createRoutine(ownerEmail: string, code: string, input: RoutineVersionInput, requestedId?: string): Promise<RoutineAggregate>;
+  deleteUnpublishedRoutine(ownerEmail: string, idOrCode: string): Promise<boolean>;
   updateRoutineIdentity(ownerEmail: string, idOrCode: string, input: { code?: string; isActive?: boolean }): Promise<Routine | null>;
   listRoutineVersions(ownerEmail: string, idOrCode: string): Promise<RoutineVersion[]>;
   getRoutineVersion(ownerEmail: string, idOrCode: string, versionId: string): Promise<RoutineVersion | null>;

@@ -263,7 +263,7 @@ async function handleRoutines({ request, user, segments }: RouteContext) {
     }
     if (request.method === "POST") {
       try {
-        const payload = await readJson<{ code?: string; version?: never }>(request);
+        const payload = await readJson<{ code?: string; version?: RoutineVersionInput }>(request);
         if (!payload.code || !payload.version) {
           return apiError(request, 400, "routine_fields_required", "Routine code and version are required.");
         }

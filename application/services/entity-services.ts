@@ -149,8 +149,16 @@ export class RoutineService {
   constructor(private readonly repository: EntityRepository) {}
   list(ownerEmail: string, includeArchived = false) { return this.repository.listRoutineAggregates(ownerEmail, includeArchived); }
   get(ownerEmail: string, idOrCode: string) { return this.repository.getRoutineAggregate(ownerEmail, idOrCode); }
-  create(ownerEmail: string, code: string, input: RoutineVersionInput) {
-    return this.repository.createRoutine(ownerEmail, cleanRequired(code, "Routine code", 20).toUpperCase(), validateRoutineVersionInput(input));
+  create(ownerEmail: string, code: string, input: RoutineVersionInput, requestedId?: string) {
+    return this.repository.createRoutine(
+      ownerEmail,
+      cleanRequired(code, "Routine code", 20).toUpperCase(),
+      validateRoutineVersionInput(input),
+      requestedId,
+    );
+  }
+  deleteUnpublished(ownerEmail: string, idOrCode: string) {
+    return this.repository.deleteUnpublishedRoutine(ownerEmail, idOrCode);
   }
   updateIdentity(ownerEmail: string, idOrCode: string, input: { code?: string; isActive?: boolean }) {
     if (input.isActive !== undefined && typeof input.isActive !== "boolean") {

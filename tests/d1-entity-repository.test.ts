@@ -40,9 +40,16 @@ class SqliteStatement {
 }
 
 class SqliteD1 {
+  private nextBatchHook: (() => void) | null = null;
   constructor(private database: DatabaseSync) {}
   prepare(sql: string) { return new SqliteStatement(this.database, sql); }
-  async batch(statements: SqliteStatement[]) { return Promise.all(statements.map((statement) => statement.run())); }
+  beforeNextBatch(hook: () => void) { this.nextBatchHook = hook; }
+  async batch(statements: SqliteStatement[]) {
+    const hook = this.nextBatchHook;
+    this.nextBatchHook = null;
+    hook?.();
+    return Promise.all(statements.map((statement) => statement.run()));
+  }
 }
 
 const singleSetRoutine = (exerciseId: string, focus: string): RoutineVersionInput => ({
@@ -424,7 +431,8 @@ test("D1 entity repository seeds, versions, publishes, materializes, discards, a
   const directory = await mkdtemp(join(tmpdir(), "workout-d1-repository-"));
   const database = join(directory, "repository.sqlite");
   const sqlite = new DatabaseSync(database);
-  const d1 = new SqliteD1(sqlite) as unknown as D1Database;
+  const sqliteD1 = new SqliteD1(sqlite);
+  const d1 = sqliteD1 as unknown as D1Database;
   const owner = "owner@example.com";
   try {
     await ensureEntitySchema(d1);
@@ -444,6 +452,59 @@ test("D1 entity repository seeds, versions, publishes, materializes, discards, a
     assert.ok(seededExercises.every((exercise) => !exercise.isFavorite));
     assert.equal(seededRoutines.length, 4);
     assert.ok(seededRoutines.every((routine) => routine.currentVersion?.status === "published"));
+
+    await assert.rejects(
+      () => repository.createRoutine(
+        owner,
+        "BROKEN",
+        singleSetRoutine("missing-exercise", "Must not persist"),
+        "requested-broken-routine-id",
+      ),
+      /unavailable exercise/i,
+    );
+    assert.equal(await repository.getRoutineAggregate(owner, "BROKEN"), null);
+    assert.equal(
+      (await d1.prepare("SELECT COUNT(*) AS count FROM routine_versions WHERE routine_id = ?")
+        .bind("requested-broken-routine-id").first<{ count: number }>())?.count,
+      0,
+    );
+
+    const cleanupRaceRoutine = await repository.createRoutine(
+      owner,
+      "CLEANUP-RACE",
+      singleSetRoutine(seededExercises[0]!.id, "Cleanup race"),
+      "cleanup-race-routine-id",
+    );
+    const cleanupRaceVersionId = cleanupRaceRoutine.currentVersionId!;
+    await d1.prepare("UPDATE routines SET current_version_id = NULL WHERE id = ? AND owner_email = ?")
+      .bind(cleanupRaceRoutine.id, owner).run();
+    await d1.prepare("UPDATE routine_versions SET status = 'draft', published_at = NULL WHERE id = ? AND owner_email = ?")
+      .bind(cleanupRaceVersionId, owner).run();
+    sqliteD1.beforeNextBatch(() => {
+      sqlite.prepare("UPDATE routines SET current_version_id = ? WHERE id = ? AND owner_email = ?")
+        .run(cleanupRaceVersionId, cleanupRaceRoutine.id, owner);
+      sqlite.prepare("UPDATE routine_versions SET status = 'published', published_at = ? WHERE id = ? AND owner_email = ?")
+        .run(new Date().toISOString(), cleanupRaceVersionId, owner);
+    });
+
+    assert.equal(await repository.deleteUnpublishedRoutine(owner, cleanupRaceRoutine.id), false);
+    assert.equal((await repository.getRoutineAggregate(owner, cleanupRaceRoutine.id))?.currentVersionId, cleanupRaceVersionId);
+    assert.equal(
+      (await d1.prepare("SELECT COUNT(*) AS count FROM routine_versions WHERE id = ?")
+        .bind(cleanupRaceVersionId).first<{ count: number }>())?.count,
+      1,
+    );
+    assert.equal(
+      (await d1.prepare("SELECT COUNT(*) AS count FROM routine_version_exercises WHERE routine_version_id = ?")
+        .bind(cleanupRaceVersionId).first<{ count: number }>())?.count,
+      1,
+    );
+    assert.equal(
+      (await d1.prepare(`SELECT COUNT(*) AS count FROM routine_set_templates WHERE routine_exercise_id IN (
+        SELECT id FROM routine_version_exercises WHERE routine_version_id = ?
+      )`).bind(cleanupRaceVersionId).first<{ count: number }>())?.count,
+      1,
+    );
 
     const machinePress = seededExercises.find((exercise) => exercise.name === "Machine chest press")!;
     assert.equal((await repository.setExerciseFavorite(owner, machinePress.id, true))?.isFavorite, true);

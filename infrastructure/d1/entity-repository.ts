@@ -520,17 +520,50 @@ export class D1EntityRepository implements EntityRepository {
     return (await this.loadVersion(ownerEmail, routineId, versionId))!;
   }
 
-  async createRoutine(ownerEmail: string, code: string, input: RoutineVersionInput) {
+  async createRoutine(ownerEmail: string, code: string, input: RoutineVersionInput, requestedId?: string) {
     await this.ready(ownerEmail);
     const now = new Date().toISOString();
-    const routineId = crypto.randomUUID();
+    const routineId = requestedId ?? crypto.randomUUID();
     await this.d1.prepare(`INSERT INTO routines (
       id, owner_email, code, version, focus, summary, duration_min, current_version_id,
       is_active, created_at, updated_at
     ) VALUES (?, ?, ?, 1, ?, ?, ?, NULL, 1, ?, ?)`)
       .bind(routineId, ownerEmail, code, input.focus, input.summary, input.durationMin, now, now).run();
-    const version = await this.insertVersion(ownerEmail, routineId, 1, input);
-    return (await this.publishRoutineVersion(ownerEmail, routineId, version.id))!;
+    try {
+      const version = await this.insertVersion(ownerEmail, routineId, 1, input);
+      const published = await this.publishRoutineVersion(ownerEmail, routineId, version.id);
+      if (!published) throw new Error("The new routine could not be published.");
+      return published;
+    } catch (error) {
+      await this.deleteUnpublishedRoutine(ownerEmail, routineId);
+      throw error;
+    }
+  }
+
+  async deleteUnpublishedRoutine(ownerEmail: string, idOrCode: string) {
+    await this.ready(ownerEmail);
+    const routine = await this.routineRow(ownerEmail, idOrCode);
+    if (!routine || routine.currentVersionId !== null) return false;
+    const routineId = String(routine.id);
+    const results = await this.d1.batch([
+      this.d1.prepare(`DELETE FROM routine_set_templates WHERE routine_exercise_id IN (
+        SELECT rve.id FROM routine_version_exercises rve
+        INNER JOIN routine_versions rv ON rv.id = rve.routine_version_id
+        INNER JOIN routines r ON r.id = rv.routine_id AND r.owner_email = rv.owner_email
+        WHERE r.id = ? AND r.owner_email = ? AND r.current_version_id IS NULL
+      )`).bind(routineId, ownerEmail),
+      this.d1.prepare(`DELETE FROM routine_version_exercises WHERE routine_version_id IN (
+        SELECT rv.id FROM routine_versions rv
+        INNER JOIN routines r ON r.id = rv.routine_id AND r.owner_email = rv.owner_email
+        WHERE r.id = ? AND r.owner_email = ? AND r.current_version_id IS NULL
+      )`).bind(routineId, ownerEmail),
+      this.d1.prepare(`DELETE FROM routine_versions WHERE routine_id IN (
+        SELECT id FROM routines WHERE id = ? AND owner_email = ? AND current_version_id IS NULL
+      )`).bind(routineId, ownerEmail),
+      this.d1.prepare("DELETE FROM routines WHERE id = ? AND owner_email = ? AND current_version_id IS NULL")
+        .bind(routineId, ownerEmail),
+    ]);
+    return Number(results.at(-1)?.meta.changes ?? 0) === 1;
   }
 
   async updateRoutineIdentity(ownerEmail: string, idOrCode: string, input: { code?: string; isActive?: boolean }) {

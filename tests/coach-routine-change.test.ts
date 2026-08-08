@@ -3,7 +3,9 @@ import test from "node:test";
 import type { RoutineAggregate, RoutineExercise, RoutineSet } from "../domain/entities";
 import {
   buildRoutineChangeDiff,
+  buildRoutineCreationDiff,
   completeRoutineChangeProposal,
+  completeRoutineCreationProposal,
   isRoutineVersionSemanticallyEqual,
   type CoachRoutineProposal,
 } from "../server/coach-routine-change";
@@ -130,6 +132,51 @@ const library = [
   { id: "squat", name: "Back Squat" },
   { id: "deadlift", name: "Conventional Deadlift" },
 ];
+
+test("validates and fully discloses a brand-new routine proposal", () => {
+  const proposed = proposal([
+    proposedExercise({
+      sourceRoutineExerciseId: null,
+      exerciseId: "deadlift",
+      instructions: "Keep the bar close.",
+      notes: "Reset every rep.",
+      sets: [proposedSet(null, { tempo: "2-1-1", restAfterSec: 120 })],
+    }),
+  ]);
+  const completed = completeRoutineCreationProposal(proposed);
+
+  assert.equal(completed.proposal.exercises[0]?.sourceRoutineExerciseId, null);
+  assert.equal(completed.proposal.exercises[0]?.sets[0]?.sourceRoutineSetId, null);
+  assert.doesNotMatch(JSON.stringify(completed.input), /sourceRoutine(?:Exercise|Set)Id/);
+
+  const text = buildRoutineCreationDiff("PULL-2", completed.proposal, library).join("\n");
+  assert.match(text, /Create routine code "PULL-2"/i);
+  assert.match(text, /Routine name[\s\S]*none[\s\S]*"Strength"/i);
+  assert.match(text, /Routine summary[\s\S]*Heavy compounds/i);
+  assert.match(text, /duration[\s\S]*60/i);
+  assert.match(text, /Add "Conventional Deadlift"[\s\S]*position=1/i);
+  assert.match(text, /instructions="Keep the bar close\."/i);
+  assert.match(text, /notes="Reset every rep\."/i);
+  assert.match(text, /add set[\s\S]*rest seconds=120[\s\S]*tempo="2-1-1"/i);
+});
+
+test("requires null source identities for every new routine placement and set", () => {
+  assert.throws(
+    () => completeRoutineCreationProposal(proposal()),
+    /new routine must have a null source routine exercise ID/i,
+  );
+
+  const oldSet = proposal([
+    proposedExercise({
+      sourceRoutineExerciseId: null,
+      sets: [proposedSet("set-from-another-routine")],
+    }),
+  ]);
+  assert.throws(
+    () => completeRoutineCreationProposal(oldSet),
+    /new routine must have a null source routine set ID/i,
+  );
+});
 
 test("discloses every routine and exercise-placement field with exact text", () => {
   const proposed = proposal([
