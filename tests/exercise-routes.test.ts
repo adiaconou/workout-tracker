@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { resolveHref } from "expo-router/build/link/href.js";
-import { exerciseDetailHref, exerciseIdFromParam } from "../src/features/exercises/exercise-routes";
+import { exerciseDetailHref, exerciseIdFromParam } from "../src/client/exercises/exercise-routes";
 
 function roundTripThroughExpo(exerciseId: string) {
   const href = resolveHref(exerciseDetailHref(exerciseId));

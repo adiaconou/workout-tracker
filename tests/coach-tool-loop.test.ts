@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runCoachToolLoop, type CoachResponse } from "../server/coach-tool-loop";
+import { runCoachToolLoop, type CoachResponse } from "../src/server/coach/tool-loop";
 
 const formatError = (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback;
 

@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { WorkoutSet } from "../domain/entities";
+import type { WorkoutSet } from "../src/domain/entities";
 import {
   formatHistoryDuration,
   formatSetResult,
   historyRangeStart,
   historyStatusLabel,
-} from "../src/features/history/history-format";
+} from "../src/client/history/history-format";
 
 test("formats history ranges, durations, and completion states", () => {
   assert.equal(

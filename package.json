@@ -7,13 +7,18 @@
   },
   "scripts": {
     "dev": "expo start --web",
-    "dev:api": "wrangler dev worker/index.ts --assets dist/client --binding OWNER_EMAIL=owner@example.com --binding AUTH_SESSION_SECRET=local-development-secret-change-me --binding GOOGLE_WEB_CLIENT_ID=local-development.apps.googleusercontent.com",
+    "dev:api": "wrangler dev src/worker.ts --assets dist/client --binding OWNER_EMAIL=owner@example.com --binding AUTH_SESSION_SECRET=local-development-secret-change-me --binding GOOGLE_WEB_CLIENT_ID=local-development.apps.googleusercontent.com",
     "android": "expo run:android",
     "prebuild:android": "expo prebuild --platform android",
     "build": "node scripts/build-sites.mjs",
     "build:web": "expo export --platform web --output-dir dist/client --clear",
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck && node --test tests/*.test.mjs && node --import tsx --test tests/*.test.ts",
+    "test": "npm run typecheck && npm run test:coverage",
+    "lint": "npm run lint:architecture",
+    "lint:architecture": "node scripts/check-boundaries.mjs",
+    "test:architecture": "npm run lint:architecture",
+    "test:run": "node scripts/run-tests.mjs",
+    "test:coverage": "npm run lint:architecture && c8 --config .c8rc.json npm run test:run",
     "start": "expo start",
     "db:generate": "drizzle-kit generate"
   },
@@ -44,6 +49,7 @@
   "devDependencies": {
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
+    "c8": "^12.0.0",
     "drizzle-kit": "0.31.10",
     "esbuild": "^0.28.1",
     "tsx": "^4.22.1",

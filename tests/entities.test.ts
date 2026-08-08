@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { EntityRepository } from "../domain/repositories/entity-repository";
-import type { Exercise, RoutineVersionInput } from "../domain/entities";
-import { expandLegacyPrescription, parseRestPrescription } from "../domain/prescription";
-import { homeGymExercises } from "../lib/home-gym-exercises";
+import type { EntityRepository } from "../src/domain/repositories/entity-repository";
+import type { Exercise, RoutineVersionInput } from "../src/domain/entities";
+import { expandLegacyPrescription, parseRestPrescription } from "../src/domain/prescription";
+import { homeGymExercises } from "../src/domain/home-gym-exercises";
 import {
-  ExerciseService,
-  RoutineService,
-  WorkoutService,
   validateExerciseInput,
+} from "../src/domain/exercises/validation";
+import {
   validateRoutineVersionInput,
-} from "../application/services/entity-services";
+} from "../src/domain/routines/validation";
+import { ExerciseService } from "../src/server/exercises/service";
+import { RoutineService } from "../src/server/routines/service";
+import { WorkoutService } from "../src/server/workouts/service";
 
 test("home-gym exercise catalog is valid and has no duplicate names", () => {
   assert.ok(homeGymExercises.length >= 50);

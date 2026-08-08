@@ -5,7 +5,7 @@ import {
   fallbackAssistantModels,
   isCompatibleAssistantModel,
   reasoningEffortsForModel,
-} from "../server/assistant-models";
+} from "../src/server/coach/models";
 
 test("offers model-specific reasoning effort choices", () => {
   assert.deepEqual(reasoningEffortsForModel("gpt-5.6-terra"), ["auto", "none", "low", "medium", "high", "xhigh", "max"]);

@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { RoutineAggregate, RoutineExercise, RoutineSet } from "../domain/entities";
+import type { RoutineAggregate, RoutineExercise, RoutineSet } from "../src/domain/entities";
+import { isRoutineVersionSemanticallyEqual } from "../src/domain/routines/comparison";
 import {
   buildRoutineChangeDiff,
   buildRoutineCreationDiff,
   completeRoutineChangeProposal,
   completeRoutineCreationProposal,
-  isRoutineVersionSemanticallyEqual,
   type CoachRoutineProposal,
-} from "../server/coach-routine-change";
+} from "../src/server/coach/routine-change";
 
 type ProposedExercise = CoachRoutineProposal["exercises"][number];
 type ProposedSet = ProposedExercise["sets"][number];

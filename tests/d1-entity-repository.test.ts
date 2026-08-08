@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { convertWeight } from "../domain/exercise-progress";
-import { D1EntityRepository } from "../infrastructure/d1/entity-repository";
-import { ensureEntityData, ensureEntitySchema, materializeWorkoutFromSnapshot } from "../infrastructure/d1/entity-schema";
-import { getPreviousPerformanceByExercise } from "../infrastructure/d1/previous-performance";
-import type { RoutineVersionInput } from "../domain/entities";
+import { convertWeight } from "../src/domain/exercise-progress";
+import { D1EntityRepository } from "../src/server/db/entity-repository";
+import { ensureEntityData, ensureEntitySchema, materializeWorkoutFromSnapshot } from "../src/server/db/entity-schema";
+import { getPreviousPerformanceByExercise } from "../src/server/db/previous-performance";
+import type { RoutineVersionInput } from "../src/domain/entities";
 import {
   authenticateRequest,
   createNativeSession,
@@ -16,8 +16,8 @@ import {
   isAllowedUserEmail,
   linkGoogleIdentity,
   rotateNativeSession,
-} from "../server/auth";
-import type { WorkerEnv } from "../server/types";
+} from "../src/server/auth/auth";
+import type { WorkerEnv } from "../src/server/types";
 
 type SqliteValue = null | number | bigint | string | Uint8Array;
 

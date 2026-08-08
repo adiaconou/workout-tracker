@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildCompactSetDetails } from "../src/features/workouts/set-guidance";
+import { buildCompactSetDetails } from "../src/client/workouts/set-guidance";
 
 test("removes the duplicate guidance shown by normalized workout fallbacks", () => {
   const details = buildCompactSetDetails({

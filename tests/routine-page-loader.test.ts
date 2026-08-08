@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { BootstrapPayload, WorkoutHistoryPage } from "../src/api/types";
+import type { BootstrapPayload, WorkoutHistoryPage } from "../src/contracts/api";
 import {
   loadRoutinePageData,
   type RoutinePageRequest,
-} from "../src/features/routines/routine-page-loader";
+} from "../src/client/routines/routine-page-loader";
 
 const bootstrap = { routines: [] } as unknown as BootstrapPayload;
 const history: WorkoutHistoryPage = {

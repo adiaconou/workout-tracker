@@ -7,25 +7,21 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "paths": {
-      "@/*": ["./*"]
+      "@/*": ["./src/*"]
     },
     "types": ["node"]
   },
   "include": [
-    "app/**/*.ts",
-    "app/**/*.tsx",
     "src/**/*.ts",
     "src/**/*.tsx",
-    "server/**/*.ts",
-    "worker/**/*.ts",
-    "domain/**/*.ts",
-    "application/**/*.ts",
-    "infrastructure/**/*.ts",
-    "lib/**/*.ts",
-    "db/**/*.ts",
     "tests/**/*.ts",
     "expo-env.d.ts",
     "cloudflare.d.ts"
   ],
-  "exclude": ["node_modules", "dist", "legacy"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "legacy",
+    "src/features/routines/routine-detail-screen (1).tsx"
+  ]
 }

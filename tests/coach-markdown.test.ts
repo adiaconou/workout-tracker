@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   isSafeCoachMarkdownLink,
   sanitizeCoachMarkdown,
-} from "../src/features/coach/coach-markdown-policy";
+} from "../src/client/coach/coach-markdown-policy";
 
 test("allows absolute HTTP and HTTPS links from Coach markdown", () => {
   assert.equal(isSafeCoachMarkdownLink("https://example.com/training?q=upper#sets"), true);

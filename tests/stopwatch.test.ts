@@ -4,7 +4,7 @@ import {
   formatStopwatch,
   getStopwatchElapsedMs,
   getStopwatchSeconds,
-} from "../src/features/workouts/stopwatch";
+} from "../src/client/workouts/stopwatch";
 
 test("keeps paused stopwatch time and advances a running stopwatch from its anchor", () => {
   assert.equal(getStopwatchElapsedMs(null, 12_345, 99_999), 12_345);

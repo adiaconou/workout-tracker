@@ -7,7 +7,7 @@ import {
   parseStoredEquipmentPreferences,
   trainingProfileFromStored,
   validateTrainingProfileInput,
-} from "../domain/training-profile";
+} from "../src/domain/training-profile";
 
 test("validates and normalizes onboarding training preferences", () => {
   assert.deepEqual(validateTrainingProfileInput({

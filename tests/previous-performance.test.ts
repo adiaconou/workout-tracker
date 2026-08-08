@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatPreviousSetPerformance } from "../src/features/workouts/previous-performance";
+import { formatPreviousSetPerformance } from "../src/client/workouts/previous-performance";
 
 test("formats a previous weight and rep result", () => {
   assert.equal(formatPreviousSetPerformance({

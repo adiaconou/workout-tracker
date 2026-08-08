@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { sanitizeCoachMarkdown } from "../src/features/coach/coach-markdown-policy";
+import { sanitizeCoachMarkdown } from "../src/client/coach/coach-markdown-policy";
 // The exact renderer version ships this parser source; importing it directly
 // makes this test an intentional upgrade canary for its web/WASM semantics.
 import * as parserModule from "../node_modules/react-native-enriched-markdown/src/web/parseMarkdown";

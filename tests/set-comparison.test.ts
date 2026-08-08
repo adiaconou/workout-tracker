@@ -5,7 +5,7 @@ import {
   liveSetComparisonPerformance,
   type ComparisonPerformance,
   type ComparisonSet,
-} from "../src/features/workouts/set-comparison";
+} from "../src/client/workouts/set-comparison";
 
 const repsSet: ComparisonSet = {
   loadType: "external",

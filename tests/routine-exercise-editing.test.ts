@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { Exercise, RoutineVersion } from "../domain/entities";
+import type { Exercise, RoutineVersion } from "../src/domain/entities";
 import {
   createRoutineExerciseFromLibrary,
   duplicateRoutineSet,
@@ -9,7 +9,7 @@ import {
   moveRoutineExercise,
   removeRoutineExercise,
   routineVersionInputFromEditable,
-} from "../src/features/routines/routine-exercise-editing";
+} from "../src/client/routines/routine-exercise-editing";
 
 function versionFixture(): RoutineVersion {
   const common = {

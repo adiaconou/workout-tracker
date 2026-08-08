@@ -6,11 +6,11 @@ import {
   feetAndInchesToCentimeters,
   kilogramsToPounds,
   poundsToKilograms,
-} from "../domain/profile";
-import { ensureAppUser } from "../server/auth";
-import { getUserProfile, updateUserProfile } from "../server/profile";
-import type { WorkerEnv } from "../server/types";
-import { ensureEntitySchema } from "../infrastructure/d1/entity-schema";
+} from "../src/domain/profile";
+import { ensureAppUser } from "../src/server/auth/auth";
+import { getUserProfile, updateUserProfile } from "../src/server/profile/profile";
+import type { WorkerEnv } from "../src/server/types";
+import { ensureEntitySchema } from "../src/server/db/entity-schema";
 
 type SqliteValue = null | number | bigint | string | Uint8Array;
 

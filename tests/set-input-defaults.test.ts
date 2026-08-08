@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getSetInputDefaults } from "../src/features/workouts/set-input-defaults";
+import { getSetInputDefaults } from "../src/client/workouts/set-input-defaults";
 
 test("starts new external-load exercises with empty inputs", () => {
   assert.deepEqual(

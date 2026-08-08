@@ -4,7 +4,7 @@ import {
   profileDisplayName,
   profileInitials,
   safeProfilePhotoUrl,
-} from "../src/components/profile-display";
+} from "../src/client/auth/profile-display";
 
 test("uses the IdP display name and produces compact initials", () => {
   assert.equal(profileDisplayName("Alex Diaconou", "alex@example.com"), "Alex Diaconou");

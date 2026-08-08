@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { GuidedSet } from "../lib/workout";
-import { buildWorkoutExerciseProgress } from "../src/features/workouts/workout-progress";
+import type { GuidedSet } from "../src/domain/workout";
+import { buildWorkoutExerciseProgress } from "../src/client/workouts/workout-progress";
 
 function set(
   globalIndex: number,

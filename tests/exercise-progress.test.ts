@@ -6,7 +6,7 @@ import {
   convertWeight,
   epleyEstimatedOneRepMax,
   type ExerciseProgressCandidate,
-} from "../domain/exercise-progress";
+} from "../src/domain/exercise-progress";
 
 function candidate(
   overrides: Partial<ExerciseProgressCandidate> = {},

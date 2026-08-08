@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { stepNumericText } from "../src/components/stepper-value";
+import { stepNumericText } from "../src/client/ui/stepper-value";
 
 test("steps whole-number rep values up and down by one", () => {
   assert.equal(stepNumericText("8", 1), "9");

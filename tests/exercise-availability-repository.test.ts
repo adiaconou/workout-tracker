@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { D1EntityRepository } from "../infrastructure/d1/entity-repository";
-import { ensureEntityData, ensureEntitySchema } from "../infrastructure/d1/entity-schema";
+import { D1EntityRepository } from "../src/server/db/entity-repository";
+import { ensureEntityData, ensureEntitySchema } from "../src/server/db/entity-schema";
 
 type SqliteValue = null | number | bigint | string | Uint8Array;
 

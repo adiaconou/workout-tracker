@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { validateGoogleClaims } from "../server/google";
+import { validateGoogleClaims } from "../src/server/auth/google";
 import {
   generateRefreshToken,
   hashRefreshToken,
   issueAccessToken,
   verifyAccessToken,
-} from "../server/session-tokens";
+} from "../src/server/auth/session-tokens";
 
 const AUDIENCE = "workout-web-client.apps.googleusercontent.com";
 const SECRET = "test-session-secret-with-at-least-thirty-two-bytes";

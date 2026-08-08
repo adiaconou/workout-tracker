@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { exerciseProgressRangeStart } from "../src/features/exercises/exercise-progress-range";
+import { exerciseProgressRangeStart } from "../src/client/exercises/exercise-progress-range";
 
 test("clamps progress ranges at short month boundaries", () => {
   const start = exerciseProgressRangeStart("3m", new Date(2026, 4, 31, 12, 30));

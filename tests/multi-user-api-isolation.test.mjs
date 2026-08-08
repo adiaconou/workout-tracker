@@ -67,7 +67,7 @@ const versionInput = (version) => ({
 test("allowed ChatGPT users have isolated seeded data, resources, workouts, and coach state", async (context) => {
   const bundle = await build({
     absWorkingDir: root,
-    entryPoints: [fileURLToPath(new URL("../worker/index.ts", import.meta.url))],
+    entryPoints: [fileURLToPath(new URL("../src/worker.ts", import.meta.url))],
     bundle: true,
     write: false,
     format: "esm",

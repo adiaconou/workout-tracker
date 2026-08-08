@@ -18,15 +18,16 @@ Expo Android app ─ Google ID token ─┐
 Expo web app ─ ChatGPT identity ────┘
 ```
 
-- `app/` contains Expo Router routes for Android and web.
-- `src/` contains shared React Native screens, UI, authentication, and API code.
-- `server/` and `worker/` expose the framework-neutral `/api/v1` API and serve
-  the Expo web export.
-- `domain/`, `application/`, and `infrastructure/d1/` contain the shared entity,
-  business-rule, and persistence layers.
-- `lib/` contains workout execution, recommendation, and canonical routine
-  behavior retained from the original app.
-- `db/` and `drizzle/` define and migrate the D1 schema.
+- `src/app/` contains the Expo Router composition entries for Android and web.
+- `src/client/` contains client feature verticals plus API and UI infrastructure.
+- `src/server/` and `src/worker.ts` expose `/api/v1` and serve the Expo web export.
+- `src/domain/` contains framework-free business concepts shared by features.
+- `src/contracts/` contains type-only client/server transport shapes.
+- `src/server/db/` owns D1 adapters; `drizzle/` contains generated migrations.
+
+The complete placement and dependency rules are in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and are mechanically enforced by
+`npm run lint:architecture`.
 
 ## Authentication
 
@@ -98,9 +99,9 @@ npm run build
 npx expo-doctor
 ```
 
-`npm test` typechecks the shared Expo/Worker source and runs entity,
-prescription, D1 repository, migration, authentication, API-contract, and
-recommendation tests.
+`npm test` typechecks the project, lints architecture boundaries, runs the full
+behavioral suite, and enforces 100% per-file coverage for executable unit
+modules.
 
 EAS build profiles are defined in `eas.json`:
 

@@ -123,7 +123,7 @@ function responseTool(id, callId, name, argumentsValue) {
 test("Coach review cards are single-approval and enforce owner, state, and revision boundaries", async (context) => {
   const bundle = await build({
     absWorkingDir: root,
-    entryPoints: [fileURLToPath(new URL("../worker/index.ts", import.meta.url))],
+    entryPoints: [fileURLToPath(new URL("../src/worker.ts", import.meta.url))],
     bundle: true,
     write: false,
     format: "esm",

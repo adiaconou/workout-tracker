@@ -5,7 +5,7 @@ import {
   routineDurationLabel,
   routineElapsedLabel,
   routineLastDoneLabel,
-} from "../src/features/routines/routine-card-format";
+} from "../src/client/routines/routine-card-format";
 
 const NOW = new Date("2026-08-02T12:00:00.000Z");
 

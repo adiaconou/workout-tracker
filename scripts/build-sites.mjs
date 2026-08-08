@@ -43,7 +43,7 @@ await writeFile(
 
 await mkdir("dist/server", { recursive: true });
 await build({
-  entryPoints: ["worker/index.ts"],
+  entryPoints: ["src/worker.ts"],
   outfile: "dist/server/index.js",
   bundle: true,
   format: "esm",

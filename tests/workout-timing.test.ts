@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { Workout } from "../src/api/types";
+import type { Workout } from "../src/contracts/api";
 import {
   formatElapsedDuration,
   summarizeWorkoutTiming,
-} from "../src/features/workouts/workout-timing";
+} from "../src/client/workouts/workout-timing";
 
 test("formats compact elapsed durations without hiding seconds", () => {
   assert.equal(formatElapsedDuration(0), "0s");

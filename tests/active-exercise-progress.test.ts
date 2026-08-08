@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   buildLineChartGeometry,
   progressTrend,
-} from "../src/features/workouts/active-exercise-progress";
+} from "../src/client/workouts/active-exercise-progress";
 
 test("classifies empty, one-point, equal, rising, and falling progress", () => {
   assert.equal(progressTrend([]), "empty");

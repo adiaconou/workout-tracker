@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { Exercise } from "../domain/entities";
+import type { Exercise } from "../src/domain/entities";
 import {
   buildExerciseChangeDiff,
   completeExerciseInput,
   exerciseInputSnapshot,
-} from "../server/coach-exercise-change";
+} from "../src/server/coach/exercise-change";
 
 function exercise(overrides: Partial<Exercise> = {}): Exercise {
   return {

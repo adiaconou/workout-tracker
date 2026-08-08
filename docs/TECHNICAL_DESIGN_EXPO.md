@@ -11,7 +11,7 @@ The product will use one Expo Router application for Android and web. The
 hosted web build and the installed Android app will call the same versioned
 Cloudflare Worker API and share the same D1 workout records.
 
-The existing domain entities, application services, D1 repository, canonical
+The existing domain entities, capability services, D1 repository, canonical
 routine seed data, recommendation rules, and immutable workout snapshots remain
 the durable core. The Next/Vinext user interface and route handlers are replaced
 by:
@@ -41,7 +41,7 @@ by:
                     └─────────────┬─────────────┘
                                   ▼
                ┌────────────────────────────────────┐
-               │ Application services + D1 repo     │
+               │ Capability services + D1 repo      │
                │ exercises / routines / workouts    │
                │ recommendations / timer state      │
                └──────────────────┬─────────────────┘
@@ -54,28 +54,38 @@ by:
 ## 3. Repository layout
 
 ```text
-app/                         Expo Router routes
 src/
-  auth/                      session provider and Google native adapter
-  api/                       typed API client and durable pending-write queue
-  components/                shared React Native UI primitives
-  features/
-    routines/                list, recommendation, detail, and editing
-    workouts/                guided sets, rest timer, completion
-    exercises/               compact searchable library and detail
-  theme/                     dark tokens and responsive layout helpers
-server/
-  api.ts                     versioned Worker HTTP router
-  auth.ts                    ChatGPT/Google/API-session authentication
-  google.ts                  Google ID-token verification
-  sessions.ts                access and rotating refresh-token lifecycle
-domain/                      platform-independent entity types
-application/                 entity validation and services
-infrastructure/d1/           D1 repository and compatibility seeding
-lib/                         canonical routines, workout rules, recommendations
-worker/index.ts              API and static Expo web entry point
-scripts/build-sites.mjs      Expo web + Worker deployment build
+  app/                       Expo Router route adapters and composition
+  client/
+    api/                     typed API client and durable pending-write queue
+    auth/                    session lifecycle and Google native adapter
+    ui/                      shared React Native primitives and tokens
+    coach/                   Coach screen and view models
+    exercises/               library, detail, and progress UI
+    history/                 workout history UI
+    onboarding/              training setup UI
+    profile/                 profile state and UI
+    routines/                list, recommendation, detail, and editing UI
+    workouts/                guided sets, rest timer, and completion UI
+  contracts/                 serialized client/server API shapes
+  domain/                    framework-free entities and shared business rules
+  server/
+    router.ts                thin versioned API dispatcher
+    auth/                    identity, sessions, request policy, and routes
+    coach/                   Coach orchestration and policies
+    db/                      D1 repository, schema, and compatibility store
+    exercises/               exercise routes, request policy, and service
+    profile/                 profile and onboarding handlers
+    routines/                routine routes, request policy, and service
+    workouts/                workout routes, request policy, and service
+  worker.ts                  API and static Expo web entry point
+drizzle/                     generated migration artifacts
+scripts/                     build, test, and architecture checks
+tests/                       unit and integration tests
 ```
+
+The dependency direction and feature-placement rules are defined in
+`docs/ARCHITECTURE.md` and enforced by `npm run lint:architecture`.
 
 ## 4. Authentication and authorization
 
