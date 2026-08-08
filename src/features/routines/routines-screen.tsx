@@ -282,7 +282,18 @@ export function RoutinesScreen() {
             </>
           ) : null}
 
-          {recommendation?.recommendedRoutineCode === null ? (
+          {recommendation?.recommendationKind === "equipment_setup" ? (
+            <View style={styles.recoveryNotice}>
+              <View style={styles.recoveryMark} />
+              <View style={styles.recoveryCopy}>
+                <Text style={styles.recoveryTitle}>Routine update needed</Text>
+                <Text style={styles.recoveryText}>{recommendation.summary}</Text>
+                <View style={styles.setupAction}>
+                  <Button title="Ask Coach to adapt them" onPress={() => router.push("/coach")} />
+                </View>
+              </View>
+            </View>
+          ) : recommendation?.recommendationKind === "recovery" ? (
             <View
               accessible
               accessibilityLabel={`Recovery suggested. ${recommendation.summary}`}
@@ -312,6 +323,9 @@ export function RoutinesScreen() {
               </View>
               {data.routines.map((routine) => {
                 const guidance = recommendation?.routines.find((item) => item.code === routine.code);
+                const guidanceLabel = guidance && !guidance.equipmentCompatible
+                  ? `Needs ${guidance.missingEquipment.join(" + ")}`
+                  : guidance?.availabilityLabel;
                 const isRecommended = routine.code === recommendation?.recommendedRoutineCode;
                 const lastDoneLabel = routineLastDoneLabel(routine.lastWorkoutAt, { now: renderedAt });
                 const durationLabel = routineDurationLabel(
@@ -331,7 +345,7 @@ export function RoutinesScreen() {
                       accessibilityRole="link"
                       accessibilityLabel={`Open Routine ${routine.code}, ${routine.focus}. ${durationLabel}, ${routine.exerciseCount} exercises, ${routine.setCount} sets${
                         isRecommended ? ". Recommended today" : ""
-                      }. ${lastDoneLabel}${guidance ? `. ${guidance.availabilityLabel}` : ""}`}
+                      }. ${lastDoneLabel}${guidanceLabel ? `. ${guidanceLabel}` : ""}`}
                       onPress={() => router.push(`/routines/${routine.code}`)}
                       onBlur={() => setFocusedAction(null)}
                       onFocus={() => setFocusedAction(`routine-${routine.code}`)}
@@ -372,8 +386,8 @@ export function RoutinesScreen() {
                               <Text style={styles.lastDone}>{lastDoneLabel}</Text>
                               {guidance ? (
                                 <AvailabilityLabel
-                                  status={guidance.availability}
-                                  label={guidance.availabilityLabel}
+                                  status={guidance.equipmentCompatible ? guidance.availability : "equipment"}
+                                  label={guidanceLabel!}
                                 />
                               ) : null}
                             </View>
@@ -391,8 +405,8 @@ export function RoutinesScreen() {
                           <View style={styles.statusCell}>
                             {guidance ? (
                               <AvailabilityLabel
-                                status={guidance.availability}
-                                label={guidance.availabilityLabel}
+                                status={guidance.equipmentCompatible ? guidance.availability : "equipment"}
+                                label={guidanceLabel!}
                               />
                             ) : <Text style={styles.value}>—</Text>}
                           </View>
@@ -552,7 +566,7 @@ function AvailabilityLabel({
   status,
   label,
 }: {
-  status: "available" | "caution" | "recovering";
+  status: "available" | "caution" | "recovering" | "equipment";
   label: string;
 }) {
   return (
@@ -567,11 +581,13 @@ function AvailabilityLabel({
         styles.availabilityDot,
         status === "caution" && styles.availabilityDotCaution,
         status === "recovering" && styles.availabilityDotRecovering,
+        status === "equipment" && styles.availabilityDotEquipment,
       ]} />
       <Text numberOfLines={2} style={[
         styles.availabilityText,
         status === "caution" && styles.availabilityTextCaution,
         status === "recovering" && styles.availabilityTextRecovering,
+        status === "equipment" && styles.availabilityTextEquipment,
       ]}>
         {label}
       </Text>
@@ -676,6 +692,7 @@ const styles = StyleSheet.create({
   recoveryCopy: { flex: 1, minWidth: 0, gap: 2 },
   recoveryTitle: { color: colors.warning, fontSize: 13, fontWeight: "800" },
   recoveryText: { color: colors.textMuted, fontSize: 12, lineHeight: 18 },
+  setupAction: { alignSelf: "flex-start", marginTop: spacing.sm },
   table: {
     overflow: "hidden",
     borderWidth: StyleSheet.hairlineWidth,
@@ -768,6 +785,7 @@ const styles = StyleSheet.create({
   availabilityDot: { width: 6, height: 6, borderRadius: radii.pill, backgroundColor: colors.success },
   availabilityDotCaution: { backgroundColor: colors.warning },
   availabilityDotRecovering: { backgroundColor: colors.danger },
+  availabilityDotEquipment: { backgroundColor: colors.warning },
   availabilityText: {
     minWidth: 0,
     color: colors.textMuted,
@@ -778,6 +796,7 @@ const styles = StyleSheet.create({
   },
   availabilityTextCaution: { color: colors.warning },
   availabilityTextRecovering: { color: colors.danger },
+  availabilityTextEquipment: { color: colors.warning },
   recentSection: { gap: spacing.sm, marginTop: spacing.xs },
   recentSectionHeader: {
     minHeight: 44,

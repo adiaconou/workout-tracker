@@ -10,6 +10,7 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { router } from "expo-router";
 import { useAuth } from "../auth/auth-context";
 import { colors, maxContentWidth, radii, spacing } from "../theme/tokens";
 import {
@@ -40,6 +41,16 @@ export function AccountHeader() {
   async function handleSignOut() {
     setOpen(false);
     await signOut();
+  }
+
+  function openProfile() {
+    setOpen(false);
+    router.push("/profile");
+  }
+
+  function openTrainingSetup() {
+    setOpen(false);
+    router.push("/onboarding");
   }
 
   return (
@@ -120,6 +131,38 @@ export function AccountHeader() {
               </View>
             </View>
             <View style={styles.menuDivider} />
+            {user.trainingProfile.onboardingCompleted ? (
+              <Pressable
+                accessibilityRole="link"
+                accessibilityLabel="Open profile and settings"
+                onBlur={() => setFocusedControl(null)}
+                onFocus={() => setFocusedControl("profile")}
+                onPress={openProfile}
+                style={({ pressed }) => [
+                  styles.profileAction,
+                  pressed && styles.pressed,
+                  focusedControl === "profile" && Platform.OS === "web" && styles.webFocusRing,
+                ]}
+              >
+                <Text style={styles.profileActionText}>Profile & settings</Text>
+                <Text aria-hidden accessible={false} style={styles.profileActionArrow}>→</Text>
+              </Pressable>
+            ) : null}
+            <Pressable
+              accessibilityRole="link"
+              accessibilityLabel="Open training setup"
+              onBlur={() => setFocusedControl(null)}
+              onFocus={() => setFocusedControl("training-setup")}
+              onPress={openTrainingSetup}
+              style={({ pressed }) => [
+                styles.profileAction,
+                pressed && styles.pressed,
+                focusedControl === "training-setup" && Platform.OS === "web" && styles.webFocusRing,
+              ]}
+            >
+              <Text style={styles.profileActionText}>Training setup</Text>
+              <Text aria-hidden accessible={false} style={styles.profileActionArrow}>→</Text>
+            </Pressable>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Sign out"
@@ -237,6 +280,16 @@ const styles = StyleSheet.create({
   profileName: { color: colors.text, fontSize: 14, lineHeight: 19, fontWeight: "800" },
   profileEmail: { color: colors.textDim, fontSize: 11, lineHeight: 16 },
   menuDivider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.borderStrong },
+  profileAction: {
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.md,
+    backgroundColor: colors.background,
+  },
+  profileActionText: { color: colors.text, fontSize: 13, fontWeight: "800" },
+  profileActionArrow: { marginLeft: "auto", color: colors.textDim, fontSize: 17 },
   signOutAction: {
     minHeight: 44,
     alignItems: "center",

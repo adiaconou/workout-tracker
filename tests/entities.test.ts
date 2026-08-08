@@ -175,6 +175,36 @@ test("exercise service performs catalog CRUD through the repository boundary", a
   assert.equal((await service.get("owner@example.com", created.id))?.isActive, false);
 });
 
+test("exercise progress validates units and normalizes the requested start date", async () => {
+  let receivedQuery: Parameters<EntityRepository["getExerciseProgress"]>[2];
+  const repository = {
+    async getExerciseProgress(
+      _ownerEmail: string,
+      _id: string,
+      query: Parameters<EntityRepository["getExerciseProgress"]>[2],
+    ) {
+      receivedQuery = query;
+      return null;
+    },
+  } as unknown as EntityRepository;
+  const service = new ExerciseService(repository);
+
+  await service.progress("owner@example.com", "exercise-1", {
+    from: "2026-08-01T12:30:00-07:00",
+    unit: "kg",
+  });
+  assert.deepEqual(receivedQuery!, {
+    from: "2026-08-01T19:30:00.000Z",
+    unit: "kg",
+  });
+  assert.throws(
+    () => service.progress("owner@example.com", "exercise-1", {
+      unit: "stone" as "kg",
+    }),
+    /must be lb or kg/,
+  );
+});
+
 test("workout corrections reject invalid performance values before persistence", async () => {
   const service = new WorkoutService({} as EntityRepository);
   assert.throws(() => service.correctSet("owner@example.com", "workout", "set", { actualWeight: -1 }), /non-negative/);

@@ -9,6 +9,10 @@ import { Miniflare } from "miniflare";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const ownerEmail = "owner@example.com";
 const sessionSecret = "assistant-exercise-plan-integration-secret-2026";
+const allEquipment = [
+  "bodyweight", "dumbbells", "bench", "kettlebells", "pull_up_station",
+  "dip_station", "cable_machine", "ez_bar", "resistance_bands", "barbell",
+];
 
 const fullExercise = (name, overrides = {}) => ({
   name,
@@ -63,6 +67,38 @@ const newRoutineProposal = (exerciseId, focus) => {
   };
 };
 
+const routineProposalFromCurrent = (current, overrides = {}) => ({
+  focus: current.focus,
+  summary: current.summary,
+  durationMin: current.durationMin,
+  exercises: current.exercises.map((exercise) => ({
+    sourceRoutineExerciseId: exercise.id,
+    exerciseId: exercise.exerciseId,
+    position: exercise.position,
+    supersetGroup: exercise.supersetGroup,
+    instructions: exercise.instructions,
+    notes: exercise.notes,
+    sets: exercise.sets.map((set) => ({
+      sourceRoutineSetId: set.id,
+      position: set.position,
+      setType: set.setType,
+      targetType: set.targetType,
+      targetMin: set.targetMin,
+      targetMax: set.targetMax,
+      targetDisplay: set.targetDisplay,
+      targetRirMin: set.targetRirMin,
+      targetRirMax: set.targetRirMax,
+      restAfterSec: set.restAfterSec,
+      restRule: set.restRule,
+      loadInstruction: set.loadInstruction,
+      sideMode: set.sideMode,
+      tempo: set.tempo,
+      notes: set.notes,
+    })),
+  })),
+  ...overrides,
+});
+
 function responseText(id, text) {
   return {
     id,
@@ -87,7 +123,7 @@ function responseTool(id, callId, name, argumentsValue) {
 test("Coach review cards are single-approval and enforce owner, state, and revision boundaries", async (context) => {
   const bundle = await build({
     absWorkingDir: root,
-    entryPoints: ["worker/index.ts"],
+    entryPoints: [fileURLToPath(new URL("../worker/index.ts", import.meta.url))],
     bundle: true,
     write: false,
     format: "esm",
@@ -174,6 +210,11 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
       argumentsValue,
     ));
   }
+
+  assertStatus(await request("/api/v1/onboarding", {
+    method: "PUT",
+    body: { equipment: allEquipment, sessionDurationMin: 60 },
+  }), 200);
 
   async function createThread() {
     const result = await request("/api/v1/assistant/threads", { method: "POST", body: {} });
@@ -276,6 +317,13 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
     return assertStatus(result, 201).exercise;
   }
 
+  async function setEquipment(equipment) {
+    await database.prepare(`UPDATE app_users SET equipment_preferences_json = ?, updated_at = ?
+      WHERE owner_email = ?`)
+      .bind(JSON.stringify(equipment), new Date().toISOString(), ownerEmail)
+      .run();
+  }
+
   async function createOtherOwnerToken(otherEmail = "other@example.com") {
     const userId = randomUUID();
     const sessionId = randomUUID();
@@ -300,6 +348,152 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
   }
 
   assertStatus(await request("/api/v1/assistant"), 200);
+
+  await context.test("equipment constraints filter Coach discovery and are rechecked at stage and Apply", async () => {
+    assertStatus(await request("/api/v1/assistant/profile", {
+      method: "PATCH",
+      body: { sessionDurationMin: 90 },
+    }), 400);
+    assertStatus(await request("/api/v1/assistant/profile", {
+      method: "PATCH",
+      body: { equipment: "Cable machine" },
+    }), 400);
+
+    assertStatus(await request("/api/v1/exercises?scope=all"), 200);
+    const unavailable = await first(`SELECT id, name FROM exercise_catalog
+      WHERE owner_email = ? AND name = 'Flat dumbbell bench press'`, ownerEmail);
+    assert.ok(unavailable);
+    await setEquipment(["bodyweight"]);
+
+    const searchThread = await createThread();
+    enqueueTool("search_exercises", { query: "Flat dumbbell bench press", includeArchived: false });
+    enqueueText("That exercise is unavailable with your selected equipment.");
+    assertStatus(await sendMessage(searchThread.id, "Can I use a flat dumbbell bench press?"), 201);
+    const searchAudit = await first(`SELECT output_json AS outputJson FROM assistant_tool_calls
+      WHERE thread_id = ? AND tool_name = 'search_exercises' ORDER BY created_at DESC LIMIT 1`, searchThread.id);
+    assert.deepEqual(JSON.parse(searchAudit.outputJson).exercises, []);
+
+    const routinePlansBefore = await count(
+      "SELECT COUNT(*) AS count FROM assistant_change_plans WHERE owner_email = ?",
+      ownerEmail,
+    );
+    const rejectedRoutineThread = await createThread();
+    enqueueTool("search_exercises", { query: unavailable.name, includeArchived: false });
+    enqueueTool("propose_new_routine", {
+      routineCode: "NO-BENCH",
+      proposedRoutine: newRoutineProposal(unavailable.id, "Unavailable bench routine"),
+      summary: "Create an unavailable routine",
+      rationale: "Exercise equipment-policy staging test.",
+    });
+    enqueueText("I cannot stage that routine with the selected equipment.");
+    assertStatus(await sendMessage(rejectedRoutineThread.id, "Create that bench routine."), 201);
+    assert.equal(
+      await count("SELECT COUNT(*) AS count FROM assistant_change_plans WHERE owner_email = ?", ownerEmail),
+      routinePlansBefore,
+    );
+    assert.equal((await first(`SELECT status FROM assistant_tool_calls WHERE thread_id = ?
+      AND tool_name = 'propose_new_routine' ORDER BY created_at DESC LIMIT 1`, rejectedRoutineThread.id)).status, "failed");
+
+    const exercisePlansBefore = await count(
+      "SELECT COUNT(*) AS count FROM assistant_exercise_change_plans WHERE owner_email = ?",
+      ownerEmail,
+    );
+    const rejectedExerciseThread = await createThread();
+    const cableExercise = fullExercise("Unavailable Coach Cable Row", { equipment: "low_cable" });
+    enqueueTool("search_exercises", { query: cableExercise.name, includeArchived: true });
+    enqueueTool("propose_exercise_change", {
+      action: "create",
+      exerciseId: null,
+      baseUpdatedAt: null,
+      proposedExercise: cableExercise,
+      summary: "Create an unavailable cable exercise",
+      rationale: "Exercise equipment-policy staging test.",
+    });
+    enqueueText("I cannot stage that exercise with the selected equipment.");
+    assertStatus(await sendMessage(rejectedExerciseThread.id, "Add that cable exercise."), 201);
+    assert.equal(
+      await count("SELECT COUNT(*) AS count FROM assistant_exercise_change_plans WHERE owner_email = ?", ownerEmail),
+      exercisePlansBefore,
+    );
+
+    await setEquipment(allEquipment);
+    const routineApplyPlan = await stageRoutineCreation({
+      code: "EQUIPMENT-STALE",
+      exercise: unavailable,
+      focus: "Equipment recheck",
+    });
+    const exerciseApplyPlan = await stageExercisePlan({
+      action: "create",
+      proposedExercise: fullExercise("Coach Equipment Recheck Curl"),
+      summary: "Create the equipment-recheck curl",
+    });
+    await setEquipment(["bodyweight"]);
+    assertStatus(await request(`/api/v1/assistant/plans/${routineApplyPlan.plan.id}/apply`, {
+      method: "POST",
+      body: {},
+    }), 409);
+    assertStatus(await request(`/api/v1/assistant/plans/${exerciseApplyPlan.plan.id}/apply`, {
+      method: "POST",
+      body: {},
+    }), 409);
+    assert.equal((await first("SELECT status FROM assistant_change_plans WHERE id = ?", routineApplyPlan.plan.id)).status, "stale");
+    assert.equal((await first("SELECT status FROM assistant_exercise_change_plans WHERE id = ?", exerciseApplyPlan.plan.id)).status, "stale");
+
+    await setEquipment(allEquipment);
+    const legacyCable = await createExercise("Coach Existing Cable Exercise", { equipment: "low_cable" });
+    const createdRoutine = assertStatus(await request("/api/v1/routines", {
+      method: "POST",
+      body: { code: "LEGACY-CABLE", version: singleSetRoutine(legacyCable.id, "Legacy cable") },
+    }), 201).routine;
+    await setEquipment(["bodyweight"]);
+    const preservedProposal = routineProposalFromCurrent(createdRoutine.currentVersion, {
+      summary: "Keep the existing unavailable placement unchanged.",
+    });
+    const preservedThread = await createThread();
+    enqueueTool("get_routine", { routineId: createdRoutine.id });
+    enqueueTool("propose_routine_change", {
+      routineId: createdRoutine.id,
+      baseVersionId: createdRoutine.currentVersionId,
+      proposedRoutine: preservedProposal,
+      summary: "Keep the legacy cable placement",
+      rationale: "Preserve existing data while changing only the routine summary.",
+    });
+    enqueueText("The review card is ready. Nothing has changed yet.");
+    const preserved = assertStatus(await sendMessage(preservedThread.id, "Update only the routine summary."), 201);
+    const preservedPlan = preserved.plans.find((candidate) => candidate.kind === "routine" && candidate.routineCode === "LEGACY-CABLE");
+    assert.ok(preservedPlan);
+    assertStatus(await request(`/api/v1/assistant/plans/${preservedPlan.id}/apply`, { method: "POST", body: {} }), 200);
+
+    const refreshed = assertStatus(await request("/api/v1/routines/LEGACY-CABLE/editor"), 200).routine;
+    const duplicateProposal = routineProposalFromCurrent(refreshed.currentVersion);
+    duplicateProposal.exercises.push({
+      ...duplicateProposal.exercises[0],
+      sourceRoutineExerciseId: null,
+      position: 2,
+      sets: duplicateProposal.exercises[0].sets.map((set) => ({ ...set, sourceRoutineSetId: null })),
+    });
+    const plansBeforeDuplicate = await count(
+      "SELECT COUNT(*) AS count FROM assistant_change_plans WHERE owner_email = ?",
+      ownerEmail,
+    );
+    const duplicateThread = await createThread();
+    enqueueTool("get_routine", { routineId: refreshed.id });
+    enqueueTool("propose_routine_change", {
+      routineId: refreshed.id,
+      baseVersionId: refreshed.currentVersionId,
+      proposedRoutine: duplicateProposal,
+      summary: "Duplicate the cable placement",
+      rationale: "Routine equipment-policy staging test.",
+    });
+    enqueueText("I cannot add another unavailable cable placement.");
+    assertStatus(await sendMessage(duplicateThread.id, "Add another cable placement."), 201);
+    assert.equal(
+      await count("SELECT COUNT(*) AS count FROM assistant_change_plans WHERE owner_email = ?", ownerEmail),
+      plansBeforeDuplicate,
+    );
+
+    await setEquipment(allEquipment);
+  });
 
   await context.test("proposal does not mutate, owner isolation holds, and concurrent Apply is single-use", async () => {
     const name = "Coach Concurrent Carry";

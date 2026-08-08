@@ -101,6 +101,9 @@ export class ExerciseService {
     if (query?.from && !Number.isFinite(Date.parse(query.from))) {
       throw new Error("Progress start date is invalid.");
     }
+    if (query?.unit !== undefined && query.unit !== "lb" && query.unit !== "kg") {
+      throw new Error("Progress weight unit must be lb or kg.");
+    }
     return this.repository.getExerciseProgress(ownerEmail, id, {
       ...query,
       from: query?.from ? new Date(query.from).toISOString() : undefined,

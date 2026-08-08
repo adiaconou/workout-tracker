@@ -1,4 +1,9 @@
 import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import {
+  currentOnboardingVersion,
+  legacyAllEquipmentJson,
+  legacyWorkoutDurationMinutes,
+} from "../domain/training-profile";
 
 export const appUsers = sqliteTable(
   "app_users",
@@ -7,6 +12,19 @@ export const appUsers = sqliteTable(
     ownerEmail: text("owner_email").notNull(),
     displayName: text("display_name").notNull(),
     photoUrl: text("photo_url"),
+    heightCm: real("height_cm"),
+    bodyWeightKg: real("body_weight_kg"),
+    measurementSystem: text("measurement_system").notNull().default("imperial"),
+    equipmentPreferencesJson: text("equipment_preferences_json")
+      .notNull()
+      .default(legacyAllEquipmentJson),
+    preferredWorkoutDurationMin: integer("preferred_workout_duration_min")
+      .notNull()
+      .default(legacyWorkoutDurationMinutes),
+    onboardingVersion: integer("onboarding_version")
+      .notNull()
+      .default(currentOnboardingVersion),
+    onboardingCompletedAt: text("onboarding_completed_at"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
@@ -241,6 +259,7 @@ export const workoutSessions = sqliteTable(
     startedAt: text("started_at").notNull(),
     completedAt: text("completed_at"),
     bodyWeight: real("body_weight"),
+    bodyWeightSource: text("body_weight_source"),
     weightUnit: text("weight_unit").notNull().default("lb"),
     sessionNotes: text("session_notes").notNull().default(""),
     isArchived: integer("is_archived", { mode: "boolean" }).notNull().default(false),

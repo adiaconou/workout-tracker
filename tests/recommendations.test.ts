@@ -57,6 +57,7 @@ test("starts a new training history with Routine A and leaves every routine avai
   const result = buildRoutineRecommendations([], [], NOW);
 
   assert.equal(result.recommendedRoutineCode, "A");
+  assert.equal(result.recommendationKind, "routine");
   assert.equal(result.nextInSequence, "A");
   assert.ok(result.routines.every((routine) => routine.availability === "available"));
 });
@@ -143,9 +144,49 @@ test("recommends recovery when recent upper- and lower-body work blocks every ro
   const result = buildRoutineRecommendations(sessions, sets, NOW);
 
   assert.equal(result.recommendedRoutineCode, null);
+  assert.equal(result.recommendationKind, "recovery");
   assert.ok(result.routines.every((routine) => routine.availability === "recovering"));
   assert.match(result.summary, /not a medical readiness assessment/i);
   assert.doesNotMatch(result.summary, /best goal-aligned|sufficiently recovered/i);
+});
+
+test("never recommends a routine that needs equipment outside Training setup", () => {
+  const result = buildRoutineRecommendations([], [], NOW, undefined, {
+    A: { compatible: false, missingEquipment: ["Barbell & rack"] },
+    B: { compatible: true, missingEquipment: [] },
+    C: { compatible: true, missingEquipment: [] },
+    D: { compatible: true, missingEquipment: [] },
+  });
+
+  assert.notEqual(result.recommendedRoutineCode, "A");
+  assert.equal(
+    result.routines.find((routine) => routine.code === result.recommendedRoutineCode)?.equipmentCompatible,
+    true,
+  );
+  assert.equal(result.recommendationKind, "routine");
+  assert.equal(result.routines.find((routine) => routine.code === "A")?.isRecommended, false);
+  assert.deepEqual(
+    result.routines.find((routine) => routine.code === "A")?.missingEquipment,
+    ["Barbell & rack"],
+  );
+});
+
+test("asks for routine adaptation instead of claiming recovery when no routine matches equipment", () => {
+  const incompatible = {
+    compatible: false,
+    missingEquipment: ["Cable or multi-gym"],
+  };
+  const result = buildRoutineRecommendations([], [], NOW, undefined, {
+    A: incompatible,
+    B: incompatible,
+    C: incompatible,
+    D: incompatible,
+  });
+
+  assert.equal(result.recommendedRoutineCode, null);
+  assert.equal(result.recommendationKind, "equipment_setup");
+  assert.match(result.summary, /ask coach/i);
+  assert.doesNotMatch(result.summary, /recovery/i);
 });
 
 test("does not treat missing set logs as proof of readiness", () => {

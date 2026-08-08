@@ -17,6 +17,7 @@ import type {
   RoutineVersion,
   RoutineVersionInput,
   SideMode,
+  BodyWeightSource,
   Workout,
   WorkoutExercise,
   WorkoutHistoryPage,
@@ -31,6 +32,10 @@ import {
   buildExerciseProgress,
   type ExerciseProgressCandidate,
 } from "../../domain/exercise-progress";
+import {
+  isExerciseEquipmentAvailable,
+  parseStoredEquipmentPreferences,
+} from "../../domain/training-profile";
 import { ensureEntityData, ensureEntitySchema } from "./entity-schema";
 
 type Row = Record<string, unknown>;
@@ -117,7 +122,17 @@ export class D1EntityRepository implements EntityRepository {
     }
     const rows = await this.d1.prepare(`${this.exerciseSelect()} WHERE ${clauses.join(" AND ")} ORDER BY name`)
       .bind(...values).all<Row>();
-    return Promise.all(rows.results.map((row) => this.exerciseFromRow(row)));
+    const exercises = await Promise.all(rows.results.map((row) => this.exerciseFromRow(row)));
+    if (!query.availableOnly) return exercises;
+
+    const profile = await this.d1.prepare(`SELECT equipment_preferences_json AS equipmentPreferencesJson
+      FROM app_users WHERE owner_email = ?`)
+      .bind(ownerEmail)
+      .first<{ equipmentPreferencesJson: string | null }>();
+    const selectedEquipment = parseStoredEquipmentPreferences(profile?.equipmentPreferencesJson);
+    return exercises.filter((exercise) => (
+      isExerciseEquipmentAvailable(exercise.equipment, selectedEquipment)
+    ));
   }
 
   async getExercise(ownerEmail: string, id: string) {
@@ -147,7 +162,9 @@ export class D1EntityRepository implements EntityRepository {
     const now = new Date().toISOString();
     const rows = await this.d1.prepare(`WITH recent_workouts AS (
       SELECT DISTINCT ws.id, ws.routine_code AS routineCode, ws.status,
-        ws.snapshot_json AS snapshotJson, ws.started_at AS performedAt
+        ws.snapshot_json AS snapshotJson, ws.started_at AS performedAt,
+        ws.body_weight AS bodyWeight, ws.weight_unit AS bodyWeightUnit,
+        ws.body_weight_source AS bodyWeightSource
       FROM workout_sessions ws
       INNER JOIN workout_exercises filter_exercise
         ON filter_exercise.workout_id = ws.id
@@ -158,7 +175,8 @@ export class D1EntityRepository implements EntityRepository {
         AND ws.status IN ('Completed', 'Partial', 'Abandoned')
         AND ws.is_archived = 0
         AND ws.started_at >= ?
-        AND ws.started_at <= ?
+        AND ws.completed_at IS NOT NULL
+        AND ws.completed_at <= ?
         AND EXISTS (
           SELECT 1 FROM workout_sets filter_set
           WHERE filter_set.workout_id = ws.id
@@ -170,7 +188,9 @@ export class D1EntityRepository implements EntityRepository {
     )
     SELECT recent_workouts.id AS workoutId, recent_workouts.routineCode,
       recent_workouts.status AS workoutStatus, recent_workouts.snapshotJson,
-      recent_workouts.performedAt, workout_exercises.load_type_snapshot AS loadType,
+      recent_workouts.performedAt, recent_workouts.bodyWeight,
+      recent_workouts.bodyWeightUnit, recent_workouts.bodyWeightSource,
+      workout_exercises.load_type_snapshot AS loadType,
       workout_sets.id AS setId, workout_sets.position AS setPosition,
       workout_sets.set_type AS setType,
       workout_sets.planned_target_type AS targetType,
@@ -222,6 +242,11 @@ export class D1EntityRepository implements EntityRepository {
       actualRepsRight: numberOrNull(row.actualRepsRight),
       actualDurationSec: numberOrNull(row.actualDurationSec),
       weightUnit: String(row.weightUnit),
+      bodyWeight: numberOrNull(row.bodyWeight),
+      bodyWeightUnit: String(row.bodyWeightUnit),
+      bodyWeightSource: row.bodyWeightSource === null || row.bodyWeightSource === undefined
+        ? null
+        : String(row.bodyWeightSource),
     }));
 
     return buildExerciseProgress({
@@ -230,6 +255,7 @@ export class D1EntityRepository implements EntityRepository {
       defaultLoadType: String(exercise.defaultLoadType) as ExerciseProgressCandidate["loadType"],
       candidates,
       limit,
+      unit: query.unit,
     });
   }
 
@@ -822,7 +848,11 @@ export class D1EntityRepository implements EntityRepository {
       id: String(row.id), ownerEmail: String(row.ownerEmail), routineId: row.routineId === null ? null : String(row.routineId),
       routineVersionId: row.routineVersionId === null ? null : String(row.routineVersionId), routineCode: String(row.routineCode),
       status: String(row.status) as WorkoutStatus, startedAt: String(row.startedAt), completedAt: row.completedAt === null ? null : String(row.completedAt),
-      bodyWeight: numberOrNull(row.bodyWeight), weightUnit: String(row.weightUnit), notes: String(row.notes), isArchived: bool(row.isArchived),
+      bodyWeight: numberOrNull(row.bodyWeight),
+      bodyWeightSource: row.bodyWeightSource === null || row.bodyWeightSource === undefined
+        ? null
+        : String(row.bodyWeightSource) as BodyWeightSource,
+      weightUnit: String(row.weightUnit), notes: String(row.notes), isArchived: bool(row.isArchived),
       exercises, updatedAt: String(row.updatedAt),
     };
   }
@@ -830,7 +860,8 @@ export class D1EntityRepository implements EntityRepository {
   private workoutSelect() {
     return `SELECT id, owner_email AS ownerEmail, routine_id AS routineId, routine_version_id AS routineVersionId,
       routine_code AS routineCode, status, started_at AS startedAt, completed_at AS completedAt,
-      body_weight AS bodyWeight, weight_unit AS weightUnit, session_notes AS notes,
+      body_weight AS bodyWeight, body_weight_source AS bodyWeightSource,
+      weight_unit AS weightUnit, session_notes AS notes,
       is_archived AS isArchived, updated_at AS updatedAt FROM workout_sessions`;
   }
 
@@ -982,10 +1013,14 @@ export class D1EntityRepository implements EntityRepository {
     const existing = await this.getWorkout(ownerEmail, id);
     if (!existing) return null;
     const now = new Date().toISOString();
-    await this.d1.prepare(`UPDATE workout_sessions SET body_weight = ?, session_notes = ?, status = ?,
+    const bodyWeight = input.bodyWeight === undefined ? existing.bodyWeight : input.bodyWeight;
+    await this.d1.prepare(`UPDATE workout_sessions SET body_weight = ?,
+      body_weight_source = CASE WHEN ? = 1 THEN CASE WHEN ? IS NULL THEN NULL ELSE 'manual' END
+        ELSE body_weight_source END,
+      session_notes = ?, status = ?,
       completed_at = CASE WHEN ? IN ('Completed', 'Partial', 'Abandoned') THEN COALESCE(completed_at, ?) ELSE completed_at END,
       updated_at = ? WHERE id = ? AND owner_email = ?`)
-      .bind(input.bodyWeight === undefined ? existing.bodyWeight : input.bodyWeight,
+      .bind(bodyWeight, input.bodyWeight === undefined ? 0 : 1, bodyWeight,
         input.notes === undefined ? existing.notes : input.notes, input.status ?? existing.status,
         input.status ?? existing.status, now, now, id, ownerEmail).run();
     return this.getWorkout(ownerEmail, id);

@@ -9,6 +9,7 @@ import { AuthProvider, useAuth } from "../src/auth/auth-context";
 import { AccountHeader } from "../src/components/account-menu";
 import { LoadingView } from "../src/components/ui";
 import { colors } from "../src/theme/tokens";
+import { ProfileProvider } from "../src/profile/profile-context";
 
 export default function RootLayout() {
   useEffect(() => {
@@ -30,8 +31,10 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.background }}>
       <SafeAreaProvider>
         <AuthProvider>
-          <StatusBar style="light" />
-          <AuthenticatedNavigator />
+          <ProfileProvider>
+            <StatusBar style="light" />
+            <AuthenticatedNavigator />
+          </ProfileProvider>
         </AuthProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
@@ -60,10 +63,14 @@ function AuthenticatedNavigator() {
       </Stack.Protected>
       <Stack.Protected guard={Boolean(user)}>
         <Stack.Screen name="index" />
+        <Stack.Screen name="onboarding" options={accountHeaderOptions} />
+      </Stack.Protected>
+      <Stack.Protected guard={Boolean(user?.trainingProfile.onboardingCompleted)}>
         <Stack.Screen name="(tabs)" options={accountHeaderOptions} />
         <Stack.Screen name="routines/[routineId]" options={accountHeaderOptions} />
         <Stack.Screen name="exercises/[exerciseId]" options={accountHeaderOptions} />
         <Stack.Screen name="history/[workoutId]" options={accountHeaderOptions} />
+        <Stack.Screen name="profile" options={accountHeaderOptions} />
         <Stack.Screen name="workouts/[sessionId]" options={{ gestureEnabled: false }} />
       </Stack.Protected>
     </Stack>

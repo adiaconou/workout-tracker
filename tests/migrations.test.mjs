@@ -21,6 +21,8 @@ test("applies the complete migration chain and creates the normalized entity mod
       "drizzle/0006_freezing_betty_ross.sql",
       "drizzle/0007_glorious_vermin.sql",
       "drizzle/0008_nervous_selene.sql",
+      "drizzle/0009_profile_measurements.sql",
+      "drizzle/0010_opposite_microbe.sql",
     ];
     const sql = (await Promise.all(filenames.map((filename) => readFile(new URL(filename, root), "utf8"))))
       .join("\n").replaceAll("--> statement-breakpoint", "\n");
@@ -54,6 +56,14 @@ test("applies the complete migration chain and creates the normalized entity mod
     assert.match(inspected, /elapsed_seconds/);
     assert.match(inspected, /workout_elapsed_seconds/);
     assert.match(inspected, /photo_url/);
+    assert.match(inspected, /height_cm/);
+    assert.match(inspected, /body_weight_kg/);
+    assert.match(inspected, /measurement_system/);
+    assert.match(inspected, /body_weight_source/);
+    assert.match(inspected, /equipment_preferences_json/);
+    assert.match(inspected, /preferred_workout_duration_min/);
+    assert.match(inspected, /onboarding_version/);
+    assert.match(inspected, /onboarding_completed_at/);
     assert.match(inspected, /workout_exercises/);
     assert.match(inspected, /routine_set_templates/);
     assert.match(inspected, /refresh_token_hash/);
@@ -70,6 +80,56 @@ test("applies the complete migration chain and creates the normalized entity mod
       setPerformanceColumns.filter((column) => ["started_at", "elapsed_seconds", "workout_elapsed_seconds"].includes(column.name)).map((column) => column.name),
       ["started_at", "elapsed_seconds", "workout_elapsed_seconds"],
     );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("onboarding migration preserves existing users as completed", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "workout-onboarding-migration-"));
+  const database = join(directory, "onboarding.sqlite");
+  try {
+    const beforeOnboarding = Array.from(
+      { length: 10 },
+      (_, index) => `drizzle/${String(index).padStart(4, "0")}_${[
+        "bent_starjammers",
+        "windy_timeslip",
+        "workable_whizzer",
+        "faulty_sandman",
+        "nebulous_lila_cheney",
+        "plain_rocket_raccoon",
+        "freezing_betty_ross",
+        "glorious_vermin",
+        "nervous_selene",
+        "profile_measurements",
+      ][index]}.sql`,
+    );
+    const sqlite = new DatabaseSync(database);
+    const priorSql = (await Promise.all(beforeOnboarding.map((filename) =>
+      readFile(new URL(filename, root), "utf8"))))
+      .join("\n").replaceAll("--> statement-breakpoint", "\n");
+    sqlite.exec(priorSql);
+    const updatedAt = "2026-08-01T12:00:00.000Z";
+    sqlite.prepare(`INSERT INTO app_users (
+      id, owner_email, display_name, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?)`).run(
+      "legacy-user",
+      "legacy@example.com",
+      "Legacy User",
+      updatedAt,
+      updatedAt,
+    );
+    sqlite.exec((await readFile(new URL("drizzle/0010_opposite_microbe.sql", root), "utf8"))
+      .replaceAll("--> statement-breakpoint", "\n"));
+    const migrated = sqlite.prepare(`SELECT equipment_preferences_json AS equipment,
+      preferred_workout_duration_min AS duration, onboarding_version AS version,
+      onboarding_completed_at AS completedAt FROM app_users WHERE id = ?`)
+      .get("legacy-user");
+    assert.equal(migrated.duration, 60);
+    assert.equal(migrated.version, 1);
+    assert.equal(migrated.completedAt, updatedAt);
+    assert.ok(JSON.parse(migrated.equipment).includes("barbell"));
+    sqlite.close();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

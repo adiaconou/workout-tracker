@@ -16,7 +16,7 @@ import {
   rawApiRequest,
   refreshWithToken,
 } from "../api/client";
-import type { NativeSession, SessionUser } from "../api/types";
+import type { NativeSession, SessionUser, TrainingProfile } from "../api/types";
 import { signInWithGoogle, signOutFromGoogle } from "./google-signin";
 import {
   deleteRefreshToken,
@@ -32,6 +32,9 @@ type AuthContextValue = {
   signIn: () => Promise<void>;
   signOut: () => Promise<void>;
   retry: () => Promise<void>;
+  completeTrainingSetup: (
+    input: Pick<TrainingProfile, "equipment" | "sessionDurationMin">,
+  ) => Promise<{ firstCompletion: boolean }>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -160,9 +163,31 @@ export function AuthProvider({ children }: PropsWithChildren) {
     }
   }, [refresh]);
 
+  const completeTrainingSetup = useCallback(async (
+    input: Pick<TrainingProfile, "equipment" | "sessionDurationMin">,
+  ) => {
+    const payload = await apiRequest<{
+      user: SessionUser;
+      firstCompletion: boolean;
+    }>("/api/v1/onboarding", {
+      method: "PUT",
+      body: JSON.stringify(input),
+    });
+    setUser(payload.user);
+    return { firstCompletion: payload.firstCompletion };
+  }, []);
+
   const value = useMemo<AuthContextValue>(
-    () => ({ isLoading, user, error, signIn, signOut, retry: restore }),
-    [error, isLoading, restore, signIn, signOut, user],
+    () => ({
+      isLoading,
+      user,
+      error,
+      signIn,
+      signOut,
+      retry: restore,
+      completeTrainingSetup,
+    }),
+    [completeTrainingSetup, error, isLoading, restore, signIn, signOut, user],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

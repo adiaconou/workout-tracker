@@ -6,6 +6,10 @@ import { Miniflare } from "miniflare";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const ownerEmail = "routine-editor@example.com";
+const allEquipment = [
+  "bodyweight", "dumbbells", "bench", "kettlebells", "pull_up_station",
+  "dip_station", "cable_machine", "ez_bar", "resistance_bands", "barbell",
+];
 
 const advancedSet = (overrides = {}) => ({
   position: 1,
@@ -119,7 +123,7 @@ function versionInput(version) {
 test("normalized routine editor preserves exact fields and rejects no-op and stale saves", async (context) => {
   const bundle = await build({
     absWorkingDir: root,
-    entryPoints: ["worker/index.ts"],
+    entryPoints: [fileURLToPath(new URL("../worker/index.ts", import.meta.url))],
     bundle: true,
     write: false,
     format: "esm",
@@ -159,6 +163,11 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
     assert.equal(result.status, expected, JSON.stringify(result.body));
     return result.body;
   }
+
+  expectStatus(await request("/api/v1/onboarding", {
+    method: "PUT",
+    body: { equipment: allEquipment, sessionDurationMin: 60 },
+  }), 200);
 
   const createdExercise = expectStatus(await request("/api/v1/exercises", {
     method: "POST",
@@ -242,6 +251,13 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
   assert.equal(afterStale.versions.length, interveningSave.versions.length, "a stale save must not leave a draft behind");
 
   const activeVersion = interveningSave.routine.currentVersion;
+  expectStatus(await request("/api/v1/auth/profile", {
+    method: "PATCH",
+    body: {
+      bodyWeightKg: 82.5,
+      measurementSystem: "imperial",
+    },
+  }), 200);
   const started = expectStatus(await request("/api/v1/workouts", {
     method: "POST",
     body: { routineId: "Q" },
@@ -249,6 +265,10 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
   assert.equal(started.session.totalSets, 3, "test and heterogeneous normalized sets must all be counted");
   const activeWorkout = expectStatus(await request(`/api/v1/workouts/${started.session.id}`), 200).workout;
   assert.equal(activeWorkout.routineVersion, activeVersion.versionNumber);
+  assert.ok(Math.abs(activeWorkout.bodyWeight - (82.5 * 2.2046226218487757)) < 1e-9);
+  assert.equal(activeWorkout.bodyWeightSource, "profile_snapshot");
+  assert.equal(activeWorkout.weightUnit, "lb");
+  assert.ok(activeWorkout.sets.every((set) => set.weightUnit === "lb"));
   assert.deepEqual(activeWorkout.sets.map((set) => set.exerciseOrder), [1, 2, 1], "every placement in the same superset group must interleave by round");
   assert.deepEqual(activeWorkout.sets.map((set) => set.setType), ["test", "drop", "emom"]);
   assert.deepEqual(activeWorkout.sets.map((set) => set.targetUnit), ["reps", "seconds", "rounds"]);
@@ -289,6 +309,25 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
     activeVersion.exercises[1].sets[0].id,
     activeVersion.exercises[0].sets[1].id,
   ]);
+
+  expectStatus(await request("/api/v1/auth/profile", {
+    method: "PATCH",
+    body: {
+      bodyWeightKg: 90,
+      measurementSystem: "metric",
+    },
+  }), 200);
+  const resumed = expectStatus(await request("/api/v1/workouts", {
+    method: "POST",
+    body: { routineId: "Q" },
+  }), 200);
+  assert.equal(resumed.created, false);
+  assert.equal(resumed.session.id, started.session.id);
+  const resumedWorkout = expectStatus(await request(`/api/v1/workouts/${started.session.id}`), 200).workout;
+  assert.ok(Math.abs(resumedWorkout.bodyWeight - (82.5 * 2.2046226218487757)) < 1e-9);
+  assert.equal(resumedWorkout.bodyWeightSource, "profile_snapshot");
+  assert.equal(resumedWorkout.weightUnit, "lb");
+  assert.ok(resumedWorkout.sets.every((set) => set.weightUnit === "lb"));
 
   const materializedSets = await database.prepare(`SELECT source_routine_set_id AS sourceRoutineSetId,
     set_type AS setType, planned_target_type AS targetType,
@@ -336,6 +375,10 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
   }), 200);
   assert.equal(firstMemberResult.restSeconds, 0, "rest must not interrupt members of the same superset round");
   assert.equal(firstMemberResult.restEndsAt, null);
+  const recordedFirstMember = await database.prepare(`SELECT weight_unit AS weightUnit
+    FROM set_performances WHERE session_id = ? AND prescribed_set_id = ?`)
+    .bind(started.session.id, activeWorkout.sets[0].id).first();
+  assert.equal(recordedFirstMember.weightUnit, "lb", "recorded load units must stay locked to the workout snapshot");
   const afterFirstMember = await database.prepare(`SELECT started_at AS startedAt,
     elapsed_seconds AS elapsedSeconds FROM workout_sets
     WHERE workout_id = ? ORDER BY position`).bind(started.session.id).all();
@@ -372,9 +415,13 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
     WHERE workout_id = ? ORDER BY position`).bind(started.session.id).all();
   assert.ok(timedSets.results.every((set) => set.startedAt && set.elapsedSeconds !== null));
 
-  const completedSession = await database.prepare(`SELECT completed_at AS completedAt
+  const completedSession = await database.prepare(`SELECT completed_at AS completedAt,
+    body_weight AS bodyWeight, body_weight_source AS bodyWeightSource, weight_unit AS weightUnit
     FROM workout_sessions WHERE id = ?`).bind(started.session.id).first();
   assert.ok(completedSession?.completedAt);
+  assert.ok(Math.abs(completedSession.bodyWeight - (82.5 * 2.2046226218487757)) < 1e-9);
+  assert.equal(completedSession.bodyWeightSource, "profile_snapshot");
+  assert.equal(completedSession.weightUnit, "lb");
   const completedBootstrap = expectStatus(await request("/api/v1/bootstrap"), 200);
   const completedRoutineSummary = completedBootstrap.routines.find((routine) => routine.code === "Q");
   assert.equal(
@@ -422,6 +469,10 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
     body: { routineId: "Q", expectedRoutineVersionId: nextVersion.id },
   }), 201);
   const nextWorkout = expectStatus(await request(`/api/v1/workouts/${nextStarted.session.id}`), 200).workout;
+  assert.equal(nextWorkout.bodyWeight, 90);
+  assert.equal(nextWorkout.bodyWeightSource, "profile_snapshot");
+  assert.equal(nextWorkout.weightUnit, "kg");
+  assert.ok(nextWorkout.sets.every((set) => set.weightUnit === "kg"));
   assert.deepEqual(
     nextWorkout.previousPerformanceByExercise[1].sets.map((set) => [set.actualReps, set.actualDurationSec, set.targetType]),
     [[5, null, "reps"], [6, null, "rounds"]],
@@ -432,4 +483,55 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
     [[null, 40, "duration"]],
     "the second occurrence must not cross-join prior sets from the first placement",
   );
+
+  expectStatus(await request("/api/v1/auth/profile", {
+    method: "PATCH",
+    body: { bodyWeightKg: null },
+  }), 200);
+  const replacement = expectStatus(await request("/api/v1/workouts", {
+    method: "POST",
+    body: { routineId: "A", abandonActive: true },
+  }), 201);
+  const replacedSession = await database.prepare(`SELECT status, body_weight AS bodyWeight,
+    body_weight_source AS bodyWeightSource, weight_unit AS weightUnit
+    FROM workout_sessions WHERE id = ?`).bind(nextStarted.session.id).first();
+  assert.equal(replacedSession.status, "Abandoned");
+  assert.equal(replacedSession.bodyWeight, 90, "replacement must not rewrite an existing snapshot");
+  assert.equal(replacedSession.bodyWeightSource, "profile_snapshot");
+  assert.equal(replacedSession.weightUnit, "kg");
+
+  const emptySnapshotWorkout = expectStatus(
+    await request(`/api/v1/workouts/${replacement.session.id}`),
+    200,
+  ).workout;
+  assert.equal(emptySnapshotWorkout.bodyWeight, null);
+  assert.equal(emptySnapshotWorkout.bodyWeightSource, null);
+  assert.equal(emptySnapshotWorkout.weightUnit, "kg");
+  assert.ok(emptySnapshotWorkout.sets.every((set) => set.weightUnit === "kg"));
+
+  expectStatus(await request("/api/v1/auth/profile", {
+    method: "PATCH",
+    body: { bodyWeightKg: 95 },
+  }), 200);
+  expectStatus(await request(`/api/v1/workouts/${replacement.session.id}/complete`, {
+    method: "POST",
+    body: {},
+  }), 200);
+  const backfilledSession = await database.prepare(`SELECT status, body_weight AS bodyWeight,
+    body_weight_source AS bodyWeightSource, weight_unit AS weightUnit
+    FROM workout_sessions WHERE id = ?`).bind(replacement.session.id).first();
+  assert.equal(backfilledSession.status, "Partial");
+  assert.equal(backfilledSession.bodyWeight, 95);
+  assert.equal(backfilledSession.bodyWeightSource, "profile_backfill");
+  assert.equal(backfilledSession.weightUnit, "kg");
+
+  const laterStarted = expectStatus(await request("/api/v1/workouts", {
+    method: "POST",
+    body: { routineId: "B" },
+  }), 201);
+  const laterWorkout = expectStatus(await request(`/api/v1/workouts/${laterStarted.session.id}`), 200).workout;
+  assert.equal(laterWorkout.bodyWeight, 95);
+  assert.equal(laterWorkout.bodyWeightSource, "profile_snapshot");
+  assert.equal(laterWorkout.weightUnit, "kg");
+  assert.ok(laterWorkout.sets.every((set) => set.weightUnit === "kg"));
 });

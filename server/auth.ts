@@ -1,5 +1,10 @@
 import { ensureEntitySchema } from "../infrastructure/d1/entity-schema";
 import {
+  defaultWorkoutDurationMinutes,
+  trainingProfileFromStored,
+  type TrainingProfile,
+} from "../domain/training-profile";
+import {
   accessTokenExpiresIn,
   generateRefreshToken,
   hashRefreshToken,
@@ -14,7 +19,30 @@ type UserRow = {
   ownerEmail: string;
   displayName: string;
   photoUrl: string | null;
+  trainingProfile: TrainingProfile;
 };
+
+type StoredUserRow = Omit<UserRow, "trainingProfile"> & {
+  equipmentPreferencesJson: string;
+  preferredWorkoutDurationMin: number;
+  onboardingVersion: number;
+  onboardingCompletedAt: string | null;
+};
+
+const storedTrainingProfileSelect = `equipment_preferences_json AS equipmentPreferencesJson,
+  preferred_workout_duration_min AS preferredWorkoutDurationMin,
+  onboarding_version AS onboardingVersion,
+  onboarding_completed_at AS onboardingCompletedAt`;
+
+function userFromStoredRow(row: StoredUserRow): UserRow {
+  return {
+    id: row.id,
+    ownerEmail: row.ownerEmail,
+    displayName: row.displayName,
+    photoUrl: row.photoUrl,
+    trainingProfile: trainingProfileFromStored(row),
+  };
+}
 
 function normalizedEmail(value: string) {
   return value.trim().toLowerCase();
@@ -57,12 +85,13 @@ export async function ensureAppUser(
   await ensureEntitySchema(env.DB);
   const ownerEmail = normalizedEmail(email);
   const now = new Date().toISOString();
-  const existing = await env.DB.prepare(`SELECT id, owner_email AS ownerEmail,
-    display_name AS displayName, photo_url AS photoUrl
+  const existingRow = await env.DB.prepare(`SELECT id, owner_email AS ownerEmail,
+    display_name AS displayName, photo_url AS photoUrl, ${storedTrainingProfileSelect}
     FROM app_users WHERE owner_email = ?`)
     .bind(ownerEmail)
-    .first<UserRow>();
-  if (existing) {
+    .first<StoredUserRow>();
+  if (existingRow) {
+    const existing = userFromStoredRow(existingRow);
     const nextName = displayName?.trim() || existing.displayName;
     const nextPhotoUrl = normalizedPhotoUrl(photoUrl) ?? existing.photoUrl;
     if (nextName !== existing.displayName || nextPhotoUrl !== existing.photoUrl) {
@@ -79,11 +108,27 @@ export async function ensureAppUser(
     ownerEmail,
     displayName: displayName?.trim() || ownerEmail,
     photoUrl: normalizedPhotoUrl(photoUrl),
+    trainingProfile: trainingProfileFromStored({
+      equipmentPreferencesJson: [],
+      preferredWorkoutDurationMin: defaultWorkoutDurationMinutes,
+      onboardingVersion: 0,
+      onboardingCompletedAt: null,
+    }),
   };
   await env.DB.prepare(`INSERT INTO app_users (
-    id, owner_email, display_name, photo_url, created_at, updated_at
-  ) VALUES (?, ?, ?, ?, ?, ?)`)
-    .bind(user.id, user.ownerEmail, user.displayName, user.photoUrl, now, now)
+    id, owner_email, display_name, photo_url, equipment_preferences_json,
+    preferred_workout_duration_min, onboarding_version, onboarding_completed_at,
+    created_at, updated_at
+  ) VALUES (?, ?, ?, ?, '[]', ?, 0, NULL, ?, ?)`)
+    .bind(
+      user.id,
+      user.ownerEmail,
+      user.displayName,
+      user.photoUrl,
+      defaultWorkoutDurationMinutes,
+      now,
+      now,
+    )
     .run();
   return user;
 }
@@ -99,12 +144,13 @@ export async function authenticateRequest(
         sessionSecret(env),
         authorization.slice("Bearer ".length),
       );
-      const session = await env.DB.prepare(`SELECT s.id, u.id AS userId,
-        u.owner_email AS ownerEmail, u.display_name AS displayName, u.photo_url AS photoUrl
+      const session = await env.DB.prepare(`SELECT s.id AS sessionId, u.id,
+        u.owner_email AS ownerEmail, u.display_name AS displayName, u.photo_url AS photoUrl,
+        ${storedTrainingProfileSelect}
         FROM auth_sessions s INNER JOIN app_users u ON u.id = s.user_id
         WHERE s.id = ? AND u.id = ? AND s.revoked_at IS NULL AND s.expires_at > ?`)
         .bind(claims.sid, claims.sub, new Date().toISOString())
-        .first<{ id: string; userId: string; ownerEmail: string; displayName: string; photoUrl: string | null }>();
+        .first<StoredUserRow & { sessionId: string }>();
       if (
         !session
         || normalizedEmail(session.ownerEmail) !== normalizedEmail(claims.email)
@@ -112,13 +158,15 @@ export async function authenticateRequest(
       ) {
         return null;
       }
+      const storedUser = userFromStoredRow(session);
       return {
-        id: session.userId,
-        email: session.ownerEmail,
-        displayName: session.displayName,
-        photoUrl: session.photoUrl,
+        id: storedUser.id,
+        email: storedUser.ownerEmail,
+        displayName: storedUser.displayName,
+        photoUrl: storedUser.photoUrl,
+        trainingProfile: storedUser.trainingProfile,
         provider: "session",
-        sessionId: session.id,
+        sessionId: session.sessionId,
       };
     } catch {
       return null;
@@ -143,6 +191,7 @@ export async function authenticateRequest(
     email: user.ownerEmail,
     displayName: user.displayName,
     photoUrl: user.photoUrl,
+    trainingProfile: user.trainingProfile,
     provider: "chatgpt",
     sessionId: null,
   };
@@ -220,6 +269,7 @@ export async function createNativeSession(
       email: user.ownerEmail,
       displayName: user.displayName,
       photoUrl: user.photoUrl,
+      trainingProfile: user.trainingProfile,
     },
   };
 }
@@ -227,17 +277,18 @@ export async function createNativeSession(
 export async function rotateNativeSession(env: WorkerEnv, refreshToken: string) {
   const oldHash = await hashRefreshToken(refreshToken);
   const now = new Date().toISOString();
-  const session = await env.DB.prepare(`SELECT s.id, s.user_id AS userId,
-    u.owner_email AS ownerEmail, u.display_name AS displayName, u.photo_url AS photoUrl
+  const session = await env.DB.prepare(`SELECT s.id AS sessionId, u.id,
+    u.owner_email AS ownerEmail, u.display_name AS displayName, u.photo_url AS photoUrl,
+    ${storedTrainingProfileSelect}
     FROM auth_sessions s INNER JOIN app_users u ON u.id = s.user_id
     WHERE s.refresh_token_hash = ? AND s.revoked_at IS NULL AND s.expires_at > ?`)
     .bind(oldHash, now)
-    .first<{ id: string; userId: string; ownerEmail: string; displayName: string; photoUrl: string | null }>();
+    .first<StoredUserRow & { sessionId: string }>();
   if (!session) return null;
   if (!isAllowedUserEmail(env, session.ownerEmail)) {
     await env.DB.prepare(`UPDATE auth_sessions SET revoked_at = ?,
       last_used_at = ? WHERE id = ? AND revoked_at IS NULL`)
-      .bind(now, now, session.id).run();
+      .bind(now, now, session.sessionId).run();
     return null;
   }
 
@@ -246,23 +297,25 @@ export async function rotateNativeSession(env: WorkerEnv, refreshToken: string) 
   const result = await env.DB.prepare(`UPDATE auth_sessions SET refresh_token_hash = ?,
     rotated_at = ?, last_used_at = ? WHERE id = ? AND refresh_token_hash = ?
     AND revoked_at IS NULL`)
-    .bind(nextHash, now, now, session.id, oldHash).run();
+    .bind(nextHash, now, now, session.sessionId, oldHash).run();
   if (Number(result.meta.changes ?? 0) !== 1) return null;
 
+  const storedUser = userFromStoredRow(session);
   const accessToken = await issueAccessToken(
     sessionSecret(env),
-    { id: session.userId, email: session.ownerEmail },
-    session.id,
+    { id: storedUser.id, email: storedUser.ownerEmail },
+    session.sessionId,
   );
   return {
     accessToken,
     refreshToken: nextRefreshToken,
     expiresIn: accessTokenExpiresIn,
     user: {
-      id: session.userId,
-      email: session.ownerEmail,
-      displayName: session.displayName,
-      photoUrl: session.photoUrl,
+      id: storedUser.id,
+      email: storedUser.ownerEmail,
+      displayName: storedUser.displayName,
+      photoUrl: storedUser.photoUrl,
+      trainingProfile: storedUser.trainingProfile,
     },
   };
 }

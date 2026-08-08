@@ -12,6 +12,13 @@ import type {
   WorkoutHistoryPage,
 } from "../../domain/entities";
 import type { RecommendationResult } from "../../lib/recommendations";
+import type { MeasurementSystem, UserProfile, UserProfilePatch } from "../../domain/profile";
+import type {
+  EquipmentId,
+  TrainingProfile,
+  TrainingProfileInput,
+  WorkoutDurationMinutes,
+} from "../../domain/training-profile";
 import type {
   PreviousExercisePerformance,
   Routine,
@@ -24,6 +31,7 @@ export type SessionUser = {
   email: string;
   displayName: string;
   photoUrl: string | null;
+  trainingProfile: TrainingProfile;
 };
 
 export type NativeSession = {
@@ -56,6 +64,13 @@ export type {
   Workout,
   WorkoutHistoryPage,
   WorkoutView,
+  MeasurementSystem,
+  UserProfile,
+  UserProfilePatch,
+  EquipmentId,
+  TrainingProfile,
+  TrainingProfileInput,
+  WorkoutDurationMinutes,
 };
 
 export type ApiErrorPayload = {

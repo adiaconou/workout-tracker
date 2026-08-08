@@ -7,6 +7,18 @@ import { Miniflare } from "miniflare";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const firstEmail = "primary@example.com";
 const secondEmail = "partner@example.com";
+const allEquipment = [
+  "bodyweight",
+  "dumbbells",
+  "bench",
+  "kettlebells",
+  "pull_up_station",
+  "dip_station",
+  "cable_machine",
+  "ez_bar",
+  "resistance_bands",
+  "barbell",
+];
 
 const exerciseInput = (name, muscleGroup) => ({
   name,
@@ -55,7 +67,7 @@ const versionInput = (version) => ({
 test("allowed ChatGPT users have isolated seeded data, resources, workouts, and coach state", async (context) => {
   const bundle = await build({
     absWorkingDir: root,
-    entryPoints: ["worker/index.ts"],
+    entryPoints: [fileURLToPath(new URL("../worker/index.ts", import.meta.url))],
     bundle: true,
     write: false,
     format: "esm",
@@ -115,6 +127,8 @@ test("allowed ChatGPT users have isolated seeded data, resources, workouts, and 
   assert.equal(firstSession.user.email, firstEmail);
   assert.equal(secondSession.user.email, secondEmail);
   assert.notEqual(firstSession.user.id, secondSession.user.id);
+  assert.equal(firstSession.user.trainingProfile.onboardingCompleted, false);
+  assert.equal(secondSession.user.trainingProfile.onboardingCompleted, false);
   assert.equal(
     await database.prepare("SELECT id FROM app_users WHERE owner_email = ?")
       .bind(unapprovedEmail)
@@ -123,10 +137,52 @@ test("allowed ChatGPT users have isolated seeded data, resources, workouts, and 
     "a disallowed ChatGPT identity must not create an application user",
   );
 
+  const gatedBootstrap = expectStatus(await request(firstEmail, "/api/v1/bootstrap"), 409);
+  assert.equal(gatedBootstrap.error.code, "onboarding_required");
+  const firstSetup = expectStatus(await request(firstEmail, "/api/v1/onboarding", {
+    method: "PUT",
+    body: { equipment: allEquipment, sessionDurationMin: 60 },
+  }), 200);
+  const secondSetup = expectStatus(await request(secondEmail, "/api/v1/onboarding", {
+    method: "PUT",
+    body: { equipment: allEquipment, sessionDurationMin: 45 },
+  }), 200);
+  assert.equal(firstSetup.firstCompletion, true);
+  assert.equal(secondSetup.firstCompletion, true);
+  assert.equal(firstSetup.user.trainingProfile.onboardingCompleted, true);
+  assert.equal(secondSetup.user.trainingProfile.sessionDurationMin, 45);
+  assert.equal(expectStatus(await request(firstEmail, "/api/v1/onboarding", {
+    method: "PUT",
+    body: { equipment: allEquipment, sessionDurationMin: 60 },
+  }), 200).firstCompletion, false);
+
+  expectStatus(await request(firstEmail, "/api/v1/onboarding", {
+    method: "PUT",
+    body: { equipment: ["bodyweight"], sessionDurationMin: 30 },
+  }), 200);
+  const bodyweightLibrary = expectStatus(await request(firstEmail, "/api/v1/exercises"), 200).exercises;
+  const fullLibrary = expectStatus(await request(firstEmail, "/api/v1/exercises?scope=all"), 200).exercises;
+  const hiddenExercise = fullLibrary.find((exercise) => exercise.equipment === "dumbbell");
+  assert.ok(hiddenExercise, "the complete library should include a dumbbell exercise");
+  assert.equal(
+    bodyweightLibrary.some((exercise) => exercise.id === hiddenExercise.id),
+    false,
+    "the default library should hide exercises that need unselected equipment",
+  );
+  assert.equal(
+    expectStatus(await request(firstEmail, `/api/v1/exercises/${encodeURIComponent(hiddenExercise.id)}`), 200).exercise.id,
+    hiddenExercise.id,
+    "exact reads remain available for routine and history references",
+  );
+  const restoredFirstSetup = expectStatus(await request(firstEmail, "/api/v1/onboarding", {
+    method: "PUT",
+    body: { equipment: allEquipment, sessionDurationMin: 60 },
+  }), 200);
+
   const firstBootstrap = expectStatus(await request(firstEmail, "/api/v1/bootstrap"), 200);
   const secondBootstrap = expectStatus(await request(secondEmail, "/api/v1/bootstrap"), 200);
-  assert.deepEqual(firstBootstrap.user, firstSession.user);
-  assert.deepEqual(secondBootstrap.user, secondSession.user);
+  assert.deepEqual(firstBootstrap.user, restoredFirstSetup.user);
+  assert.deepEqual(secondBootstrap.user, secondSetup.user);
   assert.ok(firstBootstrap.routines.length > 0);
   assert.deepEqual(
     firstBootstrap.routines.map((routine) => routine.code),

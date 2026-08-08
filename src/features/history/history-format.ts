@@ -86,7 +86,7 @@ export function formatSetResult(
   if (set.status === "skipped") return "Skipped";
   if (set.actualDurationSec !== null) {
     const load = set.actualWeight && set.actualWeight > 0
-      ? ` · ${set.actualWeight} lb`
+      ? ` · ${set.actualWeight} ${set.weightUnit}`
       : "";
     return `${set.actualDurationSec} sec${load}`;
   }
@@ -98,6 +98,6 @@ export function formatSetResult(
     return `Bodyweight × ${set.actualReps}`;
   }
   return set.actualWeight !== null
-    ? `${set.actualWeight} lb × ${set.actualReps}`
+    ? `${set.actualWeight} ${set.weightUnit} × ${set.actualReps}`
     : `${set.actualReps} reps`;
 }

@@ -10,12 +10,18 @@ import {
   type RecentCompletedSession,
   type RecentCompletedSet,
   type RecommendationResult,
+  type RoutineEquipmentCompatibility,
   type RoutineCode,
   type RoutineProfiles,
   type MuscleGroup,
 } from "./recommendations";
 import { getEntityServices } from "../application/services";
 import { expandLegacyPrescription } from "../domain/prescription";
+import {
+  missingExerciseEquipmentLabels,
+  parseStoredEquipmentPreferences,
+} from "../domain/training-profile";
+import { kilogramsToPounds } from "../domain/profile";
 import { ensureEntityData, ensureEntitySchema, materializeWorkoutFromSnapshot } from "../infrastructure/d1/entity-schema";
 import {
   getPreviousPerformanceByExercise,
@@ -82,6 +88,23 @@ type RawWorkoutSession = {
   lastPerformanceId: string | null;
   startedAt: string;
   completedAt: string | null;
+  bodyWeight: number | null;
+  bodyWeightSource: string | null;
+  weightUnit: string;
+};
+
+type WorkoutMeasurementSnapshot = {
+  bodyWeight: number | null;
+  bodyWeightSource: "profile_snapshot" | "profile_backfill" | null;
+  weightUnit: "lb" | "kg";
+};
+
+export type RecordedSetPerformance = {
+  status: "Completed" | "Skipped";
+  actualWeight: number | null;
+  actualReps: number | null;
+  actualDurationSec: number | null;
+  weightUnit: string;
 };
 
 export type WorkoutView = Omit<RawWorkoutSession, "snapshotJson"> & {
@@ -92,6 +115,7 @@ export type WorkoutView = Omit<RawWorkoutSession, "snapshotJson"> & {
   workoutElapsedSeconds: number;
   currentSetElapsedSeconds: number;
   previousPerformanceByExercise: Record<number, PreviousExercisePerformance>;
+  recordedPerformanceBySetId: Record<string, RecordedSetPerformance>;
   lastCompletedSetByExercise: Record<number, {
     actualWeight: number;
     actualReps: number | null;
@@ -101,6 +125,32 @@ export type WorkoutView = Omit<RawWorkoutSession, "snapshotJson"> & {
 function db(): D1Database {
   if (!env.DB) throw new Error("The workout database is unavailable.");
   return env.DB;
+}
+
+async function getWorkoutMeasurementSnapshot(
+  d1: D1Database,
+  ownerEmail: string,
+  source: "profile_snapshot" | "profile_backfill",
+): Promise<WorkoutMeasurementSnapshot> {
+  const profile = await d1.prepare(`SELECT body_weight_kg AS bodyWeightKg,
+      measurement_system AS measurementSystem
+      FROM app_users WHERE owner_email = ?`)
+    .bind(ownerEmail)
+    .first<{ bodyWeightKg: number | null; measurementSystem: string }>();
+  const weightUnit = profile?.measurementSystem === "metric" ? "kg" : "lb";
+  const bodyWeightKg = profile?.bodyWeightKg === null || profile?.bodyWeightKg === undefined
+    ? null
+    : Number(profile.bodyWeightKg);
+  const bodyWeight = bodyWeightKg === null
+    ? null
+    : weightUnit === "kg"
+      ? bodyWeightKg
+      : kilogramsToPounds(bodyWeightKg);
+  return {
+    bodyWeight,
+    bodyWeightSource: bodyWeight === null ? null : source,
+    weightUnit,
+  };
 }
 
 export async function ensureWorkoutSchema() {
@@ -153,6 +203,9 @@ export async function ensureWorkoutSchema() {
       last_performance_id TEXT,
       started_at TEXT NOT NULL,
       completed_at TEXT,
+      body_weight REAL,
+      body_weight_source TEXT,
+      weight_unit TEXT NOT NULL DEFAULT 'lb',
       updated_at TEXT NOT NULL
     )`),
     d1.prepare("CREATE UNIQUE INDEX IF NOT EXISTS one_active_session_per_owner ON workout_sessions(owner_email) WHERE status = 'In Progress'"),
@@ -196,6 +249,15 @@ export async function ensureWorkoutSchema() {
   }
   if (!columnNames.has("completed_at")) {
     await d1.prepare("ALTER TABLE workout_sessions ADD COLUMN completed_at TEXT").run();
+  }
+  if (!columnNames.has("body_weight")) {
+    await d1.prepare("ALTER TABLE workout_sessions ADD COLUMN body_weight REAL").run();
+  }
+  if (!columnNames.has("body_weight_source")) {
+    await d1.prepare("ALTER TABLE workout_sessions ADD COLUMN body_weight_source TEXT").run();
+  }
+  if (!columnNames.has("weight_unit")) {
+    await d1.prepare("ALTER TABLE workout_sessions ADD COLUMN weight_unit TEXT NOT NULL DEFAULT 'lb'").run();
   }
   for (const [table, additions] of Object.entries({
     set_performances: {
@@ -313,7 +375,7 @@ export async function getRoutineRecommendations(ownerEmail: string): Promise<Rec
   await ensureUserRoutines(ownerEmail);
   const cutoff = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString();
   const d1 = db();
-  const [sessions, completedMuscleRows, profileRows] = await Promise.all([
+  const [sessions, completedMuscleRows, profileRows, trainingPreferences, routineEquipmentRows] = await Promise.all([
     d1
       .prepare(`SELECT routine_code AS routineCode, completed_at AS completedAt
         FROM workout_sessions
@@ -343,6 +405,17 @@ export async function getRoutineRecommendations(ownerEmail: string): Promise<Rec
       GROUP BY r.code, em.muscle_group`)
       .bind(ownerEmail)
       .all<{ routineCode: RoutineCode; muscleGroup: MuscleGroup; profileWeight: number }>(),
+    d1.prepare(`SELECT equipment_preferences_json AS equipmentPreferencesJson
+      FROM app_users WHERE owner_email = ?`)
+      .bind(ownerEmail)
+      .first<{ equipmentPreferencesJson: string }>(),
+    d1.prepare(`SELECT r.code AS routineCode, ec.equipment
+      FROM routines r
+      INNER JOIN routine_version_exercises rve ON rve.routine_version_id = r.current_version_id
+      INNER JOIN exercise_catalog ec ON ec.id = rve.exercise_id AND ec.owner_email = r.owner_email
+      WHERE r.owner_email = ? AND r.is_active = 1`)
+      .bind(ownerEmail)
+      .all<{ routineCode: string; equipment: string }>(),
   ]);
 
   const completedSetMap = new Map<string, RecentCompletedSet>();
@@ -363,12 +436,33 @@ export async function getRoutineRecommendations(ownerEmail: string): Promise<Rec
     profiles[row.routineCode] ??= {};
     profiles[row.routineCode]![row.muscleGroup] = Number(row.profileWeight);
   }
+  const selectedEquipment = parseStoredEquipmentPreferences(
+    trainingPreferences?.equipmentPreferencesJson,
+  );
+  const equipmentByRoutine = new Map<RoutineCode, string[]>();
+  for (const row of routineEquipmentRows.results) {
+    if (!["A", "B", "C", "D"].includes(row.routineCode)) continue;
+    const code = row.routineCode as RoutineCode;
+    const equipment = equipmentByRoutine.get(code) ?? [];
+    equipment.push(row.equipment);
+    equipmentByRoutine.set(code, equipment);
+  }
+  const equipmentCompatibility: RoutineEquipmentCompatibility = {};
+  for (const [code, storedEquipment] of equipmentByRoutine) {
+    const missingEquipment = [...new Set(storedEquipment.flatMap((equipment) =>
+      missingExerciseEquipmentLabels(equipment, selectedEquipment)))];
+    equipmentCompatibility[code] = {
+      compatible: missingEquipment.length === 0,
+      missingEquipment,
+    };
+  }
 
   return buildRoutineRecommendations(
     sessions.results,
     [...completedSetMap.values()],
     new Date(),
     profiles,
+    equipmentCompatibility,
   );
 }
 
@@ -542,13 +636,14 @@ export async function startWorkout(
   }
 
   const services = getEntityServices();
-  const [routine, aggregate, exactExpectedVersion, exerciseLibrary] = await Promise.all([
+  const [routine, aggregate, exactExpectedVersion, exerciseLibrary, measurementSnapshot] = await Promise.all([
     getRoutine(ownerEmail, requestedCode),
     services.routines.get(ownerEmail, requestedCode),
     expectedRoutineVersionId
       ? services.routines.getVersion(ownerEmail, requestedCode, expectedRoutineVersionId)
       : Promise.resolve(null),
     services.exercises.list(ownerEmail, { includeArchived: true }),
+    getWorkoutMeasurementSnapshot(d1, ownerEmail, "profile_snapshot"),
   ]);
   if (!routine || !aggregate) return null;
   const currentVersion = expectedRoutineVersionId
@@ -582,7 +677,7 @@ export async function startWorkout(
               notes: exercise.notes,
               loadType: catalog?.defaultLoadType ?? "external",
               sideMode: catalog?.sideMode ?? exercise.sets[0]?.sideMode ?? "bilateral",
-              weightUnit: legacyExercise?.weightUnit ?? "lb",
+              weightUnit: measurementSnapshot.weightUnit,
               sets: [...exercise.sets]
                 .sort((left, right) => left.position - right.position)
                 .map((set) => ({
@@ -606,7 +701,7 @@ export async function startWorkout(
           }),
       }
     : undefined;
-  const snapshotRoutine = normalizedPrescription
+  const snapshotRoutineBase = normalizedPrescription
     ? {
         ...routine,
         version: normalizedPrescription.routineVersionNumber,
@@ -617,49 +712,74 @@ export async function startWorkout(
         normalizedPrescription,
       }
     : routine;
+  const snapshotRoutine = {
+    ...snapshotRoutineBase,
+    exercises: snapshotRoutineBase.exercises.map((exercise) => ({
+      ...exercise,
+      weightUnit: measurementSnapshot.weightUnit,
+    })),
+  };
   const now = new Date().toISOString();
   const totalSets = buildGuidedSets(snapshotRoutine).length;
   const id = crypto.randomUUID();
   const snapshotJson = JSON.stringify(snapshotRoutine);
   const createSession = expectedRoutineVersionId
     ? d1.prepare(`INSERT INTO workout_sessions (
-        id, owner_email, routine_code, routine_version, status, snapshot_json,
-        current_exercise, current_set, completed_sets, skipped_sets, total_sets,
-        started_at, updated_at
-      ) SELECT ?, ?, ?, ?, 'In Progress', ?, 1, 1, 0, 0, ?, ?, ?
+      id, owner_email, routine_code, routine_version, status, snapshot_json,
+      current_exercise, current_set, completed_sets, skipped_sets, total_sets,
+        body_weight, body_weight_source, weight_unit, started_at, updated_at
+      ) SELECT ?, ?, ?, ?, 'In Progress', ?, 1, 1, 0, 0, ?, ?, ?, ?, ?, ?
       WHERE EXISTS (
         SELECT 1 FROM routines
         WHERE owner_email = ? AND code = ? AND current_version_id = ?
       )`)
       .bind(
         id, ownerEmail, snapshotRoutine.code, snapshotRoutine.version, snapshotJson,
-        totalSets, now, now, ownerEmail, requestedCode, expectedRoutineVersionId,
+        totalSets, measurementSnapshot.bodyWeight, measurementSnapshot.bodyWeightSource,
+        measurementSnapshot.weightUnit, now, now,
+        ownerEmail, requestedCode, expectedRoutineVersionId,
       )
     : d1.prepare(`INSERT INTO workout_sessions (
         id, owner_email, routine_code, routine_version, status, snapshot_json,
         current_exercise, current_set, completed_sets, skipped_sets, total_sets,
-        started_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'In Progress', ?, 1, 1, 0, 0, ?, ?, ?)`)
-      .bind(id, ownerEmail, snapshotRoutine.code, snapshotRoutine.version, snapshotJson, totalSets, now, now);
+        body_weight, body_weight_source, weight_unit, started_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'In Progress', ?, 1, 1, 0, 0, ?, ?, ?, ?, ?, ?)`)
+      .bind(
+        id, ownerEmail, snapshotRoutine.code, snapshotRoutine.version, snapshotJson,
+        totalSets, measurementSnapshot.bodyWeight, measurementSnapshot.bodyWeightSource,
+        measurementSnapshot.weightUnit, now, now,
+      );
 
   let createResult: D1Result<unknown>;
   if (active) {
     const abandonSession = expectedRoutineVersionId
       ? d1.prepare(`UPDATE workout_sessions SET status = 'Abandoned', completed_at = ?,
-          rest_ends_at = NULL, updated_at = ?
+          rest_ends_at = NULL, body_weight = COALESCE(body_weight, ?),
+          weight_unit = CASE WHEN body_weight IS NULL AND ? IS NOT NULL THEN ? ELSE weight_unit END,
+          body_weight_source = CASE WHEN body_weight IS NULL AND ? IS NOT NULL THEN 'profile_backfill' ELSE body_weight_source END,
+          updated_at = ?
           WHERE id = ? AND owner_email = ? AND status = 'In Progress'
           AND EXISTS (
             SELECT 1 FROM routines
             WHERE owner_email = ? AND code = ? AND current_version_id = ?
           )`)
         .bind(
-          now, now, active.id, ownerEmail,
+          now, measurementSnapshot.bodyWeight,
+          measurementSnapshot.bodyWeight, measurementSnapshot.weightUnit,
+          measurementSnapshot.bodyWeight, now, active.id, ownerEmail,
           ownerEmail, requestedCode, expectedRoutineVersionId,
         )
       : d1.prepare(`UPDATE workout_sessions SET status = 'Abandoned', completed_at = ?,
-          rest_ends_at = NULL, updated_at = ?
+          rest_ends_at = NULL, body_weight = COALESCE(body_weight, ?),
+          weight_unit = CASE WHEN body_weight IS NULL AND ? IS NOT NULL THEN ? ELSE weight_unit END,
+          body_weight_source = CASE WHEN body_weight IS NULL AND ? IS NOT NULL THEN 'profile_backfill' ELSE body_weight_source END,
+          updated_at = ?
           WHERE id = ? AND owner_email = ? AND status = 'In Progress'`)
-        .bind(now, now, active.id, ownerEmail);
+        .bind(
+          now, measurementSnapshot.bodyWeight,
+          measurementSnapshot.bodyWeight, measurementSnapshot.weightUnit,
+          measurementSnapshot.bodyWeight, now, active.id, ownerEmail,
+        );
     const results = await d1.batch([
       abandonSession,
       createSession,
@@ -707,7 +827,8 @@ async function getRawWorkoutSession(ownerEmail: string, sessionId: string) {
       current_set AS currentSet, completed_sets AS completedSets, skipped_sets AS skippedSets,
       total_sets AS totalSets, rest_ends_at AS restEndsAt,
       last_performance_id AS lastPerformanceId, started_at AS startedAt,
-      completed_at AS completedAt
+      completed_at AS completedAt, body_weight AS bodyWeight,
+      body_weight_source AS bodyWeightSource, weight_unit AS weightUnit
       FROM workout_sessions WHERE id = ? AND owner_email = ?`)
     .bind(sessionId, ownerEmail)
     .first<RawWorkoutSession>();
@@ -768,21 +889,37 @@ export async function getWorkoutSession(ownerEmail: string, sessionId: string): 
     sessionId,
     session.startedAt,
   );
-  const completedSetRows = await db()
-    .prepare(`SELECT exercise_order AS exerciseOrder,
-      actual_weight AS actualWeight, actual_reps AS actualReps
+  const recordedSetRows = await db()
+    .prepare(`SELECT prescribed_set_id AS prescribedSetId,
+      exercise_order AS exerciseOrder, actual_weight AS actualWeight,
+      actual_reps AS actualReps, actual_duration_sec AS actualDurationSec,
+      weight_unit AS weightUnit, status
       FROM set_performances
-      WHERE session_id = ? AND owner_email = ? AND status = 'Completed'
+      WHERE session_id = ? AND owner_email = ? AND status IN ('Completed', 'Skipped')
       ORDER BY set_order`)
     .bind(sessionId, ownerEmail)
     .all<{
+      prescribedSetId: string;
       exerciseOrder: number;
       actualWeight: number | null;
       actualReps: number | null;
+      actualDurationSec: number | null;
+      weightUnit: string;
+      status: string;
     }>();
+  const recordedPerformanceBySetId: WorkoutView["recordedPerformanceBySetId"] = {};
   const lastCompletedSetByExercise: WorkoutView["lastCompletedSetByExercise"] = {};
-  for (const row of completedSetRows.results) {
-    if (row.actualWeight === null) continue;
+  for (const row of recordedSetRows.results) {
+    const status = row.status === "Skipped" ? "Skipped" : "Completed";
+    recordedPerformanceBySetId[row.prescribedSetId] = {
+      status,
+      actualWeight: row.actualWeight === null ? null : Number(row.actualWeight),
+      actualReps: row.actualReps === null ? null : Number(row.actualReps),
+      actualDurationSec:
+        row.actualDurationSec === null ? null : Number(row.actualDurationSec),
+      weightUnit: row.weightUnit,
+    };
+    if (status !== "Completed" || row.actualWeight === null) continue;
     lastCompletedSetByExercise[Number(row.exerciseOrder)] = {
       actualWeight: Number(row.actualWeight),
       actualReps: row.actualReps === null ? null : Number(row.actualReps),
@@ -813,6 +950,7 @@ export async function getWorkoutSession(ownerEmail: string, sessionId: string): 
     completedSets: Number(session.completedSets),
     skippedSets: Number(session.skippedSets),
     totalSets: Number(session.totalSets),
+    bodyWeight: session.bodyWeight === null ? null : Number(session.bodyWeight),
     restEndsAt,
     routine,
     sets,
@@ -821,6 +959,7 @@ export async function getWorkoutSession(ownerEmail: string, sessionId: string): 
     workoutElapsedSeconds,
     currentSetElapsedSeconds,
     previousPerformanceByExercise,
+    recordedPerformanceBySetId,
     lastCompletedSetByExercise,
   };
 }
@@ -993,6 +1132,9 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
   const d1 = db();
   const nextSetIndex = currentIndex + 1;
   const workoutCompleted = nextSetIndex >= sets.length;
+  const completionMeasurement = workoutCompleted && session.bodyWeight === null
+    ? await getWorkoutMeasurementSnapshot(d1, ownerEmail, "profile_backfill")
+    : null;
   const plannedRestEndsAtMs = occurredAtMs + effectiveRestSeconds * 1000;
   const restIsActive = !workoutCompleted && effectiveRestSeconds > 0 && plannedRestEndsAtMs > receivedAtMs;
   const restEndsAt = restIsActive ? new Date(plannedRestEndsAtMs).toISOString() : null;
@@ -1017,7 +1159,7 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
       actual_reps, actual_duration_sec, actual_weight, weight_unit, status,
       performed_at, started_at, elapsed_seconds, workout_elapsed_seconds,
       rest_skipped, notes, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'lb', ?, ?, ?, ?, ?, 0, '', ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', ?, ?)
     ON CONFLICT(id) DO NOTHING`)
       .bind(
       performanceId, ownerEmail, sessionId, prescribedSet.id, prescribedSet.exerciseId,
@@ -1025,7 +1167,8 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
       prescribedSet.setType, prescribedSet.target, effectiveRestSeconds,
       prescribedSet.restRule, status === "Completed" ? actualReps : null,
       status === "Completed" ? actualDurationSec : null,
-      status === "Completed" ? actualWeight : null, status, occurredAt, setStartedAt,
+      status === "Completed" ? actualWeight : null, prescribedSet.weightUnit,
+      status, occurredAt, setStartedAt,
       setElapsedSeconds, workoutElapsedSeconds, receivedAt, receivedAt),
     d1.prepare(`UPDATE workout_sets SET actual_reps = ?, actual_duration_sec = ?, actual_weight = ?,
       started_at = COALESCE(started_at, ?), elapsed_seconds = COALESCE(elapsed_seconds, ?),
@@ -1058,9 +1201,16 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
   if (workoutCompleted) {
     statements.push(d1.prepare(`UPDATE workout_sessions SET status = 'Completed', current_set = ?,
         completed_sets = ?, skipped_sets = ?, rest_ends_at = NULL,
-        last_performance_id = ?, completed_at = ?, updated_at = ?
+        last_performance_id = ?, completed_at = ?,
+        body_weight = COALESCE(body_weight, ?),
+        weight_unit = CASE WHEN body_weight IS NULL AND ? IS NOT NULL THEN ? ELSE weight_unit END,
+        body_weight_source = CASE WHEN body_weight IS NULL AND ? IS NOT NULL THEN ? ELSE body_weight_source END,
+        updated_at = ?
         WHERE id = ? AND owner_email = ? AND status = 'In Progress' AND current_set = ?`)
       .bind(sets.length + 1, completedSets, skippedSets, performanceId, occurredAt,
+        completionMeasurement?.bodyWeight ?? null,
+        completionMeasurement?.bodyWeight ?? null, completionMeasurement?.weightUnit ?? "lb",
+        completionMeasurement?.bodyWeight ?? null, completionMeasurement?.bodyWeightSource ?? null,
         receivedAt, sessionId, ownerEmail, currentIndex + 1));
   } else {
     statements.push(d1.prepare(`UPDATE workout_sessions SET current_exercise = ?, current_set = ?,
@@ -1218,6 +1368,9 @@ export async function completeWorkoutEarly(
   const priorRestFinishedAt = Number.isFinite(priorRestEndsAtMs)
     ? priorRestWasSkipped ? occurredAt : session.restEndsAt
     : null;
+  const completionMeasurement = session.bodyWeight === null
+    ? await getWorkoutMeasurementSnapshot(d1, ownerEmail, "profile_backfill")
+    : null;
 
   const statements: D1PreparedStatement[] = remainingSets.map((set) => {
     const startedAt = timingBySet.get(set.id)
@@ -1277,10 +1430,18 @@ export async function completeWorkoutEarly(
   const skippedSets = Number(session.skippedSets) + remainingSets.length;
   statements.push(d1.prepare(`UPDATE workout_sessions SET status = 'Partial',
       current_set = ?, completed_sets = ?, skipped_sets = ?, rest_ends_at = NULL,
-      completed_at = ?, updated_at = ?
+      completed_at = ?, body_weight = COALESCE(body_weight, ?),
+      weight_unit = CASE WHEN body_weight IS NULL AND ? IS NOT NULL THEN ? ELSE weight_unit END,
+      body_weight_source = CASE WHEN body_weight IS NULL AND ? IS NOT NULL THEN ? ELSE body_weight_source END,
+      updated_at = ?
       WHERE id = ? AND owner_email = ? AND status = 'In Progress'`)
-    .bind(sets.length + 1, completedSets, skippedSets, occurredAt, receivedAt,
-      sessionId, ownerEmail));
+    .bind(
+      sets.length + 1, completedSets, skippedSets, occurredAt,
+      completionMeasurement?.bodyWeight ?? null,
+      completionMeasurement?.bodyWeight ?? null, completionMeasurement?.weightUnit ?? "lb",
+      completionMeasurement?.bodyWeight ?? null, completionMeasurement?.bodyWeightSource ?? null,
+      receivedAt, sessionId, ownerEmail,
+    ));
   statements.push(d1.prepare(`UPDATE workout_exercises SET status = CASE
       WHEN EXISTS (SELECT 1 FROM workout_sets ws
         WHERE ws.workout_exercise_id = workout_exercises.id AND ws.status = 'completed')

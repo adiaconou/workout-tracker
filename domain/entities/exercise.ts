@@ -46,6 +46,7 @@ export type ExerciseInput = {
 
 export type ExerciseProgressMetric =
   | "epley_estimated_1rm"
+  | "epley_estimated_total_load"
   | "reps"
   | "duration"
   | "rounds";
@@ -62,6 +63,12 @@ export type ExerciseProgressPoint = {
   actualReps: number | null;
   actualDurationSec: number | null;
   weightUnit: string;
+  loadType: LoadType;
+  effectiveLoad: number | null;
+  effectiveLoadUnit: "lb" | "kg" | null;
+  bodyWeight: number | null;
+  bodyWeightUnit: string;
+  bodyWeightEstimated: boolean;
 };
 
 export type ExerciseProgress = {

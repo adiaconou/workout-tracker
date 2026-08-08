@@ -1,5 +1,6 @@
 import { getEntityServices, validateRoutineVersionInput } from "../application/services";
 import type { RoutineVersionInput } from "../domain/entities";
+import { isTrainingProfileComplete } from "../domain/training-profile";
 import {
   completeWorkoutEarly,
   getRoutine,
@@ -29,6 +30,8 @@ import type { ApiUser, WorkerEnv } from "./types";
 import { verifyGoogleIdToken } from "./google";
 import { handleAssistantRequest } from "./assistant";
 import { isRoutineVersionSemanticallyEqual } from "./coach-routine-change";
+import { getUserProfile, updateUserProfile } from "./profile";
+import { handleOnboardingRequest, sessionUser } from "./onboarding";
 
 type RouteContext = {
   request: Request;
@@ -65,6 +68,17 @@ export async function handleApiRequest(request: Request, env: WorkerEnv) {
     const context = { request, env, user, segments };
 
     if (segments[0] === "auth") return handleAuthenticatedAuth(context);
+    if (segments[0] === "onboarding") {
+      return handleOnboardingRequest(request, env, user);
+    }
+    if (!isTrainingProfileComplete(user.trainingProfile)) {
+      return apiError(
+        request,
+        409,
+        "onboarding_required",
+        "Choose your available equipment and workout duration before continuing.",
+      );
+    }
     if (segments[0] === "bootstrap") return handleBootstrap(context);
     if (segments[0] === "exercises") return handleExercises(context);
     if (segments[0] === "routines") return handleRoutines(context);
@@ -123,14 +137,33 @@ async function handleRefresh(request: Request, env: WorkerEnv) {
 }
 
 async function handleAuthenticatedAuth({ request, env, user, segments }: RouteContext) {
+  if (segments[1] === "profile" && !segments[2]) {
+    if (request.method === "GET") {
+      const profile = await getUserProfile(env, user);
+      return profile
+        ? apiResponse(request, { profile })
+        : apiError(request, 404, "profile_not_found", "Profile not found.");
+    }
+    if (request.method === "PATCH") {
+      try {
+        const profile = await updateUserProfile(env, user, await readJson<unknown>(request));
+        return profile
+          ? apiResponse(request, { profile })
+          : apiError(request, 404, "profile_not_found", "Profile not found.");
+      } catch (error) {
+        return apiError(
+          request,
+          400,
+          "profile_invalid",
+          errorMessage(error, "The profile could not be saved."),
+        );
+      }
+    }
+    return apiError(request, 405, "method_not_allowed", "Use GET or PATCH for the profile.");
+  }
   if (segments[1] === "session" && request.method === "GET") {
     return apiResponse(request, {
-      user: {
-        id: user.id,
-        email: user.email,
-        displayName: user.displayName,
-        photoUrl: user.photoUrl,
-      },
+      user: sessionUser(user),
       provider: user.provider,
     });
   }
@@ -155,12 +188,7 @@ async function handleBootstrap({ request, user }: RouteContext) {
     ? await getWorkoutSession(user.email, active[0].id)
     : null;
   return apiResponse(request, {
-    user: {
-      id: user.id,
-      email: user.email,
-      displayName: user.displayName,
-      photoUrl: user.photoUrl,
-    },
+    user: sessionUser(user),
     routines,
     recommendations,
     activeWorkout,
@@ -178,6 +206,7 @@ async function handleExercises({ request, user, segments }: RouteContext) {
         exercises: await service.list(user.email, {
           includeArchived: url.searchParams.get("includeArchived") === "true",
           search: url.searchParams.get("search") ?? undefined,
+          availableOnly: url.searchParams.get("scope") !== "all",
         }),
       });
     }
@@ -193,9 +222,14 @@ async function handleExercises({ request, user, segments }: RouteContext) {
     if (request.method === "GET") {
       try {
         const url = new URL(request.url);
+        const unit = url.searchParams.get("unit");
+        if (unit !== null && unit !== "lb" && unit !== "kg") {
+          throw new Error("Progress weight unit must be lb or kg.");
+        }
         const progress = await service.progress(user.email, exerciseId, {
           from: url.searchParams.get("from") ?? undefined,
           limit: Number(url.searchParams.get("limit") ?? 16),
+          unit: unit ?? undefined,
         });
         return progress
           ? apiResponse(request, { progress })

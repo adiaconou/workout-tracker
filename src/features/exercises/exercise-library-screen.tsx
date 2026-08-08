@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import {
   FlatList,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -31,6 +32,7 @@ export function ExerciseLibraryScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [favoriteError, setFavoriteError] = useState("");
+  const [settingsFocused, setSettingsFocused] = useState(false);
   const [savingFavoriteIds, setSavingFavoriteIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -105,9 +107,25 @@ export function ExerciseLibraryScreen() {
           <Eyebrow>Movement catalog</Eyebrow>
           <Heading>Exercise Library</Heading>
         </View>
-        <Text style={styles.total}>
-          {exercises.length} total · {favoriteCount} favorite{favoriteCount === 1 ? "" : "s"}
-        </Text>
+        <View style={styles.headerActions}>
+          <Text style={styles.total}>
+            {exercises.length} available · {favoriteCount} favorite{favoriteCount === 1 ? "" : "s"}
+          </Text>
+          <Pressable
+            accessibilityRole="link"
+            accessibilityLabel="Open equipment settings"
+            onBlur={() => setSettingsFocused(false)}
+            onFocus={() => setSettingsFocused(true)}
+            onPress={() => router.push("/onboarding")}
+            style={({ pressed }) => [
+              styles.settingsAction,
+              pressed && styles.settingsActionPressed,
+              settingsFocused && Platform.OS === "web" && styles.webFocusRing,
+            ]}
+          >
+            <Text style={styles.settingsActionText}>Equipment settings</Text>
+          </Pressable>
+        </View>
       </View>
 
       <View style={styles.searchWrap}>
@@ -255,8 +273,12 @@ function primaryMuscles(exercise: Exercise) {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, maxWidth: maxContentWidth, paddingBottom: spacing.lg },
-  header: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", gap: spacing.md },
+  header: { flexDirection: "row", flexWrap: "wrap", alignItems: "flex-end", justifyContent: "space-between", gap: spacing.md },
+  headerActions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: spacing.sm },
   total: { color: colors.textMuted, fontSize: 12, fontWeight: "700" },
+  settingsAction: { minHeight: 44, justifyContent: "center", paddingHorizontal: spacing.sm, borderRadius: radii.sm },
+  settingsActionPressed: { backgroundColor: colors.surfaceRaised },
+  settingsActionText: { color: colors.accent, fontSize: 11, fontWeight: "800" },
   searchWrap: { minHeight: 42, flexDirection: "row", alignItems: "center", gap: spacing.sm, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radii.md, backgroundColor: colors.surface, paddingHorizontal: spacing.md },
   search: { flex: 1, color: colors.text, paddingVertical: spacing.sm, fontSize: 14, outlineStyle: "none" } as never,
   clear: { color: colors.accent, fontSize: 11, fontWeight: "800" },
@@ -285,4 +307,10 @@ const styles = StyleSheet.create({
   arrow: { color: colors.textDim, fontSize: 13 },
   emptyList: { flexGrow: 1, justifyContent: "center" },
   empty: { alignItems: "center", padding: spacing.xl, gap: spacing.md },
+  webFocusRing: {
+    outlineColor: colors.accent,
+    outlineOffset: 2,
+    outlineStyle: "solid",
+    outlineWidth: 2,
+  },
 });

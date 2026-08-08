@@ -30,7 +30,8 @@ import {
   StepperField,
 } from "../../components/ui";
 import { colors, radii, spacing } from "../../theme/tokens";
-import { formatPreviousSetPerformance } from "./previous-performance";
+import { ActiveExerciseProgressChart } from "./active-exercise-progress-chart";
+import { ActiveSetComparison } from "./active-set-comparison";
 import {
   buildWorkoutExerciseProgress,
   type ExerciseProgress,
@@ -50,7 +51,6 @@ import {
   summarizeWorkoutTiming,
   type WorkoutExerciseTimingSummary,
 } from "./workout-timing";
-import { buildCompactSetDetails } from "./set-guidance";
 
 type RecordSetResponse = {
   performanceId: string;
@@ -203,6 +203,12 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   const previousExerciseSets = currentSet
     ? workout?.previousPerformanceByExercise[currentSet.exerciseOrder]?.sets ?? []
     : [];
+  const currentExerciseSets = useMemo(
+    () => currentSet
+      ? workout?.sets.filter((set) => set.exerciseOrder === currentSet.exerciseOrder) ?? []
+      : [],
+    [currentSet?.exerciseOrder, workout?.sets],
+  );
   const currentExerciseInputKey = currentSet
     ? `${sessionId}:${currentSet.sourceRoutineExerciseId ?? `position:${currentSet.exerciseOrder}`}`
     : "";
@@ -330,6 +336,25 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
       setCompletedSets(payload.completedSets);
       setSkippedSets(payload.skippedSets);
       setSaveState("Saved");
+      setWorkout((current) => current ? {
+        ...current,
+        recordedPerformanceBySetId: {
+          ...(current.recordedPerformanceBySetId ?? {}),
+          [currentSet.id]: {
+            status,
+            actualWeight: status === "Completed" ? numericWeight : null,
+            actualReps:
+              status === "Completed" && currentSet.targetUnit !== "seconds"
+                ? numericResult
+                : null,
+            actualDurationSec:
+              status === "Completed" && currentSet.targetUnit === "seconds"
+                ? numericResult
+                : null,
+            weightUnit: currentSet.weightUnit,
+          },
+        },
+      } : current);
       workoutElapsedAnchor.current = {
         seconds: payload.workoutElapsedSeconds,
         anchoredAt: recordedAt,
@@ -666,113 +691,141 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
       ) : null}
       {error ? <Message>{error}</Message> : null}
 
-      {restEndsAt && currentSet ? (
-        <View style={styles.restLayout}>
-          <Card style={styles.timerCard}>
-            <Eyebrow>Rest in progress</Eyebrow>
-            <Text
-              accessibilityLabel={`${secondsRemaining} seconds remaining`}
-              style={styles.timer}
-            >
-              {formatTimer(secondsRemaining)}
-            </Text>
-            <View style={styles.timerTrack}>
+      {currentSet ? (
+        <Card style={styles.setCard}>
+          <CompactSetOverview
+            eyebrow={`${restEndsAt ? "Next · " : ""}Exercise ${exercisePosition} of ${exerciseOrders.length}`}
+            workoutSet={currentSet}
+          />
+          {restEndsAt ? (
+            <View style={styles.inlineRest}>
+              <View style={styles.inlineRestTopline}>
+                <Eyebrow>Rest in progress</Eyebrow>
+                <Text
+                  accessibilityLabel={`${secondsRemaining} seconds remaining`}
+                  accessibilityLiveRegion="polite"
+                  style={styles.inlineRestTimer}
+                >
+                  {formatTimer(secondsRemaining)}
+                </Text>
+              </View>
               <View
-                style={[
-                  styles.timerValue,
-                  { width: `${restDuration ? (secondsRemaining / restDuration) * 100 : 0}%` },
-                ]}
-              />
-            </View>
-            <Button
-              title="Skip rest →"
-              variant="secondary"
-              loading={saving}
-              onPress={() => void skipRest()}
-            />
-          </Card>
-          <Card style={styles.setCard}>
-            <CompactSetOverview
-              eyebrow={`Next set · Exercise ${exercisePosition} of ${exerciseOrders.length}`}
-              workoutSet={currentSet}
-            />
-            <PreviousPerformance
-              sets={previousExerciseSets}
-              setCount={currentSet.exerciseSetTotal}
-            />
-          </Card>
-        </View>
-      ) : currentSet ? (
-        <>
-          <Card style={styles.setCard}>
-            <CompactSetOverview
-              eyebrow={`Exercise ${exercisePosition} of ${exerciseOrders.length}`}
-              workoutSet={currentSet}
-            />
-          </Card>
-
-          <Card>
-            <Eyebrow>Log this set</Eyebrow>
-            {currentSet.targetUnit === "seconds" ? (
-              <SetStopwatch
-                elapsedMs={stopwatchElapsedMs}
-                running={stopwatchStartedAt !== null}
-                onStart={startStopwatch}
-                onPause={pauseStopwatch}
-                onReset={resetStopwatch}
-              />
-            ) : null}
-            <StepperField
-              label={loadLabel(currentSet.loadType)}
-              value={weight}
-              onChangeText={setWeight}
-              keyboardType="decimal-pad"
-              placeholder="0"
-              selectTextOnFocus
-            />
-            <StepperField
-              label={`${resultUnitName(currentSet.targetUnit, true)} completed`}
-              value={result}
-              onChangeText={
-                currentSet.targetUnit === "seconds"
-                  ? updateDurationResult
-                  : setResult
-              }
-              keyboardType="number-pad"
-              placeholder="0"
-              selectTextOnFocus
-              editable={currentSet.targetUnit !== "seconds" || stopwatchStartedAt === null}
-            />
-            <Button
-              title={saving ? "Saving…" : "Complete set →"}
-              loading={saving}
-              onPress={() => void recordSet("Completed")}
-            />
-            <Button
-              title="Skip this set"
-              variant="ghost"
-              disabled={saving}
-              onPress={() => void recordSet("Skipped")}
-            />
-            {saveState ? (
-              <Text style={[
-                styles.saveState,
-                saveState === "Save failed" && styles.saveFailed,
-              ]}>
-                {saveState}
-              </Text>
-            ) : null}
-            {pendingCount ? (
+                accessibilityRole="progressbar"
+                accessibilityLabel="Rest time remaining"
+                accessibilityValue={{
+                  min: 0,
+                  max: Math.max(1, restDuration),
+                  now: Math.min(Math.max(0, secondsRemaining), Math.max(1, restDuration)),
+                  text: `${secondsRemaining} seconds remaining`,
+                }}
+                style={styles.timerTrack}
+              >
+                <View
+                  style={[
+                    styles.timerValue,
+                    { width: `${restDuration ? (secondsRemaining / restDuration) * 100 : 0}%` },
+                  ]}
+                />
+              </View>
               <Button
-                title="Retry pending save"
+                title="Skip Rest"
                 variant="secondary"
                 compact
                 loading={saving}
-                onPress={() => void retryPending()}
+                onPress={() => void skipRest()}
               />
-            ) : null}
-          </Card>
-        </>
+            </View>
+          ) : null}
+          <ActiveExerciseProgressChart
+            key={`progress:${currentSet.exerciseId}:${currentSet.exerciseOrder}`}
+            exerciseId={currentSet.exerciseId}
+            exerciseName={currentSet.exerciseName}
+          />
+          <ActiveSetComparison
+            sets={currentExerciseSets}
+            previousSets={previousExerciseSets}
+            recordedPerformanceBySetId={workout.recordedPerformanceBySetId ?? {}}
+            currentSetId={currentSet.id}
+            weight={weight}
+            result={result}
+          />
+          {!restEndsAt ? (
+            <View style={styles.logControls}>
+              {currentSet.targetUnit === "seconds" ? (
+                <SetStopwatch
+                  elapsedMs={stopwatchElapsedMs}
+                  running={stopwatchStartedAt !== null}
+                  onStart={startStopwatch}
+                  onPause={pauseStopwatch}
+                  onReset={resetStopwatch}
+                />
+              ) : null}
+              <View style={styles.logFields}>
+                <View style={styles.logField}>
+                  <StepperField
+                    label={loadLabel(currentSet.loadType, currentSet.weightUnit)}
+                    value={weight}
+                    onChangeText={setWeight}
+                    keyboardType="decimal-pad"
+                    placeholder="0"
+                    selectTextOnFocus
+                  />
+                </View>
+                <View style={styles.logField}>
+                  <StepperField
+                    label={`${resultUnitName(currentSet.targetUnit, true)} completed`}
+                    value={result}
+                    onChangeText={
+                      currentSet.targetUnit === "seconds"
+                        ? updateDurationResult
+                        : setResult
+                    }
+                    keyboardType="number-pad"
+                    placeholder="0"
+                    selectTextOnFocus
+                    editable={currentSet.targetUnit !== "seconds" || stopwatchStartedAt === null}
+                  />
+                </View>
+              </View>
+              <View style={styles.setActions}>
+                <View style={styles.setAction}>
+                  <Button
+                    title={saving ? "Saving…" : "Complete"}
+                    compact
+                    loading={saving}
+                    onPress={() => void recordSet("Completed")}
+                  />
+                </View>
+                <View style={styles.setAction}>
+                  <Button
+                    title="Skip"
+                    variant="secondary"
+                    compact
+                    disabled={saving}
+                    onPress={() => void recordSet("Skipped")}
+                  />
+                </View>
+              </View>
+              {saveState ? (
+                <Text style={[
+                  styles.saveState,
+                  saveState === "Save failed" && styles.saveFailed,
+                ]}>
+                  {saveState}
+                </Text>
+              ) : null}
+              {pendingCount ? (
+                <Button
+                  title="Retry pending save"
+                  variant="secondary"
+                  compact
+                  loading={saving}
+                  onPress={() => void retryPending()}
+                />
+              ) : null}
+            </View>
+          ) : null}
+        </Card>
       ) : (
         <Message>There are no remaining sets, but this workout has not been finalized.</Message>
       )}
@@ -956,79 +1009,25 @@ function CompactSetOverview({
   eyebrow: string;
   workoutSet: WorkoutView["sets"][number];
 }) {
-  const restLabel = formatRest(workoutSet.restSeconds, workoutSet.restRule);
-  const details = buildCompactSetDetails({
-    primaryValues: [workoutSet.target, restLabel],
-    details: [
-      { id: "effort", label: "Effort", value: workoutSet.effort },
-      { id: "load", label: "Load", value: workoutSet.loadInstruction },
-      {
-        id: "sides",
-        label: "Sides",
-        value: workoutSet.sideMode && workoutSet.sideMode !== "bilateral"
-          ? sideModeLabel(workoutSet.sideMode)
-          : null,
-      },
-      { id: "tempo", label: "Tempo", value: workoutSet.tempo },
-      { id: "instructions", label: "Cue", value: workoutSet.exerciseInstructions },
-      { id: "purpose", label: "Why", value: workoutSet.purpose },
-      { id: "set-notes", label: "Set note", value: workoutSet.notes },
-      { id: "exercise-notes", label: "Notes", value: workoutSet.exerciseNotes },
-    ],
-  });
-
   return (
     <>
       <Eyebrow>{eyebrow}</Eyebrow>
-      <Heading size="medium">{workoutSet.exerciseName}</Heading>
-      <Text style={styles.setMeta}>
-        {setTypeLabel(workoutSet.setType)} · Set {workoutSet.exerciseSetNumber} of{" "}
-        {workoutSet.exerciseSetTotal}
-      </Text>
+      <View style={styles.setHeadingRow}>
+        <View style={styles.setHeadingCopy}>
+          <Heading size="medium">{workoutSet.exerciseName}</Heading>
+        </View>
+        <Text style={styles.setMeta}>
+          {setTypeLabel(workoutSet.setType)} · Set {workoutSet.exerciseSetNumber} of{" "}
+          {workoutSet.exerciseSetTotal}
+        </Text>
+      </View>
       <View style={styles.setSummary}>
-        <View style={[styles.setMetric, styles.setMetricTarget]}>
+        <View style={styles.setMetric}>
           <Text style={styles.setMetricLabel}>Target</Text>
           <Text style={styles.setMetricValue}>{workoutSet.target}</Text>
         </View>
-        <View style={styles.setMetricDivider} />
-        <View style={styles.setMetric}>
-          <Text style={styles.setMetricLabel}>Rest</Text>
-          <Text style={styles.setMetricValue}>{restLabel}</Text>
-        </View>
       </View>
-      {details.length ? (
-        <View style={styles.setGuidance}>
-          {details.map((detail) => (
-            <View key={detail.id} style={styles.setGuidanceRow}>
-              <Text style={styles.setGuidanceLabel}>{detail.label}</Text>
-              <Text style={styles.setGuidanceValue}>{detail.value}</Text>
-            </View>
-          ))}
-        </View>
-      ) : null}
     </>
-  );
-}
-
-function PreviousPerformance({
-  sets,
-  setCount,
-}: {
-  sets: NonNullable<WorkoutView["previousPerformanceByExercise"][number]>["sets"];
-  setCount: number;
-}) {
-  return (
-    <View style={styles.previousPerformance}>
-      <Text style={styles.previousHeading}>Last time</Text>
-      {Array.from({ length: Math.max(1, setCount) }, (_, index) => (
-        <View key={index} style={styles.previousSetRow}>
-          <Text style={styles.previousSetLabel}>Set {index + 1}</Text>
-          <Text style={styles.previousSetValue}>
-            {formatPreviousSetPerformance(sets[index])}
-          </Text>
-        </View>
-      ))}
-    </View>
   );
 }
 
@@ -1247,12 +1246,12 @@ function formatTimer(seconds: number) {
 }
 
 function setTypeLabel(type: string) {
-  if (type === "emom") return "EMOM round";
-  if (type === "test") return "Test set";
-  if (type === "warmup") return "Warm-up set";
-  if (type === "failure") return "Failure set";
-  if (type === "drop") return "Drop set";
-  return "Working set";
+  if (type === "emom") return "EMOM";
+  if (type === "test") return "Test";
+  if (type === "warmup") return "Warm-up";
+  if (type === "failure") return "Failure";
+  if (type === "drop") return "Drop";
+  return "Working";
 }
 
 function resultUnitName(unit: "reps" | "seconds" | "rounds", capitalize = false) {
@@ -1260,26 +1259,10 @@ function resultUnitName(unit: "reps" | "seconds" | "rounds", capitalize = false)
   return capitalize ? `${label.charAt(0).toUpperCase()}${label.slice(1)}` : label;
 }
 
-function sideModeLabel(sideMode: string) {
-  if (sideMode === "per_side") return "Per side";
-  if (sideMode === "per_leg") return "Per leg";
-  if (sideMode === "left_right") return "Left, then right";
-  return "Bilateral";
-}
-
-function loadLabel(type: string) {
-  if (type === "assistance") return "Assistance used (lb)";
-  if (type === "bodyweight" || type === "added") return "Added weight (lb)";
-  return "Weight used (lb)";
-}
-
-function formatRest(seconds: number, rule: string) {
-  if (rule === "emom") return "Start every minute";
-  if (rule === "no_rest_before_drop") return "No rest before drop";
-  if (rule === "after_superset") return "After superset";
-  if (!seconds) return "None";
-  const base = seconds % 60 === 0 ? `${seconds / 60} min` : `${seconds} sec`;
-  return rule === "after_both_sides" ? `${base} after both` : base;
+function loadLabel(type: string, unit: string) {
+  if (type === "assistance") return `Assistance (${unit})`;
+  if (type === "bodyweight" || type === "added") return `Added weight (${unit})`;
+  return `Weight (${unit})`;
 }
 
 const styles = StyleSheet.create({
@@ -1602,59 +1585,59 @@ const styles = StyleSheet.create({
     gap: spacing.lg,
   },
   finishEarlyButtons: { gap: spacing.sm },
-  restLayout: { gap: spacing.lg },
-  timerCard: { alignItems: "stretch", paddingVertical: spacing.xl },
-  timer: { color: colors.text, fontSize: 72, lineHeight: 80, fontWeight: "800", textAlign: "center", fontVariant: ["tabular-nums"], letterSpacing: -3 },
-  timerTrack: { height: 6, borderRadius: radii.pill, backgroundColor: colors.background, overflow: "hidden", marginBottom: spacing.md },
-  timerValue: { height: "100%", borderRadius: radii.pill, backgroundColor: colors.accent },
-  previousPerformance: {
+  inlineRest: {
     gap: spacing.sm,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
     paddingTop: spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.borderStrong,
   },
-  previousHeading: {
-    color: colors.textDim,
-    fontSize: 10,
-    fontWeight: "800",
-    letterSpacing: 0.8,
-    textTransform: "uppercase",
-  },
-  previousSetRow: {
-    minHeight: 24,
+  inlineRestTopline: {
+    minHeight: 38,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: spacing.lg,
+    gap: spacing.md,
   },
-  previousSetLabel: { color: colors.textMuted, fontSize: 12 },
-  previousSetValue: {
+  inlineRestTimer: {
     color: colors.text,
-    fontSize: 13,
-    fontWeight: "700",
+    fontSize: 30,
+    lineHeight: 36,
+    fontWeight: "800",
     fontVariant: ["tabular-nums"],
-    textAlign: "right",
+    letterSpacing: -1,
   },
-  setCard: { backgroundColor: colors.surfaceRaised, gap: spacing.sm },
+  timerTrack: {
+    height: 6,
+    borderRadius: radii.pill,
+    backgroundColor: colors.background,
+    overflow: "hidden",
+  },
+  timerValue: { height: "100%", borderRadius: radii.pill, backgroundColor: colors.accent },
+  setCard: { backgroundColor: colors.surfaceRaised, gap: spacing.md },
+  setHeadingRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
+  setHeadingCopy: { flexGrow: 1, flexShrink: 1, minWidth: 180 },
   setMeta: {
     color: colors.textMuted,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: "700",
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: "800",
+    fontVariant: ["tabular-nums"],
   },
   setSummary: {
-    minHeight: 58,
-    flexDirection: "row",
-    alignItems: "stretch",
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.borderStrong,
+    minHeight: 48,
+    justifyContent: "center",
+    paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
-    marginTop: spacing.xs,
+    borderRadius: radii.md,
+    backgroundColor: colors.background,
   },
-  setMetric: { flex: 1, justifyContent: "center", gap: 2, paddingHorizontal: spacing.md },
-  setMetricTarget: { flex: 2, paddingLeft: 0 },
-  setMetricDivider: { width: StyleSheet.hairlineWidth, backgroundColor: colors.borderStrong },
+  setMetric: { gap: 2 },
   setMetricLabel: {
     color: colors.textDim,
     fontSize: 9,
@@ -1664,24 +1647,16 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   setMetricValue: { color: colors.text, fontSize: 15, lineHeight: 20, fontWeight: "800" },
-  setGuidance: { gap: spacing.xs, paddingTop: spacing.xs },
-  setGuidanceRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
-  setGuidanceLabel: {
-    width: 58,
-    color: colors.textDim,
-    fontSize: 10,
-    lineHeight: 19,
-    fontWeight: "800",
-    textTransform: "uppercase",
+  logControls: {
+    gap: spacing.md,
+    paddingTop: spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.borderStrong,
   },
-  setGuidanceValue: {
-    flex: 1,
-    minWidth: 0,
-    color: colors.text,
-    fontSize: 14,
-    lineHeight: 19,
-    fontWeight: "600",
-  },
+  logFields: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
+  logField: { flexGrow: 1, flexBasis: 260, minWidth: 0 },
+  setActions: { flexDirection: "row", alignItems: "stretch", gap: spacing.sm },
+  setAction: { flex: 1, minWidth: 0 },
   saveState: { textAlign: "center", color: colors.success, fontSize: 12, fontWeight: "700" },
   saveFailed: { color: colors.danger },
 });

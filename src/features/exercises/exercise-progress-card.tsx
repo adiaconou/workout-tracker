@@ -15,6 +15,7 @@ import type {
 import { apiRequest } from "../../api/client";
 import { Body, Button, Card, Eyebrow, Heading, Message } from "../../components/ui";
 import { colors, radii, spacing } from "../../theme/tokens";
+import { useProfile } from "../../profile/profile-context";
 import {
   exerciseProgressRangeStart,
   type ExerciseProgressRange,
@@ -53,6 +54,18 @@ export function progressValueLabel(
 
 export function progressSetLabel(point: ExerciseProgressPoint) {
   if (point.actualDurationSec !== null) return formatDuration(point.actualDurationSec);
+  if (point.bodyWeight !== null && point.actualReps !== null && point.loadType !== "external") {
+    const bodyWeight = `${formatNumber(point.bodyWeight)} ${point.bodyWeightUnit} BW`;
+    const loggedLoad = point.actualWeight === null
+      ? null
+      : `${formatNumber(point.actualWeight)} ${point.weightUnit}`;
+    const load = point.loadType === "assistance"
+      ? loggedLoad ? `${bodyWeight} − ${loggedLoad}` : bodyWeight
+      : loggedLoad && point.actualWeight! > 0
+        ? `${bodyWeight} + ${loggedLoad}`
+        : bodyWeight;
+    return `${load} × ${formatNumber(point.actualReps)}${point.bodyWeightEstimated ? " · estimated BW" : ""}`;
+  }
   if (point.actualWeight !== null && point.actualWeight > 0 && point.actualReps !== null) {
     return `${formatNumber(point.actualWeight)} ${point.weightUnit} × ${formatNumber(point.actualReps)}`;
   }
@@ -75,6 +88,7 @@ function progressDeltaLabel(
 
 function metricTitle(metric: ExerciseProgressMetric) {
   if (metric === "epley_estimated_1rm") return "Estimated strength";
+  if (metric === "epley_estimated_total_load") return "Estimated total-load strength";
   if (metric === "duration") return "Best duration";
   if (metric === "rounds") return "Best rounds";
   if (metric === "reps") return "Best reps";
@@ -83,7 +97,10 @@ function metricTitle(metric: ExerciseProgressMetric) {
 
 function metricExplanation(metric: ExerciseProgressMetric) {
   if (metric === "epley_estimated_1rm") {
-    return "Uses the Epley estimate (weight × (1 + reps ÷ 30)) for completed working sets of 2–10 reps; a single uses its logged weight. Exact weight and reps stay visible below.";
+    return "Uses the Epley estimate (weight × (1 + reps ÷ 30)) for completed working sets of 1–10 reps. Exact weight and reps stay visible below.";
+  }
+  if (metric === "epley_estimated_total_load") {
+    return "Uses the Epley estimate for 1–10 completed reps with the workout's body-weight snapshot, adding external load or subtracting assistance. Backfilled body weights are marked as estimates.";
   }
   if (metric === "duration") return "The longest completed working set from each workout.";
   if (metric === "rounds") return "The most completed rounds from each workout.";
@@ -120,6 +137,8 @@ export function ExerciseProgressCard({
   exerciseName: string;
 }) {
   const { width } = useWindowDimensions();
+  const { profile } = useProfile();
+  const preferredWeightUnit = profile?.measurementSystem === "metric" ? "kg" : "lb";
   const [range, setRange] = useState<ExerciseProgressRange>("6m");
   const [progress, setProgress] = useState<ExerciseProgress | null>(null);
   const [selectedSetId, setSelectedSetId] = useState<string | null>(null);
@@ -130,7 +149,7 @@ export function ExerciseProgressCard({
 
   useFocusEffect(useCallback(() => {
     let cancelled = false;
-    const params = new URLSearchParams({ limit: "50" });
+    const params = new URLSearchParams({ limit: "50", unit: preferredWeightUnit });
     const from = exerciseProgressRangeStart(range);
     if (from) params.set("from", from);
     setLoading(true);
@@ -150,7 +169,7 @@ export function ExerciseProgressCard({
     });
 
     return () => { cancelled = true; };
-  }, [exerciseId, range, requestVersion]));
+  }, [exerciseId, preferredWeightUnit, range, requestVersion]));
 
   const points = progress?.points ?? [];
   const selected = points.find((point) => point.setId === selectedSetId) ?? points.at(-1) ?? null;

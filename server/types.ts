@@ -1,3 +1,5 @@
+import type { TrainingProfile } from "../domain/training-profile";
+
 export type WorkerEnv = {
   DB: D1Database;
   ASSETS: Fetcher;
@@ -15,6 +17,7 @@ export type ApiUser = {
   email: string;
   displayName: string;
   photoUrl: string | null;
+  trainingProfile: TrainingProfile;
   provider: "chatgpt" | "google" | "session";
   sessionId: string | null;
 };

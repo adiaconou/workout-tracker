@@ -19,6 +19,7 @@ test("uses one Expo Router application for Android and hosted web", async () => 
     history,
     historyDetail,
     activeWorkout,
+    activeSetComparison,
     coach,
     coachMarkdown,
     discardWorkoutModal,
@@ -44,6 +45,7 @@ test("uses one Expo Router application for Android and hosted web", async () => 
     readFile(new URL("src/features/history/history-screen.tsx", root), "utf8"),
     readFile(new URL("src/features/history/workout-history-detail-screen.tsx", root), "utf8"),
     readFile(new URL("src/features/workouts/active-workout-screen.tsx", root), "utf8"),
+    readFile(new URL("src/features/workouts/active-set-comparison.tsx", root), "utf8"),
     readFile(new URL("src/features/coach/coach-screen.tsx", root), "utf8"),
     readFile(new URL("src/features/coach/coach-markdown.tsx", root), "utf8"),
     readFile(new URL("src/features/workouts/discard-workout-modal.tsx", root), "utf8"),
@@ -106,7 +108,9 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(routineCardFormat, /plural\(days, "day"\)/);
   assert.match(routineCardFormat, /plural\(hours, "hour"\)/);
   assert.match(routineCardFormat, /RECENT_WORKOUT_WINDOW_MS/);
-  assert.match(routines, /guidance\.availabilityLabel/);
+  assert.match(routines, /guidanceLabel/);
+  assert.match(routines, /guidance\.equipmentCompatible/);
+  assert.match(routines, /Routine update needed/);
   assert.match(routines, /<AvailabilityLabel/);
   assert.match(routines, /!routine\.lastWorkoutAt && styles\.routineStatusLineWithoutHistory/);
   assert.match(routines, /routineStatusLineWithoutHistory: \{ flexDirection: "column"/);
@@ -151,7 +155,7 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.ok(routineListStart >= 0 && routineListEnd > routineListStart);
   const routineList = routines.slice(routineListStart, routineListEnd);
   assert.match(routineList, /AvailabilityLabel/);
-  assert.match(routineList, /guidance\.availabilityLabel/);
+  assert.match(routineList, /guidanceLabel/);
   assert.doesNotMatch(routineList, /availabilityReason/);
   assert.match(routineDetail, /Start workout/);
   assert.match(routineDetail, /Edit routine/);
@@ -211,12 +215,13 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(historyDetail, /Save notes/);
   assert.match(historyDetail, /Repeat Routine/);
   assert.match(historyDetail, /Save changes/);
-  assert.match(activeWorkout, /Complete set/);
-  assert.match(activeWorkout, /Skip this set/);
-  assert.match(activeWorkout, /Skip rest/);
+  assert.match(activeWorkout, /"Complete"/);
+  assert.match(activeWorkout, /title="Skip"/);
+  assert.match(activeWorkout, /Skip Rest/);
   assert.match(activeWorkout, /StepperField/);
-  assert.match(activeWorkout, /Last time/);
-  assert.match(activeWorkout, /PreviousPerformance/);
+  assert.match(activeSetComparison, /Last time/);
+  assert.match(activeWorkout, /ActiveSetComparison/);
+  assert.match(activeWorkout, /ActiveExerciseProgressChart/);
   assert.match(activeWorkout, /View full workout/);
   assert.match(activeWorkout, /WorkoutProgressModal/);
   assert.match(activeWorkout, /sets logged/);
@@ -302,9 +307,11 @@ test("shows honest, accessible exercise progress on exercise detail", async () =
   assert.match(card, /No comparable sets yet/);
   assert.match(card, /Baseline recorded/);
   assert.match(calculation, /reps >= 1 && reps <= 10/);
-  assert.match(calculation, /candidate\.loadType === "external"/);
+  assert.match(calculation, /externalLoad/);
+  assert.match(calculation, /epley_estimated_total_load/);
   assert.match(calculation, /canonicalWeightUnit/);
   assert.match(repository, /getExerciseProgress/);
+  assert.match(repository, /body_weight_source AS bodyWeightSource/);
   assert.match(repository, /filter_set\.status = 'completed'/);
   assert.match(repository, /filter_set\.set_type != 'warmup'/);
   assert.match(repository, /ws\.status IN \('Completed', 'Partial', 'Abandoned'\)/);

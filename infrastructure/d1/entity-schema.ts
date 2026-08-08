@@ -5,11 +5,22 @@ import { canonicalRoutines } from "../../lib/routines";
 import { homeGymExercises } from "../../lib/home-gym-exercises";
 import { normalizeExerciseName, type MuscleGroup } from "../../domain/entities/exercise";
 import { expandLegacyPrescription } from "../../domain/prescription";
+import {
+  currentOnboardingVersion,
+  legacyAllEquipmentJson,
+  legacyWorkoutDurationMinutes,
+} from "../../domain/training-profile";
 
 const createStatements = [
   `CREATE TABLE IF NOT EXISTS app_users (
     id TEXT PRIMARY KEY, owner_email TEXT NOT NULL, display_name TEXT NOT NULL,
-    photo_url TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    photo_url TEXT, height_cm REAL, body_weight_kg REAL,
+    measurement_system TEXT NOT NULL DEFAULT 'imperial',
+    equipment_preferences_json TEXT NOT NULL DEFAULT '${legacyAllEquipmentJson}',
+    preferred_workout_duration_min INTEGER NOT NULL DEFAULT ${legacyWorkoutDurationMinutes},
+    onboarding_version INTEGER NOT NULL DEFAULT ${currentOnboardingVersion},
+    onboarding_completed_at TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
   )`,
   "CREATE UNIQUE INDEX IF NOT EXISTS app_users_owner_email_idx ON app_users(owner_email)",
   `CREATE TABLE IF NOT EXISTS auth_identities (
@@ -50,7 +61,10 @@ const createStatements = [
     current_exercise INTEGER NOT NULL DEFAULT 1, current_set INTEGER NOT NULL DEFAULT 1,
     completed_sets INTEGER NOT NULL DEFAULT 0, skipped_sets INTEGER NOT NULL DEFAULT 0,
     total_sets INTEGER NOT NULL, rest_ends_at TEXT, last_performance_id TEXT,
-    started_at TEXT NOT NULL, completed_at TEXT, updated_at TEXT NOT NULL
+    started_at TEXT NOT NULL, completed_at TEXT, body_weight REAL,
+    body_weight_source TEXT, weight_unit TEXT NOT NULL DEFAULT 'lb',
+    session_notes TEXT NOT NULL DEFAULT '', is_archived INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
   )`,
   "CREATE UNIQUE INDEX IF NOT EXISTS one_active_session_per_owner ON workout_sessions(owner_email) WHERE status = 'In Progress'",
   `CREATE TABLE IF NOT EXISTS set_performances (
@@ -210,6 +224,13 @@ const createStatements = [
 const additiveColumns: Record<string, Record<string, string>> = {
   app_users: {
     photo_url: "TEXT",
+    height_cm: "REAL",
+    body_weight_kg: "REAL",
+    measurement_system: "TEXT NOT NULL DEFAULT 'imperial'",
+    equipment_preferences_json: `TEXT NOT NULL DEFAULT '${legacyAllEquipmentJson}'`,
+    preferred_workout_duration_min: `INTEGER NOT NULL DEFAULT ${legacyWorkoutDurationMinutes}`,
+    onboarding_version: `INTEGER NOT NULL DEFAULT ${currentOnboardingVersion}`,
+    onboarding_completed_at: "TEXT",
   },
   routines: {
     current_version_id: "TEXT",
@@ -223,6 +244,7 @@ const additiveColumns: Record<string, Record<string, string>> = {
     routine_id: "TEXT",
     routine_version_id: "TEXT",
     body_weight: "REAL",
+    body_weight_source: "TEXT",
     weight_unit: "TEXT NOT NULL DEFAULT 'lb'",
     session_notes: "TEXT NOT NULL DEFAULT ''",
     is_archived: "INTEGER NOT NULL DEFAULT 0",
@@ -247,6 +269,10 @@ export async function ensureEntitySchema(d1: D1Database) {
       if (!existing.has(name)) await d1.prepare(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`).run();
     }
   }
+  await d1.prepare(`UPDATE app_users SET onboarding_completed_at = updated_at
+    WHERE onboarding_version >= ? AND onboarding_completed_at IS NULL`)
+    .bind(currentOnboardingVersion)
+    .run();
 }
 
 async function ensureLegacySeed(d1: D1Database, ownerEmail: string) {

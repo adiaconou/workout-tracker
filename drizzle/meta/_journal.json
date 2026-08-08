@@ -64,6 +64,20 @@
       "when": 1786080103653,
       "tag": "0008_nervous_selene",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1786210217510,
+      "tag": "0009_profile_measurements",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1786210889195,
+      "tag": "0010_opposite_microbe",
+      "breakpoints": true
     }
   ]
 }

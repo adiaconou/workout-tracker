@@ -11,8 +11,16 @@ import type {
   WorkoutSetCorrection,
 } from "../entities";
 
-export type ExerciseQuery = { includeArchived?: boolean; search?: string };
-export type ExerciseProgressQuery = { from?: string; limit?: number };
+export type ExerciseQuery = {
+  includeArchived?: boolean;
+  search?: string;
+  availableOnly?: boolean;
+};
+export type ExerciseProgressQuery = {
+  from?: string;
+  limit?: number;
+  unit?: "lb" | "kg";
+};
 export type WorkoutQuery = { includeArchived?: boolean; status?: string };
 export type WorkoutDiscardResult = "discarded" | "not_found" | "not_in_progress";
 export type WorkoutHistoryQuery = {

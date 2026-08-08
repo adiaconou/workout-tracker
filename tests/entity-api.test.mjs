@@ -17,6 +17,7 @@ test("exposes owner-scoped CRUD through the versioned Worker API", async () => {
   assert.match(api, /action === "favorite"/);
   assert.match(api, /action === "progress"/);
   assert.match(api, /service\.progress/);
+  assert.match(api, /searchParams\.get\("unit"\)/);
   assert.match(api, /setFavorite/);
   assert.match(api, /handleRoutines/);
   assert.match(api, /routine_editor_required/);

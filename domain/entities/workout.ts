@@ -3,6 +3,7 @@ import type { RestRule, RoutineSetType, TargetType } from "./routine";
 
 export type WorkoutStatus = "In Progress" | "Completed" | "Partial" | "Abandoned";
 export type WorkoutItemStatus = "planned" | "started" | "completed" | "skipped";
+export type BodyWeightSource = "manual" | "profile_snapshot" | "profile_backfill";
 
 export type WorkoutHistorySummary = {
   id: string;
@@ -97,6 +98,7 @@ export type Workout = {
   startedAt: string;
   completedAt: string | null;
   bodyWeight: number | null;
+  bodyWeightSource: BodyWeightSource | null;
   weightUnit: string;
   notes: string;
   isArchived: boolean;

@@ -509,7 +509,7 @@ function SetEditModal({
             </View>
             {error ? <Message>{error}</Message> : null}
             <StepperField
-              label="Weight (lb)"
+              label={`Weight (${set?.weightUnit ?? "lb"})`}
               value={weight}
               onChangeText={setWeight}
               keyboardType="decimal-pad"

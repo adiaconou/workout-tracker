@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
-import { useFocusEffect } from "expo-router";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -97,7 +97,9 @@ const quickPrompts = [
 ];
 
 export function CoachScreen() {
+  const { starter } = useLocalSearchParams<{ starter?: string }>();
   const messageListRef = useRef<ScrollView | null>(null);
+  const starterAppliedRef = useRef(false);
   const [data, setData] = useState<CoachBootstrap | null>(null);
   const [selection, setSelection] = useState<ModelSelection | null>(null);
   const [loading, setLoading] = useState(true);
@@ -129,6 +131,21 @@ export function CoachScreen() {
   useFocusEffect(useCallback(() => {
     void load();
   }, [load]));
+
+  useEffect(() => {
+    if (
+      starter !== "routine-design" ||
+      starterAppliedRef.current ||
+      !data ||
+      data.messages.length > 0 ||
+      composer
+    ) {
+      return;
+    }
+    starterAppliedRef.current = true;
+    setComposer("Build routines using the equipment and workout length I just selected.");
+    router.setParams({ starter: "" });
+  }, [composer, data, starter]);
 
   const selectedModel = useMemo(
     () => data?.models.find((model) => model.id === selection?.model) ?? data?.models[0] ?? null,

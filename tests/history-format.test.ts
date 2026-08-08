@@ -24,8 +24,13 @@ test("formats rep, bodyweight, timed, and skipped set results", () => {
     actualWeight: 135,
     actualReps: 10,
     actualDurationSec: null,
+    weightUnit: "lb",
   } as WorkoutSet;
   assert.equal(formatSetResult(base, "external"), "135 lb × 10");
+  assert.equal(
+    formatSetResult({ ...base, actualWeight: 61.2, weightUnit: "kg" }, "external"),
+    "61.2 kg × 10",
+  );
   assert.equal(
     formatSetResult({ ...base, actualWeight: 0 }, "bodyweight"),
     "Bodyweight × 10",
