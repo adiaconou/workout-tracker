@@ -105,6 +105,7 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
     script: bundle.outputFiles[0].text,
     compatibilityDate: "2026-05-22",
     bindings: {
+      ALLOWED_USER_EMAILS: "routine-other@example.com,other@example.com",
       OWNER_EMAIL: ownerEmail,
       AUTH_SESSION_SECRET: sessionSecret,
       OPENAI_API_KEY: "test-openai-key",

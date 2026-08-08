@@ -81,12 +81,12 @@ scripts/build-sites.mjs      Expo web + Worker deployment build
 
 ### 4.1 Identity model
 
-Both providers map to one internal workout user:
+Both providers map each approved person to that person's internal workout user:
 
 ```text
-ChatGPT owner email ─┐
-                     ├─ app_user.id ─ owner_email ─ existing workout records
-Google OIDC `sub` ───┘
+ChatGPT approved email ─┐
+                        ├─ app_user.id ─ owner_email ─ that user's workout records
+Google OIDC `sub` ──────┘
 ```
 
 The existing `owner_email` column remains the data ownership key during this
@@ -104,7 +104,8 @@ New tables:
 
 1. The Sites dispatcher authenticates the browser with ChatGPT.
 2. API requests include the forwarded authenticated-user email.
-3. The Worker verifies that the email matches `OWNER_EMAIL`.
+3. The Worker verifies that the email is in `ALLOWED_USER_EMAILS` or matches
+   the backward-compatible `OWNER_EMAIL`.
 4. The Worker ensures the corresponding internal user and returns only that
    user's data.
 5. The browser does not store an API bearer or refresh token.
@@ -137,6 +138,7 @@ identifier is included in the APK.
 
 Server-only:
 
+- `ALLOWED_USER_EMAILS` (comma-separated additional approved accounts)
 - `OWNER_EMAIL`
 - `AUTH_SESSION_SECRET` (at least 32 random bytes)
 - `GOOGLE_WEB_CLIENT_ID`

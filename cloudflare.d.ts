@@ -23,6 +23,7 @@ interface Fetcher {
 declare module "cloudflare:workers" {
   export const env: {
     DB?: D1Database;
+    ALLOWED_USER_EMAILS?: string;
     OWNER_EMAIL?: string;
     AUTH_SESSION_SECRET?: string;
     GOOGLE_WEB_CLIENT_ID?: string;

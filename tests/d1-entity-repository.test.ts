@@ -9,8 +9,10 @@ import { ensureEntityData, ensureEntitySchema, materializeWorkoutFromSnapshot } 
 import { getPreviousPerformanceByExercise } from "../infrastructure/d1/previous-performance";
 import type { RoutineVersionInput } from "../domain/entities";
 import {
+  authenticateRequest,
   createNativeSession,
   ensureAppUser,
+  isAllowedUserEmail,
   linkGoogleIdentity,
   rotateNativeSession,
 } from "../server/auth";
@@ -78,6 +80,87 @@ const singleSetRoutine = (exerciseId: string, focus: string): RoutineVersionInpu
       notes: "",
     }],
   }],
+});
+
+test("authorizes a normalized multi-user allowlist across hosted and native sessions", async () => {
+  const sqlite = new DatabaseSync(":memory:");
+  const d1 = new SqliteD1(sqlite) as unknown as D1Database;
+  const firstEmail = "first@example.com";
+  const secondEmail = "second@example.com";
+  const env = {
+    DB: d1,
+    ALLOWED_USER_EMAILS: " FIRST@EXAMPLE.COM, second@example.com ",
+    OWNER_EMAIL: "legacy-owner@example.com",
+    AUTH_SESSION_SECRET: "test-session-secret-that-is-long-enough-for-signing",
+  } as unknown as WorkerEnv;
+
+  try {
+    assert.equal(isAllowedUserEmail(env, " First@Example.com "), true);
+    assert.equal(isAllowedUserEmail(env, secondEmail), true);
+    assert.equal(isAllowedUserEmail(env, "third@example.com"), false);
+    assert.equal(isAllowedUserEmail(env, "legacy-owner@example.com"), true);
+
+    const firstHostedUser = await authenticateRequest(new Request("https://example.com/api/v1/auth/session", {
+      headers: { "oai-authenticated-user-email": " First@Example.com " },
+    }), env);
+    const secondHostedUser = await authenticateRequest(new Request("https://example.com/api/v1/auth/session", {
+      headers: { "oai-authenticated-user-email": secondEmail },
+    }), env);
+    const deniedHostedUser = await authenticateRequest(new Request("https://example.com/api/v1/auth/session", {
+      headers: { "oai-authenticated-user-email": "third@example.com" },
+    }), env);
+    assert.equal(firstHostedUser?.email, firstEmail);
+    assert.equal(secondHostedUser?.email, secondEmail);
+    assert.notEqual(firstHostedUser?.id, secondHostedUser?.id);
+    assert.equal(deniedHostedUser, null);
+
+    const secondGoogleUser = await linkGoogleIdentity(env, {
+      sub: "google-second",
+      email: "SECOND@EXAMPLE.COM",
+      email_verified: true,
+      name: "Second User",
+    });
+    assert.equal(secondGoogleUser.ownerEmail, secondEmail);
+    await assert.rejects(() => linkGoogleIdentity(env, {
+      sub: "google-third",
+      email: "third@example.com",
+      email_verified: true,
+      name: "Third User",
+    }), /not authorized/);
+
+    const firstUser = await ensureAppUser(env, firstEmail, "First User");
+    const firstSession = await createNativeSession(env, firstUser, "First device");
+    assert.equal((await authenticateRequest(new Request("https://example.com/api/v1/auth/session", {
+      headers: { authorization: `Bearer ${firstSession.accessToken}` },
+    }), env))?.email, firstEmail);
+
+    const rotatedFirstSession = await rotateNativeSession(env, firstSession.refreshToken);
+    assert.equal(rotatedFirstSession?.user.email, firstEmail);
+
+    env.ALLOWED_USER_EMAILS = secondEmail;
+    assert.equal(await authenticateRequest(new Request("https://example.com/api/v1/auth/session", {
+      headers: { authorization: `Bearer ${rotatedFirstSession!.accessToken}` },
+    }), env), null);
+    assert.equal(await rotateNativeSession(env, rotatedFirstSession!.refreshToken), null);
+    assert.ok((await d1.prepare("SELECT revoked_at AS revokedAt FROM auth_sessions WHERE user_id = ?")
+      .bind(firstUser.id).first<{ revokedAt: string | null }>())?.revokedAt);
+    await assert.rejects(
+      () => createNativeSession(env, firstUser, "Unauthorized device"),
+      /not authorized/,
+    );
+
+    const secondSession = await createNativeSession(env, secondGoogleUser, "Second device");
+    assert.equal((await authenticateRequest(new Request("https://example.com/api/v1/auth/session", {
+      headers: { authorization: `Bearer ${secondSession.accessToken}` },
+    }), env))?.email, secondEmail);
+
+    env.ALLOWED_USER_EMAILS = "";
+    env.OWNER_EMAIL = " Legacy-Owner@Example.com ";
+    assert.equal(isAllowedUserEmail(env, "legacy-owner@example.com"), true);
+    assert.equal(isAllowedUserEmail(env, firstEmail), false);
+  } finally {
+    sqlite.close();
+  }
 });
 
 test("persists a Google profile photo across hosted-web and refreshed native sessions", async () => {

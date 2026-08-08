@@ -25,10 +25,22 @@ function normalizedPhotoUrl(value?: string | null) {
   return /^https:\/\/\S+$/i.test(photoUrl) ? photoUrl : null;
 }
 
-function configuredOwner(env: WorkerEnv) {
-  const owner = env.OWNER_EMAIL?.trim().toLowerCase();
-  if (!owner) throw new Error("OWNER_EMAIL is not configured.");
-  return owner;
+function configuredAllowedEmails(env: WorkerEnv) {
+  const configured = new Set((env.ALLOWED_USER_EMAILS ?? "")
+    .split(/[\s,;]+/)
+    .map(normalizedEmail)
+    .filter(Boolean));
+
+  const owner = env.OWNER_EMAIL?.trim();
+  if (owner) configured.add(normalizedEmail(owner));
+  if (configured.size === 0) {
+    throw new Error("ALLOWED_USER_EMAILS or OWNER_EMAIL is not configured.");
+  }
+  return configured;
+}
+
+export function isAllowedUserEmail(env: WorkerEnv, email: string) {
+  return configuredAllowedEmails(env).has(normalizedEmail(email));
 }
 
 function sessionSecret(env: WorkerEnv) {
@@ -93,7 +105,11 @@ export async function authenticateRequest(
         WHERE s.id = ? AND u.id = ? AND s.revoked_at IS NULL AND s.expires_at > ?`)
         .bind(claims.sid, claims.sub, new Date().toISOString())
         .first<{ id: string; userId: string; ownerEmail: string; displayName: string; photoUrl: string | null }>();
-      if (!session || normalizedEmail(session.ownerEmail) !== normalizedEmail(claims.email)) {
+      if (
+        !session
+        || normalizedEmail(session.ownerEmail) !== normalizedEmail(claims.email)
+        || !isAllowedUserEmail(env, session.ownerEmail)
+      ) {
         return null;
       }
       return {
@@ -110,7 +126,7 @@ export async function authenticateRequest(
   }
 
   const email = request.headers.get("oai-authenticated-user-email");
-  if (!email || normalizedEmail(email) !== configuredOwner(env)) return null;
+  if (!email || !isAllowedUserEmail(env, email)) return null;
   const fullNameEncoding = request.headers.get("oai-authenticated-user-full-name-encoding");
   const encodedName = request.headers.get("oai-authenticated-user-full-name");
   let displayName = email;
@@ -137,7 +153,7 @@ export async function linkGoogleIdentity(
   claims: GoogleIdentityClaims,
 ) {
   const email = normalizedEmail(claims.email);
-  if (email !== configuredOwner(env)) {
+  if (!isAllowedUserEmail(env, email)) {
     throw new Error("This Google account is not authorized for this workout tracker.");
   }
   const now = new Date().toISOString();
@@ -168,6 +184,9 @@ export async function createNativeSession(
   user: UserRow,
   deviceName: string,
 ) {
+  if (!isAllowedUserEmail(env, user.ownerEmail)) {
+    throw new Error("This account is not authorized for this workout tracker.");
+  }
   const now = new Date().toISOString();
   const refreshToken = generateRefreshToken();
   const refreshTokenHash = await hashRefreshToken(refreshToken);
@@ -215,6 +234,12 @@ export async function rotateNativeSession(env: WorkerEnv, refreshToken: string) 
     .bind(oldHash, now)
     .first<{ id: string; userId: string; ownerEmail: string; displayName: string; photoUrl: string | null }>();
   if (!session) return null;
+  if (!isAllowedUserEmail(env, session.ownerEmail)) {
+    await env.DB.prepare(`UPDATE auth_sessions SET revoked_at = ?,
+      last_used_at = ? WHERE id = ? AND revoked_at IS NULL`)
+      .bind(now, now, session.id).run();
+    return null;
+  }
 
   const nextRefreshToken = generateRefreshToken();
   const nextHash = await hashRefreshToken(nextRefreshToken);

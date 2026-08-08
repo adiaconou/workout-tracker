@@ -30,7 +30,8 @@ Expo web app ─ ChatGPT identity ────┘
 
 ## Authentication
 
-The two clients map to the same internal user and the same owner-scoped records:
+Each approved account maps to its own internal user and owner-scoped records.
+The same person can use either supported client without splitting their data:
 
 - Hosted web requests use the authenticated ChatGPT identity forwarded by
   Sites. No API token is stored in the browser.
@@ -43,6 +44,8 @@ The two clients map to the same internal user and the same owner-scoped records:
 Required server configuration:
 
 ```dotenv
+# Comma-separated additional users; combined with OWNER_EMAIL.
+ALLOWED_USER_EMAILS=partner@example.com
 OWNER_EMAIL=you@example.com
 AUTH_SESSION_SECRET=a-random-secret-of-at-least-32-bytes
 GOOGLE_WEB_CLIENT_ID=000000000000-example.apps.googleusercontent.com
