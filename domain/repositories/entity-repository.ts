@@ -1,6 +1,7 @@
 import type {
   Exercise,
   ExerciseInput,
+  ExerciseProgress,
   Routine,
   RoutineAggregate,
   RoutineVersion,
@@ -11,6 +12,7 @@ import type {
 } from "../entities";
 
 export type ExerciseQuery = { includeArchived?: boolean; search?: string };
+export type ExerciseProgressQuery = { from?: string; limit?: number };
 export type WorkoutQuery = { includeArchived?: boolean; status?: string };
 export type WorkoutDiscardResult = "discarded" | "not_found" | "not_in_progress";
 export type WorkoutHistoryQuery = {
@@ -26,6 +28,7 @@ export type WorkoutHistoryQuery = {
 export interface ExerciseRepository {
   listExercises(ownerEmail: string, query?: ExerciseQuery): Promise<Exercise[]>;
   getExercise(ownerEmail: string, id: string): Promise<Exercise | null>;
+  getExerciseProgress(ownerEmail: string, id: string, query?: ExerciseProgressQuery): Promise<ExerciseProgress | null>;
   createExercise(ownerEmail: string, input: ExerciseInput): Promise<Exercise>;
   updateExercise(ownerEmail: string, id: string, input: Partial<ExerciseInput>): Promise<Exercise | null>;
   updateExerciseIfUnchanged(

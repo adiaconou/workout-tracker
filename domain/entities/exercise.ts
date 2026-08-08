@@ -44,6 +44,34 @@ export type ExerciseInput = {
   muscles?: ExerciseMuscle[];
 };
 
+export type ExerciseProgressMetric =
+  | "epley_estimated_1rm"
+  | "reps"
+  | "duration"
+  | "rounds";
+
+export type ExerciseProgressPoint = {
+  workoutId: string;
+  routineCode: string;
+  routineTitle: string;
+  workoutStatus: "Completed" | "Partial" | "Abandoned";
+  performedAt: string;
+  setId: string;
+  value: number;
+  actualWeight: number | null;
+  actualReps: number | null;
+  actualDurationSec: number | null;
+  weightUnit: string;
+};
+
+export type ExerciseProgress = {
+  exerciseId: string;
+  metric: ExerciseProgressMetric;
+  unit: "lb" | "kg" | "reps" | "seconds" | "rounds";
+  points: ExerciseProgressPoint[];
+  hasMore: boolean;
+};
+
 export function normalizeExerciseName(name: string) {
   return name.trim().toLowerCase().replace(/\s+/g, " ");
 }

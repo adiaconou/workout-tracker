@@ -257,6 +257,169 @@ test("workout history applies the rolling cutoff and returns finished sessions n
   }
 });
 
+test("exercise progress returns owner-scoped historical best working sets and reflects corrections", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "exercise-progress-"));
+  const database = join(directory, "progress.sqlite");
+  const sqlite = new DatabaseSync(database);
+  const d1 = new SqliteD1(sqlite) as unknown as D1Database;
+  const owner = "progress@example.com";
+  const otherOwner = "someone-else@example.com";
+  const exerciseId = "progress-bench";
+
+  async function insertWorkout({
+    id,
+    workoutOwner = owner,
+    status = "Completed",
+    startedAt,
+    archived = false,
+    sets,
+  }: {
+    id: string;
+    workoutOwner?: string;
+    status?: "In Progress" | "Completed" | "Partial" | "Abandoned";
+    startedAt: string;
+    archived?: boolean;
+    sets: Array<{ id: string; position: number; type?: string; weight: number; reps: number }>;
+  }) {
+    await d1.prepare(`INSERT INTO workout_sessions (
+      id, owner_email, routine_code, routine_version, status, snapshot_json,
+      current_exercise, current_set, completed_sets, skipped_sets, total_sets,
+      started_at, completed_at, updated_at, is_archived
+    ) VALUES (?, ?, 'A', 1, ?, ?, 1, 1, ?, 0, ?, ?, ?, ?, ?)`)
+      .bind(
+        id,
+        workoutOwner,
+        status,
+        JSON.stringify({ focus: `Historical ${id}` }),
+        sets.length,
+        sets.length,
+        startedAt,
+        status === "In Progress" ? null : startedAt,
+        startedAt,
+        archived ? 1 : 0,
+      ).run();
+    const workoutExerciseId = `${id}-exercise`;
+    await d1.prepare(`INSERT INTO workout_exercises (
+      id, owner_email, workout_id, exercise_id, position,
+      exercise_name_snapshot, load_type_snapshot, side_mode_snapshot,
+      status, notes, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 1, 'Bench press', 'external', 'bilateral',
+      'completed', '', ?, ?)`)
+      .bind(workoutExerciseId, workoutOwner, id, exerciseId, startedAt, startedAt).run();
+    for (const set of sets) {
+      await d1.prepare(`INSERT INTO workout_sets (
+        id, owner_email, workout_id, workout_exercise_id, prescribed_set_id,
+        position, set_type, planned_target_type, planned_target_display,
+        planned_rest_sec, planned_rest_rule, actual_reps, actual_weight,
+        weight_unit, status, completed_at, notes, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'reps', '5 reps', 120, 'standard',
+        ?, ?, 'lb', 'completed', ?, '', ?, ?)`)
+        .bind(
+          set.id,
+          workoutOwner,
+          id,
+          workoutExerciseId,
+          `${id}-${set.position}`,
+          set.position,
+          set.type ?? "regular",
+          set.reps,
+          set.weight,
+          startedAt,
+          startedAt,
+          startedAt,
+        ).run();
+    }
+  }
+
+  try {
+    await ensureEntitySchema(d1);
+    await d1.prepare(`INSERT INTO exercise_catalog (
+      id, owner_email, name, normalized_name, equipment, movement_pattern,
+      tracking_type, default_load_type, side_mode, instructions,
+      is_active, created_at, updated_at
+    ) VALUES (?, ?, 'Bench press', 'bench press', 'barbell', 'horizontal_push',
+      'reps', 'external', 'bilateral', '', 1, ?, ?)`)
+      .bind(exerciseId, owner, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z").run();
+    await insertWorkout({
+      id: "older",
+      startedAt: "2026-07-01T18:00:00.000Z",
+      sets: [
+        { id: "older-best", position: 1, weight: 225, reps: 5 },
+        { id: "older-heavy", position: 2, weight: 235, reps: 2 },
+        { id: "older-warmup", position: 3, type: "warmup", weight: 300, reps: 5 },
+      ],
+    });
+    await insertWorkout({
+      id: "newer",
+      status: "Partial",
+      startedAt: "2026-08-01T18:00:00.000Z",
+      sets: [
+        { id: "newer-best", position: 1, weight: 230, reps: 5 },
+        { id: "newer-heavy", position: 2, weight: 235, reps: 2 },
+      ],
+    });
+    await insertWorkout({
+      id: "active",
+      status: "In Progress",
+      startedAt: "2026-08-02T18:00:00.000Z",
+      sets: [{ id: "active-set", position: 1, weight: 400, reps: 5 }],
+    });
+    await insertWorkout({
+      id: "archived",
+      archived: true,
+      startedAt: "2026-08-03T18:00:00.000Z",
+      sets: [{ id: "archived-set", position: 1, weight: 400, reps: 5 }],
+    });
+    await insertWorkout({
+      id: "recent-ineligible",
+      startedAt: "2026-08-05T18:00:00.000Z",
+      sets: [{ id: "recent-ineligible-set", position: 1, weight: 100, reps: 20 }],
+    });
+    await insertWorkout({
+      id: "other-owner",
+      workoutOwner: otherOwner,
+      startedAt: "2026-08-04T18:00:00.000Z",
+      sets: [{ id: "other-owner-set", position: 1, weight: 500, reps: 5 }],
+    });
+
+    const repository = new D1EntityRepository(d1);
+    const progress = await repository.getExerciseProgress(owner, exerciseId, {
+      from: "2026-06-01T00:00:00.000Z",
+      limit: 16,
+    });
+    assert.equal(progress?.metric, "epley_estimated_1rm");
+    assert.equal(progress?.unit, "lb");
+    assert.deepEqual(progress?.points.map((point) => ({
+      workoutId: point.workoutId,
+      setId: point.setId,
+      routineTitle: point.routineTitle,
+      status: point.workoutStatus,
+    })), [
+      { workoutId: "older", setId: "older-best", routineTitle: "Historical older", status: "Completed" },
+      { workoutId: "newer", setId: "newer-best", routineTitle: "Historical newer", status: "Partial" },
+    ]);
+    const limited = await repository.getExerciseProgress(owner, exerciseId, {
+      from: "2026-06-01T00:00:00.000Z",
+      limit: 1,
+    });
+    assert.equal(limited?.points[0]?.workoutId, "newer");
+    assert.equal(limited?.hasMore, true);
+    assert.equal(await repository.getExerciseProgress(otherOwner, exerciseId), null);
+
+    await d1.prepare("UPDATE workout_sets SET actual_weight = 200 WHERE id = ? AND owner_email = ?")
+      .bind("newer-best", owner).run();
+    const corrected = await repository.getExerciseProgress(owner, exerciseId, {
+      from: "2026-06-01T00:00:00.000Z",
+      limit: 16,
+    });
+    assert.equal(corrected?.points.at(-1)?.setId, "newer-heavy");
+    assert.equal(corrected?.points.at(-1)?.performedAt, "2026-08-01T18:00:00.000Z");
+  } finally {
+    sqlite.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("D1 entity repository seeds, versions, publishes, materializes, discards, and archives normalized entities", async () => {
   const directory = await mkdtemp(join(tmpdir(), "workout-d1-repository-"));
   const database = join(directory, "repository.sqlite");

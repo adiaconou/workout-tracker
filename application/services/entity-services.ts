@@ -1,5 +1,6 @@
 import type {
   EntityRepository,
+  ExerciseProgressQuery,
   ExerciseQuery,
   WorkoutHistoryQuery,
   WorkoutQuery,
@@ -96,6 +97,15 @@ export class ExerciseService {
   constructor(private readonly repository: EntityRepository) {}
   list(ownerEmail: string, query?: ExerciseQuery) { return this.repository.listExercises(ownerEmail, query); }
   get(ownerEmail: string, id: string) { return this.repository.getExercise(ownerEmail, id); }
+  progress(ownerEmail: string, id: string, query?: ExerciseProgressQuery) {
+    if (query?.from && !Number.isFinite(Date.parse(query.from))) {
+      throw new Error("Progress start date is invalid.");
+    }
+    return this.repository.getExerciseProgress(ownerEmail, id, {
+      ...query,
+      from: query?.from ? new Date(query.from).toISOString() : undefined,
+    });
+  }
   create(ownerEmail: string, input: ExerciseInput) { return this.repository.createExercise(ownerEmail, validateExerciseInput(input)); }
   async update(ownerEmail: string, id: string, input: Partial<ExerciseInput>) {
     const existing = await this.repository.getExercise(ownerEmail, id);

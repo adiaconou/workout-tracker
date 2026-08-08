@@ -1,5 +1,6 @@
 import type {
   Exercise,
+  ExerciseProgress,
   RoutineAggregate,
   RoutineExercise,
   RoutineExerciseInput,
@@ -41,6 +42,7 @@ export type BootstrapPayload = {
 
 export type {
   Exercise,
+  ExerciseProgress,
   PreviousExercisePerformance,
   Routine,
   RoutineAggregate,

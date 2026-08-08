@@ -190,6 +190,7 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(exerciseDetail, /Used in routines/);
   assert.match(exerciseDetail, /toggleFavorite/);
   assert.match(exerciseDetail, /isFavorite \? "★" : "☆"/);
+  assert.match(exerciseDetail, /ExerciseProgressCard/);
   assert.match(history, /Workout history/);
   assert.match(history, /Finished early/);
   assert.match(history, /Show more workouts/);
@@ -265,4 +266,27 @@ test("uses one Expo Router application for Android and hosted web", async () => 
   assert.match(buildScript, /dist\/server\/index\.js/);
   assert.match(buildScript, /manifest\.webmanifest/);
   assert.match(hosting, /"d1": "DB"/);
+});
+
+test("shows honest, accessible exercise progress on exercise detail", async () => {
+  const [card, calculation, repository] = await Promise.all([
+    readFile(new URL("src/features/exercises/exercise-progress-card.tsx", root), "utf8"),
+    readFile(new URL("domain/exercise-progress.ts", root), "utf8"),
+    readFile(new URL("infrastructure/d1/entity-repository.ts", root), "utf8"),
+  ]);
+  assert.match(card, /Epley estimate/);
+  assert.match(card, /Exact weight and reps stay visible/);
+  assert.match(card, /View data/);
+  assert.match(card, /accessibilityLabel=\{`\$\{formatPointDate/);
+  assert.match(card, /router\.push\(`\/history\/\$\{selected\.workoutId\}`\)/);
+  assert.match(card, /No comparable sets yet/);
+  assert.match(card, /Baseline recorded/);
+  assert.match(calculation, /reps >= 1 && reps <= 10/);
+  assert.match(calculation, /candidate\.loadType === "external"/);
+  assert.match(calculation, /canonicalWeightUnit/);
+  assert.match(repository, /getExerciseProgress/);
+  assert.match(repository, /filter_set\.status = 'completed'/);
+  assert.match(repository, /filter_set\.set_type != 'warmup'/);
+  assert.match(repository, /ws\.status IN \('Completed', 'Partial', 'Abandoned'\)/);
+  assert.match(repository, /ws\.is_archived = 0/);
 });

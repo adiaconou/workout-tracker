@@ -189,6 +189,26 @@ async function handleExercises({ request, user, segments }: RouteContext) {
         return apiError(request, 400, "exercise_invalid", errorMessage(error, "Exercise could not be created."));
       }
     }
+  } else if (action === "progress") {
+    if (request.method === "GET") {
+      try {
+        const url = new URL(request.url);
+        const progress = await service.progress(user.email, exerciseId, {
+          from: url.searchParams.get("from") ?? undefined,
+          limit: Number(url.searchParams.get("limit") ?? 16),
+        });
+        return progress
+          ? apiResponse(request, { progress })
+          : apiError(request, 404, "exercise_not_found", "Exercise not found.");
+      } catch (error) {
+        return apiError(
+          request,
+          400,
+          "exercise_progress_invalid",
+          errorMessage(error, "Exercise progress could not be loaded."),
+        );
+      }
+    }
   } else if (action === "favorite") {
     if (request.method === "PUT" || request.method === "DELETE") {
       const exercise = await service.setFavorite(

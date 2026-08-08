@@ -16,6 +16,7 @@ import {
   Screen,
 } from "../../components/ui";
 import { colors, radii, spacing } from "../../theme/tokens";
+import { ExerciseProgressCard } from "./exercise-progress-card";
 
 export function ExerciseDetailScreen({ exerciseId }: { exerciseId: string }) {
   const [exercise, setExercise] = useState<Exercise | null>(null);
@@ -164,6 +165,8 @@ export function ExerciseDetailScreen({ exerciseId }: { exerciseId: string }) {
         <Fact label="Loading" value={label(exercise.defaultLoadType)} />
         <Fact label="Side mode" value={label(exercise.sideMode)} />
       </Card>
+
+      <ExerciseProgressCard exerciseId={exercise.id} exerciseName={exercise.name} />
 
       <Card>
         <Eyebrow>Training effect</Eyebrow>

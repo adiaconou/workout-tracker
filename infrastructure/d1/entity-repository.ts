@@ -1,5 +1,6 @@
 import type {
   EntityRepository,
+  ExerciseProgressQuery,
   ExerciseQuery,
   WorkoutHistoryQuery,
   WorkoutQuery,
@@ -26,6 +27,10 @@ import type {
   WorkoutStatus,
 } from "../../domain/entities";
 import { normalizeExerciseName } from "../../domain/entities";
+import {
+  buildExerciseProgress,
+  type ExerciseProgressCandidate,
+} from "../../domain/exercise-progress";
 import { ensureEntityData, ensureEntitySchema } from "./entity-schema";
 
 type Row = Record<string, unknown>;
@@ -120,6 +125,112 @@ export class D1EntityRepository implements EntityRepository {
     const row = await this.d1.prepare(`${this.exerciseSelect()} WHERE owner_email = ? AND id = ?`)
       .bind(ownerEmail, id).first<Row>();
     return row ? this.exerciseFromRow(row) : null;
+  }
+
+  async getExerciseProgress(
+    ownerEmail: string,
+    id: string,
+    query: ExerciseProgressQuery = {},
+  ) {
+    await this.ready(ownerEmail);
+    const exercise = await this.d1.prepare(`SELECT id, tracking_type AS trackingType,
+        default_load_type AS defaultLoadType
+      FROM exercise_catalog WHERE owner_email = ? AND id = ?`)
+      .bind(ownerEmail, id).first<Row>();
+    if (!exercise) return null;
+
+    const requestedLimit = Number(query.limit ?? 16);
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.min(50, Math.max(1, Math.round(requestedLimit)))
+      : 16;
+    const from = query.from ?? "0000-01-01T00:00:00.000Z";
+    const now = new Date().toISOString();
+    const rows = await this.d1.prepare(`WITH recent_workouts AS (
+      SELECT DISTINCT ws.id, ws.routine_code AS routineCode, ws.status,
+        ws.snapshot_json AS snapshotJson, ws.started_at AS performedAt
+      FROM workout_sessions ws
+      INNER JOIN workout_exercises filter_exercise
+        ON filter_exercise.workout_id = ws.id
+        AND filter_exercise.owner_email = ws.owner_email
+      WHERE ws.owner_email = ?
+        AND filter_exercise.owner_email = ?
+        AND filter_exercise.exercise_id = ?
+        AND ws.status IN ('Completed', 'Partial', 'Abandoned')
+        AND ws.is_archived = 0
+        AND ws.started_at >= ?
+        AND ws.started_at <= ?
+        AND EXISTS (
+          SELECT 1 FROM workout_sets filter_set
+          WHERE filter_set.workout_id = ws.id
+            AND filter_set.workout_exercise_id = filter_exercise.id
+            AND filter_set.owner_email = ?
+            AND filter_set.status = 'completed'
+            AND filter_set.set_type != 'warmup'
+        )
+    )
+    SELECT recent_workouts.id AS workoutId, recent_workouts.routineCode,
+      recent_workouts.status AS workoutStatus, recent_workouts.snapshotJson,
+      recent_workouts.performedAt, workout_exercises.load_type_snapshot AS loadType,
+      workout_sets.id AS setId, workout_sets.position AS setPosition,
+      workout_sets.set_type AS setType,
+      workout_sets.planned_target_type AS targetType,
+      workout_sets.actual_weight AS actualWeight,
+      workout_sets.actual_reps AS actualReps,
+      workout_sets.actual_reps_left AS actualRepsLeft,
+      workout_sets.actual_reps_right AS actualRepsRight,
+      workout_sets.actual_duration_sec AS actualDurationSec,
+      workout_sets.weight_unit AS weightUnit
+    FROM recent_workouts
+    INNER JOIN workout_exercises
+      ON workout_exercises.workout_id = recent_workouts.id
+      AND workout_exercises.owner_email = ?
+      AND workout_exercises.exercise_id = ?
+    INNER JOIN workout_sets
+      ON workout_sets.workout_id = recent_workouts.id
+      AND workout_sets.workout_exercise_id = workout_exercises.id
+      AND workout_sets.owner_email = ?
+    WHERE workout_sets.status = 'completed'
+      AND workout_sets.set_type != 'warmup'
+    ORDER BY recent_workouts.performedAt ASC, recent_workouts.id ASC,
+      workout_sets.position ASC, workout_sets.id ASC`)
+      .bind(
+        ownerEmail,
+        ownerEmail,
+        id,
+        from,
+        now,
+        ownerEmail,
+        ownerEmail,
+        id,
+        ownerEmail,
+      ).all<Row>();
+
+    const candidates = rows.results.map((row): ExerciseProgressCandidate => ({
+      workoutId: String(row.workoutId),
+      routineCode: String(row.routineCode),
+      routineTitle: routineTitleFromSnapshot(row.snapshotJson, String(row.routineCode)),
+      workoutStatus: String(row.workoutStatus) as ExerciseProgressCandidate["workoutStatus"],
+      performedAt: String(row.performedAt),
+      setId: String(row.setId),
+      loadType: String(row.loadType) as ExerciseProgressCandidate["loadType"],
+      targetType: String(row.targetType) as ExerciseProgressCandidate["targetType"],
+      setType: String(row.setType),
+      setPosition: Number(row.setPosition),
+      actualWeight: numberOrNull(row.actualWeight),
+      actualReps: numberOrNull(row.actualReps),
+      actualRepsLeft: numberOrNull(row.actualRepsLeft),
+      actualRepsRight: numberOrNull(row.actualRepsRight),
+      actualDurationSec: numberOrNull(row.actualDurationSec),
+      weightUnit: String(row.weightUnit),
+    }));
+
+    return buildExerciseProgress({
+      exerciseId: String(exercise.id),
+      trackingType: String(exercise.trackingType) as ExerciseProgressCandidate["targetType"],
+      defaultLoadType: String(exercise.defaultLoadType) as ExerciseProgressCandidate["loadType"],
+      candidates,
+      limit,
+    });
   }
 
   async createExercise(ownerEmail: string, input: ExerciseInput) {
