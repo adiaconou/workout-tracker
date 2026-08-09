@@ -26,9 +26,7 @@ import {
   historyStatusLabel,
 } from "../src/client/history/history-format";
 import {
-  recentWorkoutRangeStart,
   routineDurationLabel,
-  routineElapsedLabel,
   routineLastDoneLabel,
 } from "../src/client/routines/routine-card-format";
 import {
@@ -155,21 +153,12 @@ test("covers every history formatter state", () => {
 
 test("covers routine card formatting defensive and fallback paths", () => {
   const now = new Date("2026-08-08T12:00:00.000Z");
-  assert.equal(routineElapsedLabel(new Date("invalid"), now), "Just now");
-  assert.equal(routineElapsedLabel(new Date("2026-08-06T12:00:00.000Z"), now), "2 days ago");
-  assert.match(
-    routineLastDoneLabel("2026-08-08T11:00:00.000Z", { now, locale: "en-US" }),
-    /^Last done .+ · 1 hour ago$/,
-  );
-  assert.match(routineLastDoneLabel(new Date().toISOString()), /^Last done /);
+  assert.match(routineLastDoneLabel("2026-08-08T11:00:00.000Z", { now }), /^08\/08\/26 · 0 days ago$/);
+  assert.match(routineLastDoneLabel(new Date().toISOString()), /^\d{2}\/\d{2}\/\d{2} · \d+ days? ago$/);
   assert.equal(routineDurationLabel(Number.NaN, 1, 0), "Est. 1 min");
   assert.equal(routineDurationLabel(-1, 1, -3), "Est. 1 min");
   assert.equal(routineDurationLabel(90, 0, 1), "Est. 1 min");
-  assert.equal(routineDurationLabel(90, 1.6, 1), "Avg 2 min (2 workouts)");
-  assert.equal(
-    recentWorkoutRangeStart(now),
-    "2026-08-01T12:00:00.000Z",
-  );
+  assert.equal(routineDurationLabel(90, 1.6, 1), "Avg 2 min");
 });
 
 function routineVersionFixture(): RoutineVersion {

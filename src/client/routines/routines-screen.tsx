@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AppState,
+  Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   useWindowDimensions,
@@ -11,7 +13,7 @@ import {
 import { router, useFocusEffect } from "expo-router";
 import { apiRequest } from "../api/client";
 import { removePendingSetWritesForWorkout } from "../api/pending-writes";
-import type { BootstrapPayload, WorkoutHistoryPage } from "../../contracts/api";
+import type { BootstrapPayload, RoutineSummary } from "../../contracts/api";
 import {
   Body,
   Button,
@@ -23,29 +25,98 @@ import {
   Screen,
 } from "../ui/ui";
 import { colors, radii, spacing } from "../ui/tokens";
-import {
-  formatHistoryDateTime,
-  formatWorkoutDuration,
-  historyStatusLabel,
-} from "../history/public";
 import { DiscardWorkoutModal } from "../workouts/public";
 import {
+  routineAvailabilityKind,
   routineDurationLabel,
   routineLastDoneLabel,
+  routineMuscleTitle,
+  sortRoutinesByLastDone,
+  type RoutineAvailabilityKind,
 } from "./routine-card-format";
 import { loadRoutinePageData } from "./routine-page-loader";
 
+type StartResponse = {
+  created: boolean;
+  requiresConfirmation: boolean;
+  session: { id: string; routineCode: string };
+};
+
+type PendingStart = {
+  activeRoutineCode: string;
+  routineCode: string;
+};
+
+type AvailabilityKeyAnchor = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type AvailabilityKeyPosition = {
+  top: number;
+  right: number;
+  width: number;
+  maxHeight: number;
+};
+
+const AVAILABILITY_KEY: Array<{
+  kind: RoutineAvailabilityKind;
+  label: string;
+  description: string;
+}> = [
+  {
+    kind: "recommended",
+    label: "Recommended",
+    description: "Best available option for today’s rolling plan.",
+  },
+  {
+    kind: "recommended_caution",
+    label: "Recommended, use caution",
+    description: "Best plan option, with moderate recent overlap.",
+  },
+  {
+    kind: "available",
+    label: "Available",
+    description: "Lower overlap with recently logged work.",
+  },
+  {
+    kind: "caution",
+    label: "Use caution",
+    description: "Moderate overlap; adjust based on recovery.",
+  },
+  {
+    kind: "recovery",
+    label: "Recovery suggested",
+    description: "High overlap with recently logged work.",
+  },
+  {
+    kind: "equipment",
+    label: "Needs equipment",
+    description: "Required equipment is not in your setup.",
+  },
+  {
+    kind: "not_assessed",
+    label: "Not assessed",
+    description: "No availability guidance is available.",
+  },
+];
+
 export function RoutinesScreen() {
-  const { width } = useWindowDimensions();
+  const { height, width } = useWindowDimensions();
   const compactLayout = width < 720;
   const [data, setData] = useState<BootstrapPayload | null>(null);
-  const [recentHistory, setRecentHistory] = useState<WorkoutHistoryPage | null>(null);
-  const [recentHistoryError, setRecentHistoryError] = useState("");
-  const [recentHistoryLoading, setRecentHistoryLoading] = useState(false);
   const [error, setError] = useState("");
+  const [startError, setStartError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const [showDiscardWorkout, setShowDiscardWorkout] = useState(false);
   const [discardingWorkout, setDiscardingWorkout] = useState(false);
+  const [availabilityKeyOpen, setAvailabilityKeyOpen] = useState(false);
+  const [availabilityKeyAnchor, setAvailabilityKeyAnchor] = useState<AvailabilityKeyAnchor | null>(null);
+  const [expandedRoutineCode, setExpandedRoutineCode] = useState<string | null>(null);
+  const [startingRoutineCode, setStartingRoutineCode] = useState<string | null>(null);
+  const [pendingStart, setPendingStart] = useState<PendingStart | null>(null);
   const [focusedAction, setFocusedAction] = useState<string | null>(null);
   const latestRequest = useRef(0);
 
@@ -53,23 +124,8 @@ export function RoutinesScreen() {
     const requestId = latestRequest.current + 1;
     latestRequest.current = requestId;
     setRefreshing(true);
-    setRecentHistoryLoading(true);
     try {
-      const next = await loadRoutinePageData({
-        request: apiRequest,
-        onRecentHistory: (history) => {
-          if (requestId !== latestRequest.current) return;
-          setRecentHistory(history);
-          setRecentHistoryError("");
-        },
-        onRecentHistoryError: () => {
-          if (requestId !== latestRequest.current) return;
-          setRecentHistoryError("Recent workouts could not be refreshed.");
-        },
-        onRecentHistorySettled: () => {
-          if (requestId === latestRequest.current) setRecentHistoryLoading(false);
-        },
-      });
+      const next = await loadRoutinePageData({ request: apiRequest });
       if (requestId === latestRequest.current) {
         setData(next);
         setError("");
@@ -146,6 +202,50 @@ export function RoutinesScreen() {
     }
   }
 
+  async function startWorkout(routineCode: string, abandonActive = false) {
+    if (startingRoutineCode) return;
+    const activeWorkout = data?.activeWorkout;
+    if (!abandonActive && activeWorkout?.routineCode === routineCode) {
+      router.push(`/workouts/${activeWorkout.id}`);
+      return;
+    }
+
+    setStartingRoutineCode(routineCode);
+    setStartError("");
+    try {
+      const payload = await apiRequest<StartResponse>("/api/v1/workouts", {
+        method: "POST",
+        body: JSON.stringify({ routineId: routineCode, abandonActive }),
+      });
+      if (payload.requiresConfirmation) {
+        setPendingStart({
+          activeRoutineCode: payload.session.routineCode,
+          routineCode,
+        });
+        return;
+      }
+      setPendingStart(null);
+      router.push(`/workouts/${payload.session.id}`);
+    } catch (caught) {
+      setStartError(
+        caught instanceof Error
+          ? caught.message
+          : "The workout could not be started.",
+      );
+    } finally {
+      setStartingRoutineCode(null);
+    }
+  }
+
+  function toggleAvailabilityKey(anchor: AvailabilityKeyAnchor | null) {
+    if (availabilityKeyOpen) {
+      setAvailabilityKeyOpen(false);
+      return;
+    }
+    setAvailabilityKeyAnchor(anchor);
+    setAvailabilityKeyOpen(true);
+  }
+
   if (!data && refreshing) return <LoadingView label="Loading your routines…" />;
 
   const recommendation = data?.recommendations;
@@ -159,15 +259,49 @@ export function RoutinesScreen() {
     ? Math.min(1, activeRecordedSets / data.activeWorkout.totalSets)
     : 0;
   const renderedAt = new Date();
-  const recentWorkouts = recentHistory?.workouts ?? [];
+  const sortedRoutines = sortRoutinesByLastDone(data?.routines ?? []);
+  const keyPanelWidth = Math.min(
+    compactLayout ? 430 : 760,
+    Math.max(0, width - spacing.lg * 2),
+  );
+  const keyPanelBelowTop = availabilityKeyAnchor
+    ? availabilityKeyAnchor.y + availabilityKeyAnchor.height + spacing.sm
+    : spacing.xxl;
+  const keyPanelSpaceBelow = height - keyPanelBelowTop - spacing.lg;
+  const keyPanelSpaceAbove = (availabilityKeyAnchor?.y ?? height) - spacing.lg - spacing.sm;
+  const keyPanelOpensBelow = !availabilityKeyAnchor
+    || keyPanelSpaceBelow >= 240
+    || keyPanelSpaceBelow >= keyPanelSpaceAbove;
+  const keyPanelIdealRight = availabilityKeyAnchor
+    ? width - availabilityKeyAnchor.x - availabilityKeyAnchor.width
+    : spacing.lg;
+  const keyPanelMaxRight = Math.max(spacing.lg, width - keyPanelWidth - spacing.lg);
+  const keyPanelPosition: AvailabilityKeyPosition = {
+    top: keyPanelOpensBelow ? keyPanelBelowTop : spacing.lg,
+    right: Math.min(Math.max(spacing.lg, keyPanelIdealRight), keyPanelMaxRight),
+    width: keyPanelWidth,
+    maxHeight: Math.max(
+      160,
+      keyPanelOpensBelow ? keyPanelSpaceBelow : keyPanelSpaceAbove,
+    ),
+  };
 
   return (
     <Screen safeTop={false} contentStyle={styles.screenContent}>
       <View style={styles.header}>
         <Heading>Routines</Heading>
-        {refreshing ? (
-          <Text accessibilityLiveRegion="polite" style={styles.refreshing}>Refreshing…</Text>
-        ) : null}
+        <View style={styles.headerActions}>
+          {refreshing && (!compactLayout || !data?.routines.length) ? (
+            <Text accessibilityLiveRegion="polite" style={styles.refreshing}>Refreshing…</Text>
+          ) : null}
+          {compactLayout && data?.routines.length ? (
+            <AvailabilityKeyTrigger
+              compact
+              open={availabilityKeyOpen}
+              onPress={toggleAvailabilityKey}
+            />
+          ) : null}
+        </View>
       </View>
 
       {!data && error ? (
@@ -215,7 +349,9 @@ export function RoutinesScreen() {
                     </View>
                     <Text style={styles.resumeTitle}>
                       Routine {data.activeWorkout.routineCode}
-                      {activeRoutine ? ` · ${activeRoutine.focus}` : ""}
+                      {activeRoutine
+                        ? ` · ${routineMuscleTitle(activeRoutine.focus, activeRoutine.summary)}`
+                        : ""}
                     </Text>
                   </View>
                   <Pressable
@@ -307,121 +443,69 @@ export function RoutinesScreen() {
             </View>
           ) : null}
 
-          {data.routines.length ? (
-            <View style={styles.table}>
-              <View style={styles.tableHeader}>
-                <Text style={[styles.headerCell, styles.codeCell]}>#</Text>
-                <Text style={[styles.headerCell, styles.routineCell]}>Routine</Text>
-                {!compactLayout ? (
-                  <>
-                    <Text style={[styles.headerCell, styles.planCell]}>Plan</Text>
-                    <Text style={[styles.headerCell, styles.lastDoneCell]}>Last done</Text>
-                    <Text style={[styles.headerCell, styles.statusCell]}>Status</Text>
-                  </>
-                ) : null}
-                <View style={styles.arrowCell} />
-              </View>
-              {data.routines.map((routine) => {
-                const guidance = recommendation?.routines.find((item) => item.code === routine.code);
-                const guidanceLabel = guidance && !guidance.equipmentCompatible
-                  ? `Needs ${guidance.missingEquipment.join(" + ")}`
-                  : guidance?.availabilityLabel;
-                const isRecommended = routine.code === recommendation?.recommendedRoutineCode;
-                const lastDoneLabel = routineLastDoneLabel(routine.lastWorkoutAt, { now: renderedAt });
-                const durationLabel = routineDurationLabel(
-                  routine.averageDurationSeconds,
-                  routine.durationSampleCount,
-                  routine.durationMin,
-                );
-                return (
-                  <View
-                    key={routine.code}
-                    style={[
-                      styles.routineRow,
-                      isRecommended && styles.recommendedRoutineRow,
-                    ]}
-                  >
-                    <Pressable
-                      accessibilityRole="link"
-                      accessibilityLabel={`Open Routine ${routine.code}, ${routine.focus}. ${durationLabel}, ${routine.exerciseCount} exercises, ${routine.setCount} sets${
-                        isRecommended ? ". Recommended today" : ""
-                      }. ${lastDoneLabel}${guidanceLabel ? `. ${guidanceLabel}` : ""}`}
-                      onPress={() => router.push(`/routines/${routine.code}`)}
-                      onBlur={() => setFocusedAction(null)}
-                      onFocus={() => setFocusedAction(`routine-${routine.code}`)}
-                      style={({ pressed }) => [
-                        styles.routineLink,
-                        pressed && styles.routineLinkPressed,
-                        focusedAction === `routine-${routine.code}` &&
-                          Platform.OS === "web" &&
-                          styles.webFocusRing,
-                      ]}
-                    >
-                      <Text style={[
-                        styles.code,
-                        styles.codeCell,
-                        isRecommended && styles.recommendedCode,
-                      ]}>{routine.code}</Text>
-                      <View style={[
-                        styles.routineCell,
-                        compactLayout && styles.routineCellCompact,
-                      ]}>
-                        <View style={styles.routineTitleLine}>
-                          <Text numberOfLines={1} style={styles.routineName}>{routine.focus}</Text>
-                          {isRecommended ? (
-                            <View style={styles.recommendedBadge}>
-                              <Text style={styles.recommendedBadgeText}>Recommended today</Text>
-                            </View>
-                          ) : null}
-                        </View>
-                        {compactLayout ? (
-                          <>
-                            <Text numberOfLines={1} style={styles.compactMeta}>
-                              {durationLabel} · {routine.exerciseCount} exercises · {routine.setCount} sets
-                            </Text>
-                            <View style={[
-                              styles.routineStatusLine,
-                              !routine.lastWorkoutAt && styles.routineStatusLineWithoutHistory,
-                            ]}>
-                              <Text style={styles.lastDone}>{lastDoneLabel}</Text>
-                              {guidance ? (
-                                <AvailabilityLabel
-                                  status={guidance.equipmentCompatible ? guidance.availability : "equipment"}
-                                  label={guidanceLabel!}
-                                />
-                              ) : null}
-                            </View>
-                          </>
-                        ) : null}
-                      </View>
-                      {!compactLayout ? (
-                        <>
-                          <Text numberOfLines={1} style={[styles.value, styles.planCell]}>
-                            {durationLabel} · {routine.exerciseCount} exercises · {routine.setCount} sets
-                          </Text>
-                          <Text numberOfLines={1} style={[styles.value, styles.lastDoneCell]}>
-                            {lastDoneLabel}
-                          </Text>
-                          <View style={styles.statusCell}>
-                            {guidance ? (
-                              <AvailabilityLabel
-                                status={guidance.equipmentCompatible ? guidance.availability : "equipment"}
-                                label={guidanceLabel!}
-                              />
-                            ) : <Text style={styles.value}>—</Text>}
-                          </View>
-                        </>
-                      ) : null}
-                      <Text
-                        aria-hidden
-                        accessible={false}
-                        style={[styles.arrow, styles.arrowCell]}
-                      >→</Text>
-                    </Pressable>
-                  </View>
-                );
-              })}
+          {startError ? (
+            <View accessibilityRole="alert" style={styles.actionError}>
+              <Text style={styles.actionErrorText}>{startError}</Text>
             </View>
+          ) : null}
+
+          {data.routines.length ? (
+            <>
+              {compactLayout ? (
+                <Text style={styles.sortLabel}>Last done · newest first</Text>
+              ) : null}
+              <View role={compactLayout ? "list" : "table"} style={styles.table}>
+                {!compactLayout ? (
+                  <View role="row" style={styles.tableHeader}>
+                    <Text role="columnheader" style={[styles.headerCell, styles.routineSummaryCell]}>Routine</Text>
+                    <Text role="columnheader" style={[styles.headerCell, styles.lastDoneColumn]}>Last done ↓</Text>
+                    <View role="columnheader" style={styles.availabilityColumn}>
+                      <AvailabilityKeyTrigger
+                        open={availabilityKeyOpen}
+                        onPress={toggleAvailabilityKey}
+                      />
+                    </View>
+                    <Text role="columnheader" style={[styles.headerCell, styles.actionsColumn]}>Actions</Text>
+                  </View>
+                ) : null}
+                {sortedRoutines.map((routine) => {
+                  const guidance = recommendation?.routines.find(
+                    (item) => item.code === routine.code,
+                  );
+                  const availabilityKind = routineAvailabilityKind(guidance);
+                  const defaultAvailability = AVAILABILITY_KEY.find(
+                    (item) => item.kind === availabilityKind,
+                  )!;
+                  const availabilityDescription = !guidance
+                    ? defaultAvailability.description
+                    : !guidance.equipmentCompatible
+                      ? `${defaultAvailability.description} ${
+                        guidance.missingEquipment.length
+                          ? `Needs ${guidance.missingEquipment.join(" + ")}.`
+                          : ""
+                      }`.trim()
+                      : `${guidance.availabilityLabel}. ${guidance.availabilityReason}`;
+                  return (
+                    <RoutineListRow
+                      key={routine.code}
+                      active={data.activeWorkout?.routineCode === routine.code}
+                      availabilityDescription={availabilityDescription}
+                      availabilityKind={availabilityKind}
+                      compact={compactLayout}
+                      expanded={expandedRoutineCode === routine.code}
+                      now={renderedAt}
+                      routine={routine}
+                      startDisabled={Boolean(startingRoutineCode)}
+                      starting={startingRoutineCode === routine.code}
+                      onOpen={() => router.push(`/routines/${encodeURIComponent(routine.code)}`)}
+                      onStart={() => void startWorkout(routine.code)}
+                      onToggle={() => setExpandedRoutineCode((current) =>
+                        current === routine.code ? null : routine.code)}
+                    />
+                  );
+                })}
+              </View>
+            </>
           ) : (
             <Card style={styles.stateCard}>
               <Eyebrow>Start your program</Eyebrow>
@@ -431,166 +515,401 @@ export function RoutinesScreen() {
             </Card>
           )}
 
-          <View style={styles.recentSection}>
-            <View style={styles.recentSectionHeader}>
-              <Heading level={2} size="small">Last 7 days</Heading>
-              <Pressable
-                accessibilityRole="link"
-                accessibilityLabel="View all workout history"
-                onPress={() => router.push("/history")}
-                onBlur={() => setFocusedAction(null)}
-                onFocus={() => setFocusedAction("view-history")}
-                style={({ pressed }) => [
-                  styles.viewHistoryAction,
-                  pressed && styles.actionPressed,
-                  focusedAction === "view-history" &&
-                    Platform.OS === "web" &&
-                    styles.webFocusRing,
-                ]}
-              >
-                <Text style={styles.viewHistoryText}>View all history →</Text>
-              </Pressable>
-            </View>
-
-            {recentHistoryError && recentWorkouts.length > 0 ? (
-              <Text accessibilityLiveRegion="polite" style={styles.recentHistoryNotice}>
-                Recent workouts may be out of date.
-              </Text>
-            ) : null}
-
-            <View style={styles.table}>
-              <View style={styles.tableHeader}>
-                <Text style={[styles.headerCell, styles.codeCell]}>#</Text>
-                <Text style={[styles.headerCell, styles.recentWorkoutCell]}>Routine</Text>
-                {!compactLayout ? (
-                  <>
-                    <Text style={[styles.headerCell, styles.recentWhenCell]}>When</Text>
-                    <Text style={[styles.headerCell, styles.recentResultCell]}>Result</Text>
-                    <Text style={[styles.headerCell, styles.recentDurationCell]}>Time</Text>
-                  </>
-                ) : null}
-                <View style={styles.arrowCell} />
-              </View>
-
-              {recentWorkouts.length ? recentWorkouts.map((workout) => {
-                const workoutName = workout.routineTitle;
-                const whenLabel = formatHistoryDateTime(workout.startedAt);
-                const statusLabel = historyStatusLabel(workout.status);
-                const workoutDuration = formatWorkoutDuration(workout.durationSeconds);
-                const skippedLabel = workout.skippedSets
-                  ? `, ${workout.skippedSets} skipped`
-                  : "";
-                return (
-                  <View key={workout.id} style={styles.recentWorkoutRow}>
-                    <Pressable
-                      accessibilityRole="link"
-                      accessibilityLabel={`Review Routine ${workout.routineCode}, ${workoutName}, workout from ${whenLabel}. ${statusLabel}, ${workout.completedSets} of ${workout.totalSets} sets completed${skippedLabel}, ${workout.exerciseCount} exercises, ${workoutDuration}`}
-                      onPress={() => router.push(`/history/${workout.id}`)}
-                      onBlur={() => setFocusedAction(null)}
-                      onFocus={() => setFocusedAction(`history-${workout.id}`)}
-                      style={({ pressed }) => [
-                        styles.routineLink,
-                        styles.recentWorkoutLink,
-                        compactLayout && styles.recentWorkoutLinkCompact,
-                        pressed && styles.routineLinkPressed,
-                        focusedAction === `history-${workout.id}` &&
-                          Platform.OS === "web" &&
-                          styles.webFocusRing,
-                      ]}
-                    >
-                      <Text numberOfLines={1} style={[styles.code, styles.codeCell]}>
-                        {workout.routineCode}
-                      </Text>
-                      <View style={[
-                        styles.recentWorkoutCell,
-                        compactLayout && styles.recentWorkoutCellCompact,
-                      ]}>
-                        <Text numberOfLines={1} style={styles.routineName}>{workoutName}</Text>
-                        {compactLayout ? (
-                          <>
-                            <Text numberOfLines={1} style={styles.compactMeta}>{whenLabel}</Text>
-                            <Text numberOfLines={1} style={styles.recentCompactResult}>
-                              {statusLabel} · {workout.completedSets}/{workout.totalSets} sets · {workout.exerciseCount} exercises · {workoutDuration}
-                            </Text>
-                          </>
-                        ) : null}
-                      </View>
-                      {!compactLayout ? (
-                        <>
-                          <Text numberOfLines={1} style={[styles.value, styles.recentWhenCell]}>
-                            {whenLabel}
-                          </Text>
-                          <View style={[styles.recentResultCell, styles.recentResultCopy]}>
-                            <Text style={[
-                              styles.recentStatus,
-                              workout.status === "Partial" && styles.recentStatusPartial,
-                              workout.status === "Abandoned" && styles.recentStatusAbandoned,
-                            ]}>{statusLabel}</Text>
-                            <Text numberOfLines={1} style={styles.recentResultMeta}>
-                              {workout.completedSets}/{workout.totalSets} sets · {workout.exerciseCount} exercises
-                            </Text>
-                          </View>
-                          <Text style={[styles.value, styles.recentDurationCell]}>
-                            {workoutDuration}
-                          </Text>
-                        </>
-                      ) : null}
-                      <Text
-                        aria-hidden
-                        accessible={false}
-                        style={[styles.arrow, styles.arrowCell]}
-                      >→</Text>
-                    </Pressable>
-                  </View>
-                );
-              }) : (
-                <View style={styles.recentEmptyRow}>
-                  <Text accessibilityLiveRegion="polite" style={styles.recentEmptyText}>
-                    {recentHistoryLoading
-                      ? "Loading recent workouts…"
-                      : recentHistoryError
-                      ? "Recent workouts are temporarily unavailable."
-                      : "No workouts in the last 7 days."}
+          <Modal
+            transparent
+            animationType="fade"
+            visible={Boolean(pendingStart)}
+            accessibilityLabel="Replace active workout confirmation"
+            accessibilityViewIsModal
+            onRequestClose={() => {
+              if (!startingRoutineCode) setPendingStart(null);
+            }}
+          >
+            <View style={styles.modalBackdrop}>
+              <Card style={styles.dialog}>
+                <Eyebrow>Workout in progress</Eyebrow>
+                <Heading size="medium">
+                  Abandon Routine {pendingStart?.activeRoutineCode}?
+                </Heading>
+                <Body muted>
+                  Starting Routine {pendingStart?.routineCode} will mark Routine {pendingStart?.activeRoutineCode} as abandoned.
+                  Sets already logged stay in history.
+                </Body>
+                {startError ? (
+                  <Text accessibilityRole="alert" style={styles.dialogError}>
+                    {startError}
                   </Text>
-                </View>
-              )}
+                ) : null}
+                <Button
+                  title={`Keep Routine ${pendingStart?.activeRoutineCode ?? ""}`}
+                  variant="secondary"
+                  disabled={Boolean(startingRoutineCode)}
+                  onPress={() => setPendingStart(null)}
+                />
+                <Button
+                  title={`Abandon and start Routine ${pendingStart?.routineCode ?? ""}`}
+                  variant="danger"
+                  loading={Boolean(startingRoutineCode)}
+                  onPress={() => {
+                    if (pendingStart) void startWorkout(pendingStart.routineCode, true);
+                  }}
+                />
+              </Card>
             </View>
-          </View>
+          </Modal>
+
+          <Modal
+            transparent
+            animationType="fade"
+            visible={availabilityKeyOpen && Boolean(data.routines.length)}
+            accessibilityLabel="Availability key"
+            accessibilityViewIsModal
+            onRequestClose={() => setAvailabilityKeyOpen(false)}
+          >
+            <View style={styles.keyModalBackdrop}>
+              <Pressable
+                accessible={false}
+                aria-hidden
+                focusable={false}
+                onPress={() => setAvailabilityKeyOpen(false)}
+                style={styles.keyModalDismissArea}
+                tabIndex={-1}
+              />
+              <AvailabilityKeyPanel
+                compact={compactLayout}
+                onClose={() => setAvailabilityKeyOpen(false)}
+                position={keyPanelPosition}
+              />
+            </View>
+          </Modal>
         </>
       ) : null}
     </Screen>
   );
 }
 
-function AvailabilityLabel({
-  status,
-  label,
+function RoutineListRow({
+  active,
+  availabilityDescription,
+  availabilityKind,
+  compact,
+  expanded,
+  now,
+  routine,
+  startDisabled,
+  starting,
+  onOpen,
+  onStart,
+  onToggle,
 }: {
-  status: "available" | "caution" | "recovering" | "equipment";
-  label: string;
+  active: boolean;
+  availabilityDescription: string;
+  availabilityKind: RoutineAvailabilityKind;
+  compact: boolean;
+  expanded: boolean;
+  now: Date;
+  routine: RoutineSummary;
+  startDisabled: boolean;
+  starting: boolean;
+  onOpen: () => void;
+  onStart: () => void;
+  onToggle: () => void;
 }) {
+  const [focusedAction, setFocusedAction] = useState<"details" | "open" | "start" | null>(null);
+  const title = routineMuscleTitle(routine.focus, routine.summary);
+  const durationLabel = routineDurationLabel(
+    routine.averageDurationSeconds,
+    routine.durationSampleCount,
+    routine.durationMin,
+  );
+  const metadata = `${durationLabel} · ${routine.exerciseCount} exercises · ${routine.setCount} sets`;
+  const lastDoneLabel = routineLastDoneLabel(routine.lastWorkoutAt, { now });
+  const description = routine.summary.trim() || "No description has been added.";
+  const descriptionLabelId = `routine-${routine.code.replace(/[^a-z0-9_-]/gi, "-")}-description-label`;
+
+  const actions = (
+    <View
+      role={compact ? undefined : "cell"}
+      style={[styles.routineActions, compact && styles.routineActionsCompact]}
+    >
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${expanded ? "Hide" : "Show"} details for Routine ${routine.code}, ${title}`}
+        accessibilityState={{ expanded }}
+        onBlur={() => setFocusedAction(null)}
+        onFocus={() => setFocusedAction("details")}
+        onPress={onToggle}
+        style={({ pressed }) => [
+          styles.rowAction,
+          pressed && styles.rowActionPressed,
+          focusedAction === "details" && Platform.OS === "web" && styles.webFocusRing,
+        ]}
+      >
+        <Text style={styles.rowActionText}>Details</Text>
+        <Text aria-hidden accessible={false} style={styles.rowActionIcon}>
+          {expanded ? "⌃" : "⌄"}
+        </Text>
+      </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${active ? "Resume" : "Start"} Routine ${routine.code}, ${title}`}
+        accessibilityState={{ busy: starting, disabled: startDisabled }}
+        disabled={startDisabled}
+        onBlur={() => setFocusedAction(null)}
+        onFocus={() => setFocusedAction("start")}
+        onPress={onStart}
+        style={({ pressed }) => [
+          styles.rowAction,
+          startDisabled && styles.actionDisabled,
+          pressed && styles.rowActionPressed,
+          focusedAction === "start" && Platform.OS === "web" && styles.webFocusRing,
+        ]}
+      >
+        <Text aria-hidden accessible={false} style={styles.startIcon}>▶</Text>
+        <Text numberOfLines={1} style={styles.rowActionText}>
+          {starting ? "Starting…" : active ? "Resume" : "Start"}
+        </Text>
+      </Pressable>
+    </View>
+  );
+
+  return (
+    <View role={compact ? "listitem" : "rowgroup"} style={styles.routineRow}>
+      {compact ? (
+        <View style={styles.routineMainCompact}>
+          <View style={styles.compactTitleLine}>
+            <RoutineCodeBadge code={routine.code} />
+            <Text numberOfLines={2} style={styles.routineName}>{title}</Text>
+            <AvailabilityIcon
+              description={availabilityDescription}
+              kind={availabilityKind}
+            />
+          </View>
+          <Text style={styles.routineMetadata}>{metadata}</Text>
+          <Text style={styles.lastDone}>{lastDoneLabel}</Text>
+          {actions}
+        </View>
+      ) : (
+        <View role="row" style={styles.routineMain}>
+          <View role="cell" style={styles.routineSummaryCell}>
+            <RoutineCodeBadge code={routine.code} />
+            <View style={styles.routineSummaryCopy}>
+              <Text numberOfLines={1} style={styles.routineName}>{title}</Text>
+              <Text numberOfLines={1} style={styles.routineMetadata}>{metadata}</Text>
+            </View>
+          </View>
+          <Text role="cell" numberOfLines={1} style={[styles.lastDone, styles.lastDoneColumn]}>
+            {lastDoneLabel}
+          </Text>
+          <View role="cell" style={styles.availabilityColumn}>
+            <AvailabilityIcon
+              description={availabilityDescription}
+              kind={availabilityKind}
+            />
+          </View>
+          {actions}
+        </View>
+      )}
+      {expanded ? (
+        <View
+          accessibilityLabelledBy={compact ? descriptionLabelId : undefined}
+          role={compact ? "region" : "row"}
+          style={[styles.descriptionPanel, compact && styles.descriptionPanelCompact]}
+        >
+          <View role={compact ? undefined : "cell"} style={styles.descriptionContent}>
+            <Text
+              accessibilityLabel={`Description for Routine ${routine.code}, ${title}`}
+              nativeID={descriptionLabelId}
+              style={styles.descriptionLabel}
+            >
+              Description
+            </Text>
+            <Text style={styles.descriptionText}>{description}</Text>
+            <Pressable
+              accessibilityRole="link"
+              accessibilityLabel={`Open full Routine ${routine.code}, ${title}`}
+              onBlur={() => setFocusedAction(null)}
+              onFocus={() => setFocusedAction("open")}
+              onPress={onOpen}
+              style={({ pressed }) => [
+                styles.openRoutineAction,
+                pressed && styles.actionPressed,
+                focusedAction === "open" && Platform.OS === "web" && styles.webFocusRing,
+              ]}
+            >
+              <Text style={styles.openRoutineText}>Open full routine →</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function RoutineCodeBadge({ code }: { code: string }) {
+  return (
+    <View style={styles.codeBadge}>
+      <Text numberOfLines={1} style={styles.code}>{code}</Text>
+    </View>
+  );
+}
+
+function AvailabilityIcon({
+  description,
+  kind,
+  decorative = false,
+}: {
+  description: string;
+  kind: RoutineAvailabilityKind;
+  decorative?: boolean;
+}) {
+  const entry = AVAILABILITY_KEY.find((item) => item.kind === kind)!;
+  const glyph = kind === "recommended"
+    ? "★"
+    : kind === "recommended_caution"
+      ? "✦"
+    : kind === "available"
+      ? "✓"
+      : kind === "caution"
+        ? "!"
+        : kind === "recovery"
+          ? "×"
+          : kind === "equipment"
+            ? "◆"
+            : "?";
   return (
     <View
-      aria-hidden
-      accessible={false}
-      accessibilityElementsHidden
-      importantForAccessibility="no-hide-descendants"
-      style={styles.availabilityLabel}
+      accessible={!decorative}
+      accessibilityLabel={decorative ? undefined : `${entry.label}. ${description}`}
+      accessibilityRole={decorative ? undefined : "image"}
+      accessibilityElementsHidden={decorative}
+      aria-hidden={decorative || undefined}
+      importantForAccessibility={decorative ? "no-hide-descendants" : "yes"}
+      style={styles.availabilityIcon}
     >
-      <View style={[
-        styles.availabilityDot,
-        status === "caution" && styles.availabilityDotCaution,
-        status === "recovering" && styles.availabilityDotRecovering,
-        status === "equipment" && styles.availabilityDotEquipment,
-      ]} />
-      <Text numberOfLines={2} style={[
-        styles.availabilityText,
-        status === "caution" && styles.availabilityTextCaution,
-        status === "recovering" && styles.availabilityTextRecovering,
-        status === "equipment" && styles.availabilityTextEquipment,
-      ]}>
-        {label}
-      </Text>
+      <Text aria-hidden accessible={false} style={[
+        styles.availabilityGlyph,
+        kind === "recommended" && styles.availabilityRecommended,
+        kind === "recommended_caution" && styles.availabilityRecommendedCaution,
+        kind === "available" && styles.availabilityAvailable,
+        kind === "caution" && styles.availabilityCaution,
+        kind === "recovery" && styles.availabilityRecovery,
+        kind === "equipment" && styles.availabilityEquipment,
+        kind === "not_assessed" && styles.availabilityUnknown,
+      ]}>{glyph}</Text>
+    </View>
+  );
+}
+
+function AvailabilityKeyTrigger({
+  compact = false,
+  open,
+  onPress,
+}: {
+  compact?: boolean;
+  open: boolean;
+  onPress: (anchor: AvailabilityKeyAnchor | null) => void;
+}) {
+  const [focused, setFocused] = useState(false);
+  const triggerRef = useRef<View>(null);
+
+  function handlePress() {
+    if (open || !triggerRef.current) {
+      onPress(null);
+      return;
+    }
+    triggerRef.current.measureInWindow((x, y, width, height) => {
+      onPress({ x, y, width, height });
+    });
+  }
+
+  return (
+    <Pressable
+      ref={triggerRef}
+      accessibilityRole="button"
+      accessibilityLabel={`${open ? "Hide" : "Show"} availability key`}
+      accessibilityHint="Explains the availability icons used for each routine."
+      accessibilityState={{ expanded: open }}
+      onBlur={() => setFocused(false)}
+      onFocus={() => setFocused(true)}
+      onPress={handlePress}
+      style={({ pressed }) => [
+        styles.availabilityKeyTrigger,
+        compact && styles.availabilityKeyTriggerCompact,
+        pressed && styles.actionPressed,
+        focused && Platform.OS === "web" && styles.webFocusRing,
+      ]}
+    >
+      <Text style={[
+        styles.headerCell,
+        compact && styles.availabilityKeyTriggerTextCompact,
+      ]}>{compact ? "Availability key" : "Availability"}</Text>
+      <Text aria-hidden accessible={false} style={styles.infoIcon}>ⓘ</Text>
+    </Pressable>
+  );
+}
+
+function AvailabilityKeyPanel({
+  compact = false,
+  onClose,
+  position,
+}: {
+  compact?: boolean;
+  onClose: () => void;
+  position: AvailabilityKeyPosition;
+}) {
+  const [closeFocused, setCloseFocused] = useState(false);
+  return (
+    <View
+      accessibilityLabelledBy="availability-key-title"
+      role="dialog"
+      style={[
+        styles.availabilityKeyPanel,
+        compact && styles.availabilityKeyPanelCompact,
+        position,
+      ]}
+    >
+      <View style={styles.availabilityKeyHeader}>
+        <Text
+          accessibilityRole="header"
+          nativeID="availability-key-title"
+          style={styles.availabilityKeyTitle}
+        >
+          Availability key
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Close availability key"
+          onBlur={() => setCloseFocused(false)}
+          onFocus={() => setCloseFocused(true)}
+          onPress={onClose}
+          style={({ pressed }) => [
+            styles.availabilityKeyClose,
+            pressed && styles.actionPressed,
+            closeFocused && Platform.OS === "web" && styles.webFocusRing,
+          ]}
+        >
+          <Text style={styles.availabilityKeyCloseText}>Close</Text>
+        </Pressable>
+      </View>
+      <ScrollView
+        showsVerticalScrollIndicator
+        style={styles.availabilityKeyScroll}
+        contentContainerStyle={styles.availabilityKeyItems}
+      >
+        {AVAILABILITY_KEY.map((entry) => (
+          <View
+            key={entry.kind}
+            style={[styles.availabilityKeyItem, compact && styles.availabilityKeyItemCompact]}
+          >
+            <AvailabilityIcon decorative description={entry.description} kind={entry.kind} />
+            <View style={styles.availabilityKeyCopy}>
+              <Text style={styles.availabilityKeyLabel}>{entry.label}</Text>
+              <Text style={styles.availabilityKeyDescription}>{entry.description}</Text>
+            </View>
+          </View>
+        ))}
+      </ScrollView>
     </View>
   );
 }
@@ -602,6 +921,12 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
     justifyContent: "space-between",
     gap: spacing.md,
+  },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: spacing.sm,
   },
   refreshing: { color: colors.textDim, fontSize: 12 },
   actionPressed: { opacity: 0.68 },
@@ -693,6 +1018,26 @@ const styles = StyleSheet.create({
   recoveryTitle: { color: colors.warning, fontSize: 13, fontWeight: "800" },
   recoveryText: { color: colors.textMuted, fontSize: 12, lineHeight: 18 },
   setupAction: { alignSelf: "flex-start", marginTop: spacing.sm },
+  actionError: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.danger,
+    borderRadius: radii.sm,
+    backgroundColor: colors.dangerSurface,
+  },
+  actionErrorText: { color: colors.danger, fontSize: 12, lineHeight: 18 },
+  dialogError: {
+    color: colors.danger,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  sortLabel: {
+    color: colors.textMuted,
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: spacing.xs,
+  },
   table: {
     overflow: "hidden",
     borderWidth: StyleSheet.hairlineWidth,
@@ -701,7 +1046,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   tableHeader: {
-    minHeight: 28,
+    minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
@@ -719,133 +1064,255 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   routineRow: {
-    minHeight: 54,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
     backgroundColor: colors.surface,
   },
-  recommendedRoutineRow: {
-    borderLeftWidth: 3,
-    borderLeftColor: colors.accent,
-  },
-  routineLink: {
-    minHeight: 54,
-    flex: 1,
+  routineMain: {
+    minHeight: 64,
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
     paddingHorizontal: spacing.md,
-    paddingRight: spacing.sm,
-    paddingVertical: 6,
+    paddingVertical: 7,
   },
-  routineLinkPressed: { backgroundColor: colors.surfaceRaised },
-  codeCell: { width: 24 },
-  code: { color: colors.textDim, fontSize: 10, fontWeight: "900" },
-  recommendedCode: { color: colors.accent },
-  routineCell: { flex: 2.2, minWidth: 140, gap: 3 },
-  routineCellCompact: { minWidth: 0 },
-  planCell: { flex: 1.8, minWidth: 150 },
-  lastDoneCell: { flex: 1.25, minWidth: 112 },
-  statusCell: { flex: 1.1, minWidth: 94 },
-  routineTitleLine: {
+  routineMainCompact: {
+    minHeight: 136,
+    gap: 5,
+    padding: spacing.md,
+  },
+  compactTitleLine: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
   },
-  routineName: { color: colors.text, fontSize: 12, lineHeight: 15, fontWeight: "700", flexShrink: 1 },
-  recommendedBadge: {
-    borderRadius: radii.pill,
-    backgroundColor: colors.accent,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 2,
-  },
-  recommendedBadgeText: {
-    color: colors.background,
-    fontSize: 8,
-    lineHeight: 12,
-    fontWeight: "900",
-    letterSpacing: 0.35,
-    textTransform: "uppercase",
-  },
-  compactMeta: { color: colors.textDim, fontSize: 9, lineHeight: 12 },
-  value: { color: colors.textMuted, fontSize: 10, lineHeight: 15 },
-  arrow: { color: colors.textDim, fontSize: 13 },
-  arrowCell: { width: 13, flexShrink: 0 },
-  routineStatusLine: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: spacing.sm },
-  routineStatusLineWithoutHistory: { flexDirection: "column", alignItems: "flex-start", gap: 2 },
-  lastDone: { color: colors.textMuted, fontSize: 9, lineHeight: 15, fontWeight: "700" },
-  availabilityLabel: {
-    minWidth: 0,
-    minHeight: 18,
+  routineSummaryCell: {
+    flex: 1,
+    minWidth: 210,
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
-    flexShrink: 1,
+    gap: spacing.sm,
   },
-  availabilityDot: { width: 6, height: 6, borderRadius: radii.pill, backgroundColor: colors.success },
-  availabilityDotCaution: { backgroundColor: colors.warning },
-  availabilityDotRecovering: { backgroundColor: colors.danger },
-  availabilityDotEquipment: { backgroundColor: colors.warning },
-  availabilityText: {
+  routineSummaryCopy: { flex: 1, minWidth: 0, gap: 3 },
+  codeBadge: {
+    width: 40,
+    height: 28,
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 7,
+    backgroundColor: colors.surfaceRaised,
+  },
+  code: {
+    maxWidth: 34,
+    color: colors.textDim,
+    fontSize: 9,
+    fontWeight: "900",
+  },
+  routineName: {
+    flex: 1,
     minWidth: 0,
+    color: colors.text,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "700",
+  },
+  routineMetadata: { color: colors.textDim, fontSize: 10, lineHeight: 15 },
+  lastDone: {
     color: colors.textMuted,
-    fontSize: 10,
+    fontSize: 11,
+    lineHeight: 16,
+    fontVariant: ["tabular-nums"],
+  },
+  lastDoneColumn: { width: 150, flexShrink: 0 },
+  availabilityColumn: {
+    width: 100,
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  actionsColumn: { width: 168, flexShrink: 0 },
+  availabilityIcon: {
+    width: 28,
+    minHeight: 28,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  availabilityGlyph: { fontSize: 18, lineHeight: 22, fontWeight: "900" },
+  availabilityRecommended: { color: colors.accent },
+  availabilityRecommendedCaution: { color: colors.warning },
+  availabilityAvailable: { color: colors.success },
+  availabilityCaution: { color: colors.warning },
+  availabilityRecovery: { color: colors.danger },
+  availabilityEquipment: { color: colors.warning },
+  availabilityUnknown: { color: colors.textMuted },
+  routineActions: {
+    width: 168,
+    flexShrink: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  routineActionsCompact: { width: "100%", marginTop: spacing.xs },
+  rowAction: {
+    minHeight: 44,
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: spacing.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderStrong,
+    borderRadius: radii.sm,
+    backgroundColor: colors.surfaceRaised,
+  },
+  rowActionPressed: { backgroundColor: colors.border },
+  rowActionText: { color: colors.text, fontSize: 12, lineHeight: 16, fontWeight: "700" },
+  rowActionIcon: { color: colors.textMuted, fontSize: 15, lineHeight: 16, fontWeight: "800" },
+  startIcon: { color: colors.text, fontSize: 11, lineHeight: 16 },
+  descriptionPanel: {
+    gap: spacing.sm,
+    paddingTop: spacing.lg,
+    paddingRight: spacing.lg,
+    paddingBottom: spacing.xl,
+    paddingLeft: 62,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    backgroundColor: colors.background,
+  },
+  descriptionPanelCompact: {
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.lg,
+    paddingBottom: spacing.lg,
+  },
+  descriptionContent: { flex: 1, gap: spacing.sm },
+  descriptionLabel: {
+    color: colors.textDim,
+    fontSize: 9,
+    lineHeight: 12,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+  },
+  descriptionText: { color: colors.text, fontSize: 12, lineHeight: 20 },
+  openRoutineAction: {
+    minHeight: 44,
+    alignSelf: "flex-start",
+    justifyContent: "center",
+    paddingHorizontal: spacing.xs,
+    borderRadius: radii.sm,
+  },
+  openRoutineText: {
+    color: colors.accent,
+    fontSize: 11,
     lineHeight: 16,
     fontWeight: "800",
-    flexShrink: 1,
   },
-  availabilityTextCaution: { color: colors.warning },
-  availabilityTextRecovering: { color: colors.danger },
-  availabilityTextEquipment: { color: colors.warning },
-  recentSection: { gap: spacing.sm, marginTop: spacing.xs },
-  recentSectionHeader: {
+  availabilityKeyTrigger: {
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: spacing.xs,
+    borderRadius: radii.sm,
+  },
+  availabilityKeyTriggerCompact: {
+    minHeight: 44,
+    paddingHorizontal: spacing.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    backgroundColor: colors.surfaceRaised,
+  },
+  availabilityKeyTriggerTextCompact: {
+    color: colors.textMuted,
+    fontSize: 11,
+    letterSpacing: 0,
+    textTransform: "none",
+  },
+  infoIcon: { color: colors.textMuted, fontSize: 14, lineHeight: 18 },
+  keyModalBackdrop: {
+    flex: 1,
+    backgroundColor: "transparent",
+  },
+  keyModalDismissArea: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+  },
+  availabilityKeyPanel: {
+    position: "absolute",
+    maxWidth: 760,
+    gap: spacing.md,
+    padding: spacing.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderStrong,
+    borderRadius: radii.md,
+    backgroundColor: colors.surfaceRaised,
+    shadowColor: colors.background,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.45,
+    shadowRadius: 18,
+    elevation: 12,
+  },
+  availabilityKeyPanelCompact: {
+    maxWidth: 430,
+  },
+  availabilityKeyHeader: {
     minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: spacing.md,
   },
-  viewHistoryAction: {
+  availabilityKeyTitle: { color: colors.text, fontSize: 12, lineHeight: 16, fontWeight: "800" },
+  availabilityKeyClose: {
     minHeight: 44,
-    alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: spacing.sm,
     borderRadius: radii.sm,
   },
-  viewHistoryText: { color: colors.accent, fontSize: 12, fontWeight: "800" },
-  recentHistoryNotice: { color: colors.warning, fontSize: 11, lineHeight: 16 },
-  recentWorkoutRow: {
-    minHeight: 58,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-    backgroundColor: colors.surface,
+  availabilityKeyCloseText: {
+    color: colors.accent,
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: "800",
   },
-  recentWorkoutLink: { minHeight: 58 },
-  recentWorkoutLinkCompact: { minHeight: 64, paddingVertical: 7 },
-  recentWorkoutCell: { flex: 1.8, minWidth: 140, gap: 3 },
-  recentWorkoutCellCompact: { minWidth: 0 },
-  recentWhenCell: { flex: 1.5, minWidth: 170 },
-  recentResultCell: { flex: 1.3, minWidth: 135 },
-  recentResultCopy: { gap: 2 },
-  recentDurationCell: { width: 64, flexShrink: 0 },
-  recentCompactResult: {
+  availabilityKeyScroll: { flexShrink: 1 },
+  availabilityKeyItems: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.md,
+  },
+  availabilityKeyItem: {
+    flexGrow: 1,
+    flexBasis: "30%",
+    minWidth: 210,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.sm,
+  },
+  availabilityKeyItemCompact: { flexBasis: "100%", minWidth: 0 },
+  availabilityKeyCopy: { flex: 1, minWidth: 0, gap: 2 },
+  availabilityKeyLabel: { color: colors.text, fontSize: 11, lineHeight: 15, fontWeight: "800" },
+  availabilityKeyDescription: {
     color: colors.textMuted,
     fontSize: 9,
-    lineHeight: 12,
-    fontWeight: "700",
+    lineHeight: 14,
   },
-  recentStatus: { color: colors.success, fontSize: 10, lineHeight: 14, fontWeight: "800" },
-  recentStatusPartial: { color: colors.warning },
-  recentStatusAbandoned: { color: colors.danger },
-  recentResultMeta: { color: colors.textDim, fontSize: 9, lineHeight: 12 },
-  recentEmptyRow: {
-    minHeight: 54,
+  modalBackdrop: {
+    flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    padding: spacing.lg,
+    backgroundColor: colors.overlay,
   },
-  recentEmptyText: { color: colors.textDim, fontSize: 11, lineHeight: 16, textAlign: "center" },
+  dialog: { width: "100%", maxWidth: 480, borderColor: colors.borderStrong, padding: spacing.xl },
   webFocusRing: {
     outlineColor: colors.accent,
     outlineOffset: 2,
