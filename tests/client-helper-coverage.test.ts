@@ -134,9 +134,19 @@ test("covers every history formatter state", () => {
   assert.equal(formatMuscleGroup("upper__back"), "Upper  Back");
 
   assert.equal(
-    formatSetResult(workoutSet({ actualWeight: 0, actualReps: null, actualDurationSec: 30 }), "external"),
+    formatSetResult(workoutSet({
+      plannedTargetType: "duration",
+      actualWeight: 0,
+      actualReps: null,
+      actualDurationSec: 30,
+    }), "external"),
     "30 sec",
   );
+  assert.equal(formatSetResult(workoutSet({
+    plannedTargetType: "duration",
+    actualReps: 0,
+    actualDurationSec: null,
+  }), "external"), "—");
   assert.equal(formatSetResult(workoutSet({ actualReps: null }), "external"), "—");
   assert.equal(formatSetResult(workoutSet({ actualWeight: null }), "external"), "8 reps");
   assert.equal(formatSetResult(workoutSet({ actualWeight: 0 }), "added"), "Bodyweight × 8");
@@ -457,18 +467,12 @@ test("covers remaining set-input, stopwatch, and workout-progress boundaries", (
     { weight: "0", result: "" },
   );
   assert.deepEqual(
-    getSetInputDefaults(
-      { loadType: "external", targetUnit: "reps" },
-      { actualWeight: 10, actualReps: null },
-    ),
-    { weight: "10", result: "" },
+    getSetInputDefaults({ loadType: "external", targetUnit: "reps" }),
+    { weight: "", result: "" },
   );
   assert.deepEqual(
-    getSetInputDefaults(
-      { loadType: "external", targetUnit: "seconds" },
-      { actualWeight: 10, actualReps: 9 },
-    ),
-    { weight: "10", result: "" },
+    getSetInputDefaults({ loadType: "external", targetUnit: "seconds" }),
+    { weight: "", result: "" },
   );
 
   assert.equal(getStopwatchElapsedMs(null, -1), 0);

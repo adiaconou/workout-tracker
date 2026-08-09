@@ -84,7 +84,8 @@ export function formatSetResult(
   loadType: string,
 ) {
   if (set.status === "skipped") return "Skipped";
-  if (set.actualDurationSec !== null) {
+  if (set.plannedTargetType === "duration") {
+    if (set.actualDurationSec === null) return "—";
     const load = set.actualWeight && set.actualWeight > 0
       ? ` · ${set.actualWeight} ${set.weightUnit}`
       : "";

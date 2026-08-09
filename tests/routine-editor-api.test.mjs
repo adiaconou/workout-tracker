@@ -371,14 +371,23 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
 
   const firstMemberResult = expectStatus(await request(`/api/v1/workouts/${started.session.id}/sets`, {
     method: "POST",
-    body: { prescribedSetId: activeWorkout.sets[0].id, status: "Completed", actualWeight: 80, actualReps: 5 },
+    body: {
+      prescribedSetId: activeWorkout.sets[0].id,
+      status: "Completed",
+      actualWeight: 80,
+      actualReps: 5,
+      actualDurationSec: 99,
+    },
   }), 200);
   assert.equal(firstMemberResult.restSeconds, 0, "rest must not interrupt members of the same superset round");
   assert.equal(firstMemberResult.restEndsAt, null);
-  const recordedFirstMember = await database.prepare(`SELECT weight_unit AS weightUnit
+  const recordedFirstMember = await database.prepare(`SELECT weight_unit AS weightUnit,
+    actual_reps AS actualReps, actual_duration_sec AS actualDurationSec
     FROM set_performances WHERE session_id = ? AND prescribed_set_id = ?`)
     .bind(started.session.id, activeWorkout.sets[0].id).first();
   assert.equal(recordedFirstMember.weightUnit, "lb", "recorded load units must stay locked to the workout snapshot");
+  assert.equal(recordedFirstMember.actualReps, 5);
+  assert.equal(recordedFirstMember.actualDurationSec, null, "rep sets must discard an irrelevant duration value");
   const afterFirstMember = await database.prepare(`SELECT started_at AS startedAt,
     elapsed_seconds AS elapsedSeconds FROM workout_sets
     WHERE workout_id = ? ORDER BY position`).bind(started.session.id).all();
@@ -390,6 +399,7 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
       prescribedSetId: activeWorkout.sets[1].id,
       status: "Completed",
       actualWeight: 60,
+      actualReps: 99,
       actualDurationSec: 40,
     },
   }), 200);
@@ -406,7 +416,13 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
   assert.match(missingRounds.body.error.message, /rounds/i, "the direct API must require an explicit round result");
   const roundsResult = expectStatus(await request(`/api/v1/workouts/${started.session.id}/sets`, {
     method: "POST",
-    body: { prescribedSetId: activeWorkout.sets[2].id, status: "Completed", actualWeight: 80, actualReps: 6 },
+    body: {
+      prescribedSetId: activeWorkout.sets[2].id,
+      status: "Completed",
+      actualWeight: 80,
+      actualReps: 6,
+      actualDurationSec: 99,
+    },
   }), 200);
   assert.equal(roundsResult.nextSetIndex, 3, "round targets must advance through the explicit rounds path");
   assert.equal(roundsResult.workoutCompleted, true);
@@ -414,6 +430,54 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
     elapsed_seconds AS elapsedSeconds FROM workout_sets
     WHERE workout_id = ? ORDER BY position`).bind(started.session.id).all();
   assert.ok(timedSets.results.every((set) => set.startedAt && set.elapsedSeconds !== null));
+
+  const editableSets = await database.prepare(`SELECT id, prescribed_set_id AS prescribedSetId,
+    position FROM workout_sets WHERE workout_id = ? ORDER BY position`)
+    .bind(started.session.id).all();
+  const repSet = editableSets.results[0];
+  const durationSet = editableSets.results[1];
+  expectStatus(await request(
+    `/api/v1/workouts/${started.session.id}/sets/${encodeURIComponent(repSet.id)}`,
+    {
+      method: "PATCH",
+      body: { actualReps: 5, actualDurationSec: 88 },
+    },
+  ), 200);
+  expectStatus(await request(
+    `/api/v1/workouts/${started.session.id}/sets/${encodeURIComponent(durationSet.id)}`,
+    {
+      method: "PATCH",
+      body: {
+        actualReps: 88,
+        actualRepsLeft: 87,
+        actualRepsRight: 86,
+        actualDurationSec: 40,
+      },
+    },
+  ), 200);
+  const correctedSets = await database.prepare(`SELECT position, actual_reps AS actualReps,
+    actual_reps_left AS actualRepsLeft, actual_reps_right AS actualRepsRight,
+    actual_duration_sec AS actualDurationSec
+    FROM workout_sets WHERE workout_id = ? AND position IN (1, 2) ORDER BY position`)
+    .bind(started.session.id).all();
+  assert.deepEqual(correctedSets.results.map((set) => [
+    set.actualReps,
+    set.actualRepsLeft,
+    set.actualRepsRight,
+    set.actualDurationSec,
+  ]), [
+    [5, null, null, null],
+    [null, null, null, 40],
+  ], "history corrections must preserve target-specific result columns");
+  const correctedPerformances = await database.prepare(`SELECT prescribed_set_id AS prescribedSetId,
+    actual_reps AS actualReps, actual_duration_sec AS actualDurationSec
+    FROM set_performances WHERE session_id = ? AND prescribed_set_id IN (?, ?)
+    ORDER BY set_order`)
+    .bind(started.session.id, repSet.prescribedSetId, durationSet.prescribedSetId).all();
+  assert.deepEqual(correctedPerformances.results.map((set) => [
+    set.actualReps,
+    set.actualDurationSec,
+  ]), [[5, null], [null, 40]]);
 
   const completedSession = await database.prepare(`SELECT completed_at AS completedAt,
     body_weight AS bodyWeight, body_weight_source AS bodyWeightSource, weight_unit AS weightUnit

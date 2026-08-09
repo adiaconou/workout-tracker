@@ -3,6 +3,7 @@ import { ScrollView, StyleSheet, Text, View } from "react-native";
 import type { WorkoutView } from "../../contracts/api";
 import { colors, radii, spacing } from "../ui/tokens";
 import {
+  alignPreviousExerciseSets,
   formatSetComparisonPerformance,
   liveSetComparisonPerformance,
   type ComparisonPerformance,
@@ -46,19 +47,32 @@ export function ActiveSetComparison({
     );
   }), [currentSetId, recordedPerformanceBySetId, result, sets, weight]);
 
-  const previousValues = useMemo(() => sets.map((set, index) => {
-    const previous = previousSets[index];
-    if (!previous) return "—";
-    const performance: ComparisonPerformance = {
-      status: previous.status,
-      actualWeight: previous.actualWeight,
-      actualReps: previous.actualReps,
-      actualDurationSec: previous.actualDurationSec,
-      weightUnit: previous.weightUnit || set.weightUnit,
-      targetType: previous.targetType,
-    };
-    return formatSetComparisonPerformance(set, performance);
-  }), [previousSets, sets]);
+  const previousValues = useMemo(() => {
+    const alignedPreviousSets = alignPreviousExerciseSets(
+      sets.map((set) => ({
+        sourceRoutineSetId: set.sourceRoutineSetId,
+        setType: set.setType,
+        targetType: set.targetType ?? (set.targetUnit === "seconds"
+          ? "duration"
+          : set.targetUnit),
+      })),
+      previousSets,
+    );
+    return sets.map((set, index) => {
+      const previous = alignedPreviousSets[index];
+      if (!previous) return "—";
+      const performance: ComparisonPerformance = {
+        status: previous.status,
+        actualWeight: previous.actualWeight,
+        actualReps: previous.actualReps,
+        actualDurationSec: previous.actualDurationSec,
+        weightUnit: previous.weightUnit || set.weightUnit,
+        targetType: previous.targetType,
+        loadType: previous.loadType,
+      };
+      return formatSetComparisonPerformance(set, performance);
+    });
+  }, [previousSets, sets]);
 
   return (
     <View style={styles.comparison}>

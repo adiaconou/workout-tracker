@@ -28,6 +28,7 @@ import {
 } from "../ui/ui";
 import { colors, radii, spacing } from "../ui/tokens";
 import {
+  alignPreviousExerciseSets,
   formatElapsedDuration,
   formatPreviousSetPerformance,
   summarizeWorkoutTiming,
@@ -211,6 +212,14 @@ export function WorkoutHistoryDetailScreen({
 
       {workout.exercises.map((exercise) => {
         const previous = previousPerformanceByExercise[exercise.position];
+        const alignedPreviousSets = alignPreviousExerciseSets(
+          exercise.sets.map((set) => ({
+            sourceRoutineSetId: set.sourceRoutineSetId,
+            setType: set.setType,
+            targetType: set.plannedTargetType,
+          })),
+          previous?.sets ?? [],
+        );
         const expanded = expandedExerciseIds.has(exercise.id);
         const exerciseCompletedSets = exercise.sets.filter(
           (set) => set.status === "completed",
@@ -293,7 +302,7 @@ export function WorkoutHistoryDetailScreen({
                           Target {set.plannedTargetDisplay} · {set.setType} · {rest}
                         </Text>
                         <Text numberOfLines={1} style={styles.setPrevious}>
-                          Previous: {formatPreviousSetPerformance(previous?.sets[index])}
+                          Previous: {formatPreviousSetPerformance(alignedPreviousSets[index])}
                         </Text>
                       </View>
                       <Text style={styles.edit}>Edit</Text>

@@ -39,6 +39,49 @@ test("labels round targets as rounds instead of reps", () => {
   }), "22.5 lb × 6 rounds");
 });
 
+test("uses target semantics when legacy rows contain both result fields", () => {
+  assert.equal(formatPreviousSetPerformance({
+    setNumber: 1,
+    setType: "regular",
+    targetType: "reps",
+    actualWeight: 150,
+    actualReps: 6,
+    actualDurationSec: 0,
+    weightUnit: "lb",
+    status: "completed",
+  }), "150 lb × 6 reps");
+  assert.equal(formatPreviousSetPerformance({
+    setNumber: 1,
+    setType: "regular",
+    targetType: "duration",
+    actualWeight: 20,
+    actualReps: 0,
+    actualDurationSec: 30,
+    weightUnit: "kg",
+    status: "completed",
+  }), "20 kg × 30 sec");
+  assert.equal(formatPreviousSetPerformance({
+    setNumber: 1,
+    setType: "regular",
+    targetType: "reps",
+    actualWeight: 20,
+    actualReps: null,
+    actualDurationSec: 0,
+    weightUnit: "kg",
+    status: "completed",
+  }), "20 kg × —");
+  assert.equal(formatPreviousSetPerformance({
+    setNumber: 1,
+    setType: "regular",
+    targetType: "duration",
+    actualWeight: 20,
+    actualReps: 0,
+    actualDurationSec: null,
+    weightUnit: "kg",
+    status: "completed",
+  }), "20 kg × —");
+});
+
 test("uses empty placeholders when no completed history exists", () => {
   assert.equal(formatPreviousSetPerformance(undefined), "— × —");
   assert.equal(formatPreviousSetPerformance({

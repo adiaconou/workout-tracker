@@ -73,13 +73,21 @@ export function prepareSetRecord(input: {
 
   if (
     input.status === "Completed"
-    && (!Number.isFinite(numericWeight) || numericWeight < 0)
+    && (
+      !input.weight.trim()
+      || !Number.isFinite(numericWeight)
+      || numericWeight < 0
+    )
   ) {
     return { ok: false, error: "Enter the weight used for this set." };
   }
   if (
     input.status === "Completed"
-    && (!Number.isFinite(numericResult) || numericResult < 0)
+    && (
+      !input.result.trim()
+      || !Number.isFinite(numericResult)
+      || numericResult < 0
+    )
   ) {
     return {
       ok: false,

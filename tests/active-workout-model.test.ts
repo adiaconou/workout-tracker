@@ -52,6 +52,15 @@ test("completed set validation rejects invalid weight before result", () => {
   assert.deepEqual(prepareSetRecord({
     set: repsSet,
     status: "Completed",
+    weight: "   ",
+    result: "5",
+  }), {
+    ok: false,
+    error: "Enter the weight used for this set.",
+  });
+  assert.deepEqual(prepareSetRecord({
+    set: repsSet,
+    status: "Completed",
     weight: "not-a-number",
     result: "also-invalid",
   }), {
@@ -74,6 +83,15 @@ test("completed set validation names invalid result units", () => {
     set: repsSet,
     status: "Completed",
     weight: "100",
+    result: " ",
+  }), {
+    ok: false,
+    error: "Enter the reps completed.",
+  });
+  assert.deepEqual(prepareSetRecord({
+    set: repsSet,
+    status: "Completed",
+    weight: "100",
     result: "Infinity",
   }), {
     ok: false,
@@ -91,6 +109,16 @@ test("completed set validation names invalid result units", () => {
 });
 
 test("completed repetition and duration sets produce exact queued payloads", () => {
+  assert.deepEqual(prepareSetRecord({
+    set: repsSet,
+    status: "Completed",
+    weight: "0",
+    result: "0",
+  }), {
+    ok: true,
+    numericWeight: 0,
+    numericResult: 0,
+  });
   assert.deepEqual(prepareSetRecord({
     set: repsSet,
     status: "Completed",

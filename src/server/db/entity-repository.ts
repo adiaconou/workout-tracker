@@ -1077,7 +1077,8 @@ export class D1EntityRepository implements EntityRepository {
 
   async correctWorkoutSet(ownerEmail: string, workoutId: string, setId: string, input: WorkoutSetCorrection) {
     await this.ready(ownerEmail);
-    const existing = await this.d1.prepare(`SELECT prescribed_set_id AS prescribedSetId, actual_reps AS actualReps,
+    const existing = await this.d1.prepare(`SELECT prescribed_set_id AS prescribedSetId,
+      planned_target_type AS plannedTargetType, actual_reps AS actualReps,
       actual_reps_left AS actualRepsLeft, actual_reps_right AS actualRepsRight,
       actual_duration_sec AS actualDurationSec, actual_weight AS actualWeight, actual_rir AS actualRir,
       actual_rest_sec AS actualRestSec, rest_skipped AS restSkipped, notes, status
@@ -1087,20 +1088,27 @@ export class D1EntityRepository implements EntityRepository {
     const now = new Date().toISOString();
     const status = input.status ?? String(existing.status);
     const value = <T>(incoming: T | undefined, prior: unknown) => incoming === undefined ? prior : incoming;
+    const durationTarget = existing.plannedTargetType === "duration";
+    const correctedActualReps = durationTarget ? null : value(input.actualReps, existing.actualReps);
+    const correctedActualRepsLeft = durationTarget ? null : value(input.actualRepsLeft, existing.actualRepsLeft);
+    const correctedActualRepsRight = durationTarget ? null : value(input.actualRepsRight, existing.actualRepsRight);
+    const correctedActualDurationSec = durationTarget
+      ? value(input.actualDurationSec, existing.actualDurationSec)
+      : null;
     await this.d1.batch([
       this.d1.prepare(`UPDATE workout_sets SET actual_reps = ?, actual_reps_left = ?, actual_reps_right = ?,
         actual_duration_sec = ?, actual_weight = ?, actual_rir = ?, actual_rest_sec = ?, rest_skipped = ?,
         notes = ?, status = ?, completed_at = CASE WHEN ? IN ('completed', 'skipped') THEN COALESCE(completed_at, ?) ELSE NULL END,
         updated_at = ? WHERE id = ? AND workout_id = ? AND owner_email = ?`)
-        .bind(value(input.actualReps, existing.actualReps), value(input.actualRepsLeft, existing.actualRepsLeft),
-          value(input.actualRepsRight, existing.actualRepsRight), value(input.actualDurationSec, existing.actualDurationSec),
+        .bind(correctedActualReps, correctedActualRepsLeft,
+          correctedActualRepsRight, correctedActualDurationSec,
           value(input.actualWeight, existing.actualWeight), value(input.actualRir, existing.actualRir),
           value(input.actualRestSec, existing.actualRestSec), Number(value(input.restSkipped, bool(existing.restSkipped))),
           value(input.notes, existing.notes), status, status, now, now, setId, workoutId, ownerEmail),
       this.d1.prepare(`UPDATE set_performances SET actual_reps = ?, actual_duration_sec = ?, actual_weight = ?,
         rest_skipped = ?, notes = ?, status = ?, updated_at = ?
         WHERE session_id = ? AND prescribed_set_id = ? AND owner_email = ?`)
-        .bind(value(input.actualReps, existing.actualReps), value(input.actualDurationSec, existing.actualDurationSec),
+        .bind(correctedActualReps, correctedActualDurationSec,
           value(input.actualWeight, existing.actualWeight), Number(value(input.restSkipped, bool(existing.restSkipped))),
           value(input.notes, existing.notes), status === "completed" ? "Completed" : status === "skipped" ? "Skipped" : "Planned",
           now, workoutId, existing.prescribedSetId, ownerEmail),

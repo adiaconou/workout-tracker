@@ -42,8 +42,10 @@ export type NativeSession = {
 
 export type PreviousExerciseSet = {
   setNumber: number;
+  sourceRoutineSetId?: string | null;
   setType: string;
   targetType?: string;
+  loadType?: string;
   actualWeight: number | null;
   actualReps: number | null;
   actualDurationSec: number | null;

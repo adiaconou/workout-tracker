@@ -936,6 +936,12 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
   if (status === "Completed" && prescribedSet.targetUnit === "seconds" && actualDurationSec === null) {
     throw new Error("Enter the seconds completed for this set.");
   }
+  const recordedActualReps = status === "Completed" && prescribedSet.targetUnit !== "seconds"
+    ? actualReps
+    : null;
+  const recordedActualDurationSec = status === "Completed" && prescribedSet.targetUnit === "seconds"
+    ? actualDurationSec
+    : null;
 
   const receivedAtMs = Date.now();
   const receivedAt = new Date(receivedAtMs).toISOString();
@@ -1008,8 +1014,8 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
       performanceId, ownerEmail, sessionId, prescribedSet.id, prescribedSet.exerciseId,
       prescribedSet.exerciseOrder, prescribedSet.exerciseName, prescribedSet.globalIndex + 1,
       prescribedSet.setType, prescribedSet.target, effectiveRestSeconds,
-      prescribedSet.restRule, status === "Completed" ? actualReps : null,
-      status === "Completed" ? actualDurationSec : null,
+      prescribedSet.restRule, recordedActualReps,
+      recordedActualDurationSec,
       status === "Completed" ? actualWeight : null, prescribedSet.weightUnit,
       status, occurredAt, setStartedAt,
       setElapsedSeconds, workoutElapsedSeconds, receivedAt, receivedAt),
@@ -1019,7 +1025,7 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
       rest_ended_at = ?, actual_rest_sec = ?, updated_at = ?
       WHERE workout_id = ? AND prescribed_set_id = ? AND owner_email = ?
         AND status IN ('planned', 'started')`)
-      .bind(status === "Completed" ? actualReps : null, status === "Completed" ? actualDurationSec : null,
+      .bind(recordedActualReps, recordedActualDurationSec,
         status === "Completed" ? actualWeight : null, setStartedAt, setElapsedSeconds,
         status.toLowerCase(), occurredAt, effectiveRestSeconds > 0 && !workoutCompleted ? occurredAt : null,
         restEndedAt, actualRestSeconds, receivedAt, sessionId, prescribedSet.id, ownerEmail),

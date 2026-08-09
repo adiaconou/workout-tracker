@@ -42,8 +42,8 @@ import {
   getStopwatchSeconds,
 } from "./stopwatch";
 import {
+  getAdvancedSetInputDefaults,
   getSetInputDefaults,
-  type CompletedSetInput,
 } from "./set-input-defaults";
 import { DiscardWorkoutModal } from "./discard-workout-modal";
 import {
@@ -96,7 +96,6 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   const [timingNow, setTimingNow] = useState(() => Date.now());
   const workoutElapsedAnchor = useRef<ElapsedAnchor>({ seconds: 0, anchoredAt: Date.now() });
   const currentSetElapsedAnchor = useRef<ElapsedAnchor>({ seconds: 0, anchoredAt: Date.now() });
-  const completedSetInputs = useRef<Record<string, CompletedSetInput>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -195,9 +194,6 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
       : [],
     [currentSet?.exerciseOrder, workout?.sets],
   );
-  const currentExerciseInputKey = currentSet
-    ? `${sessionId}:${currentSet.sourceRoutineExerciseId ?? `position:${currentSet.exerciseOrder}`}`
-    : "";
   const exerciseProgress = useMemo(
     () => buildWorkoutExerciseProgress(workout?.sets ?? [], currentIndex),
     [currentIndex, workout?.sets],
@@ -215,11 +211,7 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
 
   useEffect(() => {
     if (!currentSet) return;
-    const defaults = getSetInputDefaults(
-      currentSet,
-      completedSetInputs.current[currentExerciseInputKey] ??
-        workout?.lastCompletedSetByExercise[currentSet.exerciseOrder],
-    );
+    const defaults = getSetInputDefaults(currentSet);
     setWeight(defaults.weight);
     setResult(defaults.result);
     setError("");
@@ -335,17 +327,19 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
         anchoredAt: recordedAt,
       };
       setTimingNow(respondedAt);
-      if (status === "Completed") {
-        completedSetInputs.current[currentExerciseInputKey] = {
-          actualWeight: prepared.numericWeight,
-          actualReps:
-            currentSet.targetUnit !== "seconds" ? prepared.numericResult : null,
-        };
-      }
       if (success.workoutCompleted) {
         setWorkoutCompleted(true);
         setRestEndsAt(success.restEndsAt);
       } else {
+        const nextSet = workout.sets[success.nextSet.index];
+        if (nextSet) {
+          const nextSetInputs = getAdvancedSetInputDefaults(
+            nextSet,
+            { weight, result },
+          );
+          setWeight(nextSetInputs.weight);
+          setResult(nextSetInputs.result);
+        }
         currentSetElapsedAnchor.current = success.nextSet.elapsedAnchor;
         setCurrentIndex(success.nextSet.index);
         setRestDuration(success.nextSet.restSeconds);

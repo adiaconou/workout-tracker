@@ -784,10 +784,30 @@ test("D1 entity repository seeds, versions, publishes, materializes, discards, a
         previousStartedAt,
         previousStartedAt,
       ).run();
+    await d1.prepare(`INSERT INTO set_performances (
+      id, owner_email, session_id, prescribed_set_id, exercise_id, exercise_order,
+      exercise_name, set_order, set_type, target_display, target_rest_sec, rest_rule,
+      actual_reps, actual_duration_sec, actual_weight, weight_unit, status,
+      performed_at, created_at, updated_at
+    ) VALUES (?, ?, ?, '1:regular:1', ?, 1, ?, 1, 'regular', '8â€“10 reps', 90,
+      'standard', 9, 0, 70, 'lb', 'Completed', ?, ?, ?)`)
+      .bind(
+        "previous-legacy-performance",
+        owner,
+        previousWorkoutId,
+        exercise.id,
+        exercise.name,
+        previousStartedAt,
+        previousStartedAt,
+        previousStartedAt,
+      ).run();
     await materializeWorkoutFromSnapshot(d1, owner, previousWorkoutId);
-    await d1.prepare(`UPDATE workout_sets SET actual_weight = 70, actual_reps = 9,
-      status = 'completed', completed_at = ?, updated_at = ? WHERE workout_id = ?`)
-      .bind(previousStartedAt, previousStartedAt, previousWorkoutId).run();
+    const normalizedPreviousSet = await d1.prepare(`SELECT actual_reps AS actualReps,
+      actual_duration_sec AS actualDurationSec FROM workout_sets
+      WHERE workout_id = ? AND prescribed_set_id = '1:regular:1'`)
+      .bind(previousWorkoutId).first();
+    assert.equal(normalizedPreviousSet?.actualReps, 9);
+    assert.equal(normalizedPreviousSet?.actualDurationSec, null);
 
     await d1.prepare(`INSERT INTO workout_sessions (
       id, owner_email, routine_code, routine_version, status, snapshot_json, current_exercise,
@@ -819,8 +839,14 @@ test("D1 entity repository seeds, versions, publishes, materializes, discards, a
       startedAt,
     );
     assert.equal(previousPerformance[1].workoutId, previousWorkoutId);
+    assert.equal(
+      previousPerformance[1].sets[0].sourceRoutineSetId,
+      updatedDraft.exercises[0].sets[0].id,
+    );
+    assert.equal(previousPerformance[1].sets[0].loadType, "external");
     assert.equal(previousPerformance[1].sets[0].actualWeight, 70);
     assert.equal(previousPerformance[1].sets[0].actualReps, 9);
+    assert.equal(previousPerformance[1].sets[0].actualDurationSec, null);
     const workout = await repository.getWorkout(owner, workoutId);
     assert.equal(workout?.routineVersionId, draft.id);
     assert.equal(workout?.exercises.length, 1);

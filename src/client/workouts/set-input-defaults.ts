@@ -1,21 +1,24 @@
 import type { GuidedSet } from "../../domain/workout";
 
-export type CompletedSetInput = {
-  actualWeight: number;
-  actualReps: number | null;
+export type SetInputValues = {
+  weight: string;
+  result: string;
 };
 
 export function getSetInputDefaults(
   set: Pick<GuidedSet, "loadType" | "targetUnit">,
-  previous?: CompletedSetInput,
-) {
+): SetInputValues {
   const startsAtZero = set.loadType === "bodyweight" || set.loadType === "added";
 
   return {
-    weight: previous ? String(previous.actualWeight) : startsAtZero ? "0" : "",
-    result:
-      set.targetUnit !== "seconds" && previous?.actualReps != null
-        ? String(previous.actualReps)
-        : "",
+    weight: startsAtZero ? "0" : "",
+    result: "",
   };
+}
+
+export function getAdvancedSetInputDefaults(
+  set: Pick<GuidedSet, "loadType" | "targetUnit">,
+  _completedInput: SetInputValues,
+) {
+  return getSetInputDefaults(set);
 }

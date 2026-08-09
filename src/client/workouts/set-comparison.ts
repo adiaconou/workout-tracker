@@ -1,4 +1,7 @@
-import type { RecordedSetPerformance } from "../../contracts/api";
+import type {
+  PreviousExerciseSet,
+  RecordedSetPerformance,
+} from "../../contracts/api";
 
 export type ComparisonSet = {
   loadType: string;
@@ -12,6 +15,13 @@ export type ComparisonPerformance = Pick<
 > & {
   status: string;
   targetType?: string;
+  loadType?: string;
+};
+
+export type CurrentSetComparisonIdentity = {
+  sourceRoutineSetId?: string | null;
+  setType: string;
+  targetType?: string | null;
 };
 
 function displayNumber(value: number) {
@@ -22,28 +32,82 @@ function resultLabel(
   set: ComparisonSet,
   performance: ComparisonPerformance,
 ) {
-  if (performance.actualDurationSec !== null) {
-    return `${displayNumber(performance.actualDurationSec)} sec`;
+  const targetUnit = targetUnitFromTargetType(performance.targetType) ?? set.targetUnit;
+  const result = targetUnit === "seconds"
+    ? performance.actualDurationSec
+    : performance.actualReps;
+  if (result === null) return "—";
+  const unit = targetUnit === "seconds" ? "sec" : targetUnit;
+  return `${displayNumber(result)} ${unit}`;
+}
+
+function targetUnitFromTargetType(
+  targetType: string | null | undefined,
+): ComparisonSet["targetUnit"] | null {
+  if (targetType === "duration") return "seconds";
+  if (targetType === "rounds") return "rounds";
+  if (targetType === "reps") return "reps";
+  return null;
+}
+
+function normalizedSetType(value: string) {
+  return value.trim().toLowerCase();
+}
+
+export function alignPreviousExerciseSets(
+  currentSets: readonly CurrentSetComparisonIdentity[],
+  previousSets: readonly PreviousExerciseSet[],
+) {
+  const matches: Array<PreviousExerciseSet | undefined> = currentSets.map(() => undefined);
+  const remaining = previousSets.map((set) => set);
+
+  for (const [currentIndex, current] of currentSets.entries()) {
+    if (!current.sourceRoutineSetId) continue;
+    const previousIndex = remaining.findIndex(
+      (previous) => previous.sourceRoutineSetId === current.sourceRoutineSetId,
+    );
+    if (previousIndex < 0) continue;
+    matches[currentIndex] = remaining.splice(previousIndex, 1)[0];
   }
-  if (performance.actualReps === null) return "—";
-  const unit = set.targetUnit === "rounds" || performance.targetType === "rounds"
-    ? "rounds"
-    : "reps";
-  return `${displayNumber(performance.actualReps)} ${unit}`;
+
+  for (const [currentIndex, current] of currentSets.entries()) {
+    if (matches[currentIndex]) continue;
+    const currentTarget = targetUnitFromTargetType(current.targetType);
+    if (!currentTarget) continue;
+    const previousIndex = remaining.findIndex((previous) =>
+      normalizedSetType(previous.setType) === normalizedSetType(current.setType)
+      && targetUnitFromTargetType(previous.targetType) === currentTarget
+    );
+    if (previousIndex < 0) continue;
+    matches[currentIndex] = remaining.splice(previousIndex, 1)[0];
+  }
+
+  for (const [currentIndex, current] of currentSets.entries()) {
+    if (matches[currentIndex]) continue;
+    const previousIndex = remaining.findIndex((previous) =>
+      normalizedSetType(previous.setType) === normalizedSetType(current.setType)
+      && targetUnitFromTargetType(previous.targetType) === null
+    );
+    if (previousIndex < 0) continue;
+    matches[currentIndex] = remaining.splice(previousIndex, 1)[0];
+  }
+
+  return matches;
 }
 
 function loadLabel(set: ComparisonSet, performance: ComparisonPerformance) {
   const weight = performance.actualWeight;
   const unit = performance.weightUnit || set.weightUnit;
-  if (set.loadType === "bodyweight") {
+  const loadType = performance.loadType ?? set.loadType;
+  if (loadType === "bodyweight") {
     return weight !== null && weight > 0
       ? `BW + ${displayNumber(weight)} ${unit}`
       : "BW";
   }
-  if (set.loadType === "added") {
+  if (loadType === "added") {
     return weight === null ? "BW + —" : `BW + ${displayNumber(weight)} ${unit}`;
   }
-  if (set.loadType === "assistance") {
+  if (loadType === "assistance") {
     return weight === null ? "BW − —" : `BW − ${displayNumber(weight)} ${unit}`;
   }
   return weight === null ? "—" : `${displayNumber(weight)} ${unit}`;

@@ -1,5 +1,6 @@
 export { DiscardWorkoutModal } from "./discard-workout-modal";
 export { formatPreviousSetPerformance } from "./previous-performance";
+export { alignPreviousExerciseSets } from "./set-comparison";
 export {
   formatElapsedDuration,
   summarizeWorkoutTiming,

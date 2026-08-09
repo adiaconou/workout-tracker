@@ -9,7 +9,9 @@ export async function getPreviousPerformanceByExercise(
   const rows = await d1.prepare(`
     SELECT current_exercise.position AS currentExerciseOrder,
       prior_session.id AS workoutId, prior_session.started_at AS performedAt,
+      prior_set.source_routine_set_id AS sourceRoutineSetId,
       prior_set.set_type AS setType, prior_set.planned_target_type AS targetType,
+      prior_exercise.load_type_snapshot AS loadType,
       prior_set.actual_weight AS actualWeight,
       prior_set.actual_reps AS actualReps,
       prior_set.actual_duration_sec AS actualDurationSec,
@@ -89,8 +91,10 @@ export async function getPreviousPerformanceByExercise(
     currentExerciseOrder: number;
     workoutId: string;
     performedAt: string;
+    sourceRoutineSetId: string | null;
     setType: string;
     targetType: string;
+    loadType: string;
     actualWeight: number | null;
     actualReps: number | null;
     actualDurationSec: number | null;
@@ -101,6 +105,7 @@ export async function getPreviousPerformanceByExercise(
   const history: Record<number, PreviousExercisePerformance> = {};
   for (const row of rows.results) {
     const exerciseOrder = Number(row.currentExerciseOrder);
+    const durationTarget = row.targetType === "duration";
     const performance = history[exerciseOrder] ?? {
       workoutId: row.workoutId,
       performedAt: row.performedAt,
@@ -108,12 +113,17 @@ export async function getPreviousPerformanceByExercise(
     };
     performance.sets.push({
       setNumber: performance.sets.length + 1,
+      sourceRoutineSetId: row.sourceRoutineSetId,
       setType: row.setType,
       targetType: row.targetType,
+      loadType: row.loadType,
       actualWeight: row.actualWeight === null ? null : Number(row.actualWeight),
-      actualReps: row.actualReps === null ? null : Number(row.actualReps),
-      actualDurationSec:
-        row.actualDurationSec === null ? null : Number(row.actualDurationSec),
+      actualReps: durationTarget || row.actualReps === null
+        ? null
+        : Number(row.actualReps),
+      actualDurationSec: !durationTarget || row.actualDurationSec === null
+        ? null
+        : Number(row.actualDurationSec),
       weightUnit: row.weightUnit,
       status: row.status,
     });

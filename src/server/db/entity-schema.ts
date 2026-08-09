@@ -562,19 +562,26 @@ export async function materializeWorkoutFromSnapshot(d1: D1Database, ownerEmail:
       const sourceSetId = set.sourceRoutineSetId
         ?? sourceSetByPosition.get(`${exercise.exerciseOrder}:${set.exerciseSetNumber}`)
         ?? null;
+      const plannedTargetType = set.targetType
+        ?? (set.targetUnit === "seconds"
+          ? "duration"
+          : set.targetUnit === "rounds" || set.setType === "emom"
+            ? "rounds"
+            : "reps");
       statements.push(d1.prepare(`INSERT OR IGNORE INTO workout_sets (
         id, owner_email, workout_id, workout_exercise_id, source_routine_set_id, prescribed_set_id,
         position, set_type, planned_target_type, planned_target_min, planned_target_max,
         planned_target_display, planned_rir_min, planned_rir_max, planned_rest_sec, planned_rest_rule,
         actual_reps, actual_duration_sec, actual_weight, weight_unit, rest_skipped, status,
         started_at, elapsed_seconds, completed_at, notes, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .bind(`${sessionId}::set::${set.globalIndex + 1}`, ownerEmail, sessionId, workoutExerciseId,
           sourceSetId, set.id, set.globalIndex + 1, set.setType,
-          set.targetType ?? (set.targetUnit === "seconds" ? "duration" : set.targetUnit === "rounds" || set.setType === "emom" ? "rounds" : "reps"),
+          plannedTargetType,
           targetMin, targetMax, set.target, set.targetRirMin ?? null, set.targetRirMax ?? null,
           set.restSeconds, set.restRule,
-          performance?.actualReps ?? null, performance?.actualDurationSec ?? null,
+          plannedTargetType === "duration" ? null : performance?.actualReps ?? null,
+          plannedTargetType === "duration" ? performance?.actualDurationSec ?? null : null,
           performance?.actualWeight ?? null, performance?.weightUnit ?? exercise.weightUnit,
           Number(performance?.restSkipped ?? 0), performance?.status?.toLowerCase() ?? "planned",
           performance?.startedAt ?? null, performance?.elapsedSeconds ?? null,

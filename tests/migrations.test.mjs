@@ -23,6 +23,7 @@ test("applies the complete migration chain and creates the normalized entity mod
       "drizzle/0008_nervous_selene.sql",
       "drizzle/0009_profile_measurements.sql",
       "drizzle/0010_opposite_microbe.sql",
+      "drizzle/0011_repair_workout_set_metrics.sql",
     ];
     const sql = (await Promise.all(filenames.map((filename) => readFile(new URL(filename, root), "utf8"))))
       .join("\n").replaceAll("--> statement-breakpoint", "\n");
@@ -129,6 +130,81 @@ test("onboarding migration preserves existing users as completed", async () => {
     assert.equal(migrated.version, 1);
     assert.equal(migrated.completedAt, updatedAt);
     assert.ok(JSON.parse(migrated.equipment).includes("barbell"));
+    sqlite.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("metric repair clears only zeroes stored in the wrong result field", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "workout-metric-repair-"));
+  const database = join(directory, "metrics.sqlite");
+  try {
+    const sqlite = new DatabaseSync(database);
+    sqlite.exec(`
+      CREATE TABLE workout_sets (
+        owner_email TEXT NOT NULL,
+        workout_id TEXT NOT NULL,
+        prescribed_set_id TEXT NOT NULL,
+        planned_target_type TEXT NOT NULL,
+        actual_reps INTEGER,
+        actual_duration_sec INTEGER
+      );
+      CREATE TABLE set_performances (
+        owner_email TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        prescribed_set_id TEXT NOT NULL,
+        set_type TEXT NOT NULL,
+        target_display TEXT NOT NULL,
+        actual_reps INTEGER,
+        actual_duration_sec INTEGER
+      );
+      INSERT INTO workout_sets VALUES
+        ('owner', 'workout', 'reps', 'reps', 6, 0),
+        ('owner', 'workout', 'rounds', 'rounds', 5, 0),
+        ('owner', 'workout', 'duration', 'duration', 0, 30),
+        ('owner', 'workout', 'zero-reps', 'reps', 0, 0),
+        ('owner', 'workout', 'zero-duration', 'duration', 0, 0),
+        ('owner', 'workout', 'positive-extra', 'reps', 6, 5);
+      INSERT INTO set_performances VALUES
+        ('owner', 'workout', 'reps', 'regular', '6 reps', 6, 0),
+        ('owner', 'workout', 'rounds', 'regular', '30 sec', 5, 0),
+        ('owner', 'workout', 'duration', 'regular', '6 reps', 0, 30),
+        ('owner', 'missing', 'legacy-reps', 'regular', '8 reps', 8, 0),
+        ('owner', 'missing', 'legacy-duration', 'regular', '30 sec', 0, 30),
+        ('owner', 'missing', 'legacy-rounds', 'regular', '5 rounds', 5, 0),
+        ('owner', 'missing', 'legacy-emom', 'emom', '5', 5, 0),
+        ('owner', 'missing', 'positive-extra', 'regular', '6 reps', 6, 5);
+    `);
+    sqlite.exec((await readFile(
+      new URL("drizzle/0011_repair_workout_set_metrics.sql", root),
+      "utf8",
+    )).replaceAll("--> statement-breakpoint", "\n"));
+
+    const workoutSets = new Map(sqlite.prepare(`SELECT prescribed_set_id AS id,
+      actual_reps AS reps, actual_duration_sec AS duration FROM workout_sets`)
+      .all().map((row) => [row.id, row]));
+    assert.deepEqual({ ...workoutSets.get("reps") }, { id: "reps", reps: 6, duration: null });
+    assert.deepEqual({ ...workoutSets.get("rounds") }, { id: "rounds", reps: 5, duration: null });
+    assert.deepEqual({ ...workoutSets.get("duration") }, { id: "duration", reps: null, duration: 30 });
+    assert.deepEqual({ ...workoutSets.get("zero-reps") }, { id: "zero-reps", reps: 0, duration: null });
+    assert.deepEqual({ ...workoutSets.get("zero-duration") }, { id: "zero-duration", reps: null, duration: 0 });
+    assert.deepEqual({ ...workoutSets.get("positive-extra") }, { id: "positive-extra", reps: 6, duration: 5 });
+
+    const performances = new Map(sqlite.prepare(`SELECT prescribed_set_id AS id,
+      actual_reps AS reps, actual_duration_sec AS duration FROM set_performances`)
+      .all().map((row) => [row.id, row]));
+    for (const id of ["reps", "rounds", "legacy-reps", "legacy-rounds", "legacy-emom"]) {
+      assert.equal(performances.get(id).duration, null);
+    }
+    for (const id of ["duration", "legacy-duration"]) {
+      assert.equal(performances.get(id).reps, null);
+    }
+    assert.deepEqual({ ...performances.get("positive-extra") }, {
+      id: "positive-extra",
+      reps: 6,
+      duration: 5,
+    });
     sqlite.close();
   } finally {
     await rm(directory, { recursive: true, force: true });
