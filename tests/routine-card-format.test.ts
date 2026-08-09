@@ -19,8 +19,6 @@ function guidance(
     availability: "available",
     availabilityLabel: "Lower logged overlap",
     availabilityReason: "Reason",
-    equipmentCompatible: true,
-    missingEquipment: [],
     goalReason: "Goal",
     isNextInSequence: false,
     ...overrides,
@@ -109,10 +107,6 @@ test("sorts by most recent completion without mutating input and keeps never-don
 
 test("reduces recommendation guidance to the icon states shown in the routines list", () => {
   assert.equal(routineAvailabilityKind(undefined), "caution");
-  assert.equal(routineAvailabilityKind(guidance({
-    availability: "recommended",
-    equipmentCompatible: false,
-  })), "unavailable");
   assert.equal(routineAvailabilityKind(guidance({ availability: "recommended" })), "recommended");
   assert.equal(routineAvailabilityKind(guidance({ availability: "caution" })), "caution");
   assert.equal(routineAvailabilityKind(guidance()), "available");

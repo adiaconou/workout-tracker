@@ -51,7 +51,6 @@ import {
   type MuscleWeights,
   type RecentCompletedSession,
   type RecentCompletedSet,
-  type RoutineEquipmentCompatibility,
   type RoutineProfiles,
 } from "../src/domain/recommendations";
 import {
@@ -964,12 +963,6 @@ test("recommendations cover time decay, muscle labels, invalid history, and rema
     C: { quads: 1, hamstrings: 1, glutes: 1 },
     D: { calves: 1 },
   };
-  const equipment: RoutineEquipmentCompatibility = {
-    A: { compatible: false, missingEquipment: ["Rack"] },
-    B: { compatible: false, missingEquipment: ["Bench"] },
-    C: { compatible: false, missingEquipment: ["Barbell"] },
-    D: { compatible: true, missingEquipment: [] },
-  };
   const recentOverlap = buildRoutineRecommendations(
     [],
     [loggedSet("A", 0.5, { back: 6 })],
@@ -1040,40 +1033,30 @@ test("recommendations cover time decay, muscle labels, invalid history, and rema
   assert.equal(fallbackMetadata.routines.length, 4);
   const upperDetour = buildRoutineRecommendations(
     [session("C", 12), session("D", 24)],
-    [loggedSet("C", 12, { quads: 6, hamstrings: 6, glutes: 6 })],
+    [
+      loggedSet("C", 12, { quads: 6, hamstrings: 6, glutes: 6 }),
+      loggedSet("A", 2, { back: 6, chest: 6, shoulders: 6 }),
+    ],
     recommendationNow,
     profiles,
-    equipment,
   );
   assert.equal(upperDetour.recommendedRoutineCode, "D");
   assert.match(upperDetour.summary, /upper-body goal|highest-scoring fit/);
 
   const lowerBody = buildRoutineRecommendations(
     [session("A", 96)],
-    [loggedSet("A", 10, { back: 6 })],
+    [loggedSet("A", 10, { back: 6, chest: 6, shoulders: 6, calves: 6 })],
     recommendationNow,
     profiles,
-    {
-      A: { compatible: false, missingEquipment: [] },
-      B: { compatible: false, missingEquipment: [] },
-      C: { compatible: true, missingEquipment: [] },
-      D: { compatible: false, missingEquipment: [] },
-    },
   );
   assert.equal(lowerBody.recommendedRoutineCode, "C");
   assert.match(lowerBody.summary, /Lower-body work is due|highest-scoring fit/);
 
   const balancedFit = buildRoutineRecommendations(
     [session("C", 10)],
-    [loggedSet("A", 10, { back: 6 })],
+    [loggedSet("A", 10, { back: 6, chest: 6, shoulders: 6, calves: 6 })],
     recommendationNow,
     profiles,
-    {
-      A: { compatible: false, missingEquipment: [] },
-      B: { compatible: false, missingEquipment: [] },
-      C: { compatible: true, missingEquipment: [] },
-      D: { compatible: false, missingEquipment: [] },
-    },
   );
   assert.equal(balancedFit.recommendedRoutineCode, "C");
   assert.match(balancedFit.summary, /highest-scoring fit/);

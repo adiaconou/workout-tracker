@@ -73,15 +73,11 @@ const AVAILABILITY_KEY = {
   },
   available: {
     label: "Available",
-    description: "Equipment is available with lower recent muscle overlap.",
+    description: "Lower recent muscle overlap.",
   },
   caution: {
     label: "Use caution",
     description: "Recent muscle overlap or missing guidance; you can still start.",
-  },
-  unavailable: {
-    label: "Unavailable",
-    description: "Required equipment is not in your Training setup.",
   },
 } satisfies Record<RoutineAvailabilityKind, AvailabilityKeyCopy>;
 
@@ -409,18 +405,7 @@ export function RoutinesScreen() {
             </>
           ) : null}
 
-          {recommendation?.recommendationKind === "equipment_setup" ? (
-            <View style={styles.guidanceNotice}>
-              <View style={styles.guidanceMark} />
-              <View style={styles.guidanceCopy}>
-                <Text style={styles.guidanceTitle}>Routine update needed</Text>
-                <Text style={styles.guidanceText}>{recommendation.summary}</Text>
-                <View style={styles.setupAction}>
-                  <Button title="Ask Coach to adapt them" onPress={() => router.push("/coach")} />
-                </View>
-              </View>
-            </View>
-          ) : recommendation?.recommendationKind === "recovery" ? (
+          {recommendation?.recommendationKind === "recovery" ? (
             <View
               accessible
               accessibilityLabel={`Use caution today. ${recommendation.summary}`}
@@ -484,10 +469,7 @@ export function RoutinesScreen() {
                         expanded={expandedRoutineCode === routine.code}
                         now={renderedAt}
                         routine={routine}
-                        startDisabled={
-                          Boolean(startingRoutineCode) ||
-                          (availabilityKind === "unavailable" && !active)
-                        }
+                        startDisabled={Boolean(startingRoutineCode)}
                         starting={startingRoutineCode === routine.code}
                         onOpen={() => router.push(`/routines/${encodeURIComponent(routine.code)}`)}
                         onStart={() => void startWorkout(routine.code)}
@@ -648,9 +630,6 @@ function RoutineListRow({
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`${active ? "Resume" : "Start"} Routine ${routine.code}, ${title}`}
-        accessibilityHint={availabilityKind === "unavailable" && !active
-          ? availabilityDescription
-          : undefined}
         accessibilityState={{ busy: starting, disabled: startDisabled }}
         disabled={startDisabled}
         onBlur={() => setFocusedAction(null)}
@@ -770,9 +749,7 @@ function AvailabilityIcon({
     ? "★"
     : kind === "available"
       ? "✓"
-      : kind === "caution"
-        ? "!"
-        : "×";
+      : "!";
   return (
     <View
       accessible={!decorative}
@@ -788,7 +765,6 @@ function AvailabilityIcon({
         kind === "recommended" && styles.availabilityRecommended,
         kind === "available" && styles.availabilityAvailable,
         kind === "caution" && styles.availabilityCaution,
-        kind === "unavailable" && styles.availabilityUnavailable,
       ]}>{glyph}</Text>
     </View>
   );
@@ -1018,7 +994,6 @@ const styles = StyleSheet.create({
   guidanceCopy: { flex: 1, minWidth: 0, gap: 2 },
   guidanceTitle: { color: colors.warning, fontSize: 13, fontWeight: "800" },
   guidanceText: { color: colors.textMuted, fontSize: 12, lineHeight: 18 },
-  setupAction: { alignSelf: "flex-start", marginTop: spacing.sm },
   actionError: {
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
@@ -1147,7 +1122,6 @@ const styles = StyleSheet.create({
   availabilityRecommended: { color: colors.accent },
   availabilityAvailable: { color: colors.success },
   availabilityCaution: { color: colors.warning },
-  availabilityUnavailable: { color: colors.danger },
   routineActions: {
     width: 168,
     flexShrink: 0,

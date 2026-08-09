@@ -98,7 +98,6 @@ test("assesses active custom routines without displacing the canonical rolling p
     [],
     NOW,
     { Custom: { back: 1 } },
-    undefined,
     ["A", "B", "C", "D", "Custom"],
   );
 
@@ -116,7 +115,6 @@ test("uses active custom routines as a fallback rotation when no canonical routi
     [],
     NOW,
     { Custom: { back: 1 }, Mobility: { core: 1 } },
-    undefined,
     [" Custom ", "Mobility", "Custom", ""],
   );
 
@@ -128,7 +126,7 @@ test("uses active custom routines as a fallback rotation when no canonical routi
 });
 
 test("returns neutral guidance when there are no active routines", () => {
-  const result = buildRoutineRecommendations([], [], NOW, undefined, undefined, []);
+  const result = buildRoutineRecommendations([], [], NOW, undefined, []);
 
   assert.equal(result.recommendedRoutineCode, null);
   assert.equal(result.nextInSequence, null);
@@ -148,7 +146,6 @@ test("ignores a legacy canonical set whose exercise position no longer maps", ()
     }],
     NOW,
     { A: { back: 1 } },
-    undefined,
     ["A"],
   );
 
@@ -165,7 +162,6 @@ test("excludes completed sets at the exact 48-hour lookback boundary", () => {
     [justInside],
     NOW,
     profiles,
-    undefined,
     ["A"],
   );
   const boundaryResult = buildRoutineRecommendations(
@@ -173,7 +169,6 @@ test("excludes completed sets at the exact 48-hour lookback boundary", () => {
     [exactlyAtBoundary],
     NOW,
     profiles,
-    undefined,
     ["A"],
   );
 
@@ -206,7 +201,6 @@ test("maps high and moderate muscle overlap to caution and names the source rout
     [completedMuscleSet("Upper Strength", 1, { back: 6 })],
     NOW,
     profiles,
-    undefined,
     ["A", "B"],
   );
   const moderate = buildRoutineRecommendations(
@@ -214,7 +208,6 @@ test("maps high and moderate muscle overlap to caution and names the source rout
     [completedMuscleSet("Upper Volume", 1, { back: 1.5 })],
     NOW,
     profiles,
-    undefined,
     ["A", "B"],
   );
 
@@ -229,7 +222,6 @@ test("maps high and moderate muscle overlap to caution and names the source rout
     /Routine Upper Volume trained upper back and lats.*Moderate overlap/i,
   );
   assert.equal(recommendationRow(high, "B").availability, "recommended");
-  assert.ok(high.routines.every((routine) => routine.availability !== "unavailable"));
 });
 
 test("uses optional actual RIR to adjust completed-set effort", () => {
@@ -247,7 +239,6 @@ test("uses optional actual RIR to adjust completed-set effort", () => {
     )],
     NOW,
     { A: { back: 1 } },
-    undefined,
     ["A"],
   );
 
@@ -274,7 +265,6 @@ test("routes around recent upper-body overlap to Routine C", () => {
   assert.equal(recommendationRow(result, "B").availability, "caution");
   assert.equal(recommendationRow(result, "C").availability, "recommended");
   assert.match(recommendationRow(result, "A").availabilityReason, /Routine A/);
-  assert.ok(result.routines.every((routine) => routine.availability !== "unavailable"));
 });
 
 test("returns to the most-due upper routine after an isolated leg workout", () => {
@@ -320,7 +310,7 @@ test("does not block the planned routine after one recently completed pull-up se
   assert.equal(recommendationRow(result, "B").availability, "recommended");
 });
 
-test("keeps every overlap-only limitation at caution rather than unavailable", () => {
+test("keeps every overlap-only limitation at caution", () => {
   const sessions = [completedSession("C", 12), completedSession("A", 18)];
   const sets = [...completedRoutineSets("C", 12), ...completedRoutineSets("A", 18)];
   const result = buildRoutineRecommendations(sessions, sets, NOW);
@@ -328,59 +318,14 @@ test("keeps every overlap-only limitation at caution rather than unavailable", (
   assert.equal(result.recommendedRoutineCode, null);
   assert.equal(result.recommendationKind, "recovery");
   assert.ok(result.routines.every((routine) => routine.availability === "caution"));
-  assert.ok(result.routines.every((routine) => routine.availability !== "unavailable"));
   assert.match(result.summary, /not a medical readiness assessment/i);
 });
 
-test("uses unavailable only for routines missing required equipment", () => {
-  const result = buildRoutineRecommendations([], [], NOW, undefined, {
-    A: { compatible: false, missingEquipment: ["Barbell & rack"] },
-    B: { compatible: true, missingEquipment: [] },
-    C: { compatible: true, missingEquipment: [] },
-    D: { compatible: true, missingEquipment: [] },
-  });
-
-  assert.notEqual(result.recommendedRoutineCode, "A");
-  assert.equal(result.recommendationKind, "routine");
-  assert.equal(recommendationRow(result, "A").availability, "unavailable");
-  assert.deepEqual(recommendationRow(result, "A").missingEquipment, ["Barbell & rack"]);
-  assert.match(recommendationRow(result, "A").availabilityReason, /Barbell & rack/);
-  assert.deepEqual(
-    result.routines.filter((routine) => routine.availability === "unavailable").map(({ code }) => code),
-    ["A"],
-  );
-  assert.ok(result.recommendedRoutineCode);
-  assert.equal(
-    recommendationRow(result, result.recommendedRoutineCode).availability,
-    "recommended",
-  );
-});
-
-test("asks for routine adaptation when no rolling-plan routine has its equipment", () => {
-  const incompatible = {
-    compatible: false,
-    missingEquipment: ["Cable or multi-gym"],
-  };
-  const result = buildRoutineRecommendations([], [], NOW, undefined, {
-    A: incompatible,
-    B: incompatible,
-    C: incompatible,
-    D: incompatible,
-  });
-
-  assert.equal(result.recommendedRoutineCode, null);
-  assert.equal(result.recommendationKind, "equipment_setup");
-  assert.ok(result.routines.every((routine) => routine.availability === "unavailable"));
-  assert.match(result.summary, /ask coach/i);
-  assert.doesNotMatch(result.summary, /recovery/i);
-});
-
-test("treats missing muscle metadata as caution rather than unavailable", () => {
+test("treats missing muscle metadata as caution", () => {
   const result = buildRoutineRecommendations(
     [],
     [],
     NOW,
-    undefined,
     undefined,
     ["A", "Custom"],
   );
@@ -388,7 +333,6 @@ test("treats missing muscle metadata as caution rather than unavailable", () => 
   assert.equal(recommendationRow(result, "A").availability, "recommended");
   assert.equal(recommendationRow(result, "Custom").availability, "caution");
   assert.match(recommendationRow(result, "Custom").availabilityReason, /metadata is missing/i);
-  assert.equal(recommendationRow(result, "Custom").equipmentCompatible, true);
 });
 
 test("keeps a mixed active program in its configured order", () => {
@@ -400,7 +344,6 @@ test("keeps a mixed active program in its configured order", () => {
       Custom: { core: 2 },
       A: { chest: 2 },
     },
-    undefined,
     ["Custom", "A"],
   );
 

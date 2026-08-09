@@ -366,7 +366,7 @@ test("allowed ChatGPT users start empty and have isolated resources, workouts, a
     method: "POST",
     body: { code: "PRIVATE", version: singleSetRoutine(secondExercise.id, "Second private") },
   }), 201).routine;
-  const unavailableRoutine = expectStatus(await request(firstEmail, "/api/v1/routines", {
+  const equipmentRoutine = expectStatus(await request(firstEmail, "/api/v1/routines", {
     method: "POST",
     body: { code: "EQUIPMENT", version: singleSetRoutine(hiddenExercise.id, "Dumbbell only") },
   }), 201).routine;
@@ -382,7 +382,7 @@ test("allowed ChatGPT users start empty and have isolated resources, workouts, a
   const firstRoutineIds = new Set(firstOwnedRoutines.map((routine) => routine.id));
   assert.deepEqual(new Set(firstOwnedRoutines.map((routine) => routine.id)), new Set([
     createdFirstRoutine.id,
-    unavailableRoutine.id,
+    equipmentRoutine.id,
   ]));
   assert.deepEqual(secondOwnedRoutines.map((routine) => routine.id), [createdSecondRoutine.id]);
   assert.ok(firstOwnedRoutines.every((routine) => routine.ownerEmail === firstEmail));
@@ -497,10 +497,15 @@ test("allowed ChatGPT users start empty and have isolated resources, workouts, a
     await request(firstEmail, "/api/v1/bootstrap"),
     200,
   );
-  const unavailableOtherRoutine = constrainedBootstrap.recommendations.routines.find(
-    (routine) => routine.code === unavailableRoutine.code && routine.availability === "unavailable",
+  const equipmentRecommendation = constrainedBootstrap.recommendations.routines.find(
+    (routine) => routine.code === equipmentRoutine.code,
   );
-  assert.ok(unavailableOtherRoutine, "the reduced equipment profile should block another routine");
+  assert.ok(equipmentRecommendation);
+  assert.ok(
+    ["recommended", "available"].includes(equipmentRecommendation.availability),
+    "routine readiness must not be reduced because its exercise needs unselected equipment",
+  );
+  assert.doesNotMatch(equipmentRecommendation.availabilityReason, /equipment|training setup/i);
   const activeRoutine = firstOwnedRoutines.find((routine) => routine.code === routineCode);
   assert.ok(activeRoutine);
   assert.equal(
@@ -522,18 +527,18 @@ test("allowed ChatGPT users start empty and have isolated resources, workouts, a
   await database.prepare("UPDATE workout_sessions SET routine_code = ? WHERE id = ?")
     .bind(routineCode, firstWorkout.id)
     .run();
-  const unavailableStart = await request(firstEmail, "/api/v1/workouts", {
+  const equipmentStart = expectStatus(await request(firstEmail, "/api/v1/workouts", {
     method: "POST",
-    body: { routineId: unavailableOtherRoutine.code, abandonActive: true },
-  });
-  expectStatus(unavailableStart, 409);
-  assert.equal(unavailableStart.body.error.code, "routine_unavailable");
+    body: { routineId: equipmentRoutine.code, abandonActive: true },
+  }), 201);
+  assert.equal(equipmentStart.created, true);
+  assert.equal(equipmentStart.session.routineCode, equipmentRoutine.code);
   assert.equal(
     (await database.prepare("SELECT status FROM workout_sessions WHERE id = ?")
       .bind(firstWorkout.id)
       .first()).status,
-    "In Progress",
-    "rejecting an unavailable start must not abandon the active workout",
+    "Abandoned",
+    "starting a routine with unselected equipment should replace the active workout when confirmed",
   );
   expectStatus(await request(firstEmail, "/api/v1/onboarding", {
     method: "PUT",

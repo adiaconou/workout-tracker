@@ -134,6 +134,5 @@ export function routineAvailabilityKind(
   guidance: RoutineRecommendation | undefined,
 ): RoutineAvailabilityKind {
   if (!guidance) return "caution";
-  if (!guidance.equipmentCompatible) return "unavailable";
   return guidance.availability;
 }

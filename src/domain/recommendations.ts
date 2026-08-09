@@ -1,6 +1,6 @@
 export type RoutineCode = "A" | "B" | "C" | "D";
 export type RoutineIdentifier = string;
-export type AvailabilityStatus = "recommended" | "available" | "caution" | "unavailable";
+export type AvailabilityStatus = "recommended" | "available" | "caution";
 
 export type RecentCompletedSet = {
   routineCode: RoutineIdentifier;
@@ -21,24 +21,17 @@ export type RoutineRecommendation = {
   availability: AvailabilityStatus;
   availabilityLabel: string;
   availabilityReason: string;
-  equipmentCompatible: boolean;
-  missingEquipment: string[];
   goalReason: string;
   isNextInSequence: boolean;
 };
 
 export type RecommendationResult = {
   recommendedRoutineCode: RoutineIdentifier | null;
-  recommendationKind: "routine" | "recovery" | "equipment_setup" | "no_plan";
+  recommendationKind: "routine" | "recovery" | "no_plan";
   nextInSequence: RoutineIdentifier | null;
   summary: string;
   routines: RoutineRecommendation[];
 };
-
-export type RoutineEquipmentCompatibility = Partial<Record<string, {
-  compatible: boolean;
-  missingEquipment: string[];
-}>>;
 
 export type MuscleGroup = "back" | "chest" | "shoulders" | "biceps" | "triceps" | "quads" | "hamstrings" | "glutes" | "calves" | "core" | "grip";
 export type MuscleWeights = Partial<Record<MuscleGroup, number>>;
@@ -174,7 +167,6 @@ export function buildRoutineRecommendations(
   completedSets: RecentCompletedSet[],
   now = new Date(),
   configuredProfiles?: RoutineProfiles,
-  equipmentCompatibility?: RoutineEquipmentCompatibility,
   activeRoutineCodes: readonly string[] = CANONICAL_ROUTINE_ORDER,
 ): RecommendationResult {
   const routineOrder = uniqueRoutineCodes(activeRoutineCodes);
@@ -223,10 +215,6 @@ export function buildRoutineRecommendations(
   const lowerBodyDue = !validSessions.slice(0, 3).some((session) => session.routineCode === "C");
 
   const draft = routineOrder.map((code) => {
-    const equipment = equipmentCompatibility?.[code] ?? {
-      compatible: true,
-      missingEquipment: [],
-    };
     const profile = configuredProfiles?.[code]
       ?? (isCanonicalRoutineCode(code) ? ROUTINE_PROFILES[code] : {});
     const profileEntries = (Object.entries(profile) as Array<[MuscleGroup, number]>)
@@ -254,26 +242,18 @@ export function buildRoutineRecommendations(
     const newestRelevantHours = newestRelevant?.hours ?? Number.POSITIVE_INFINITY;
     const overlapLevel = overlapScore >= 0.48 ? "high" : overlapScore >= 0.2 ? "moderate" : "low";
 
-    let availability: AvailabilityStatus = "available";
-    if (!equipment.compatible) availability = "unavailable";
-    else if (!profileTotal || overlapLevel !== "low") availability = "caution";
+    const availability: AvailabilityStatus = !profileTotal || overlapLevel !== "low"
+      ? "caution"
+      : "available";
 
-    const availabilityLabel = availability === "unavailable"
-      ? "Unavailable"
+    const availabilityLabel = availability === "caution" ? "Use caution" : "Available";
+    const availabilityReason = !profileTotal
+      ? "Muscle metadata is missing, so recovery overlap cannot be assessed yet."
       : availability === "caution"
-        ? "Use caution"
-        : "Available";
-    const availabilityReason = availability === "unavailable"
-      ? equipment.missingEquipment.length
-        ? `Needs ${equipment.missingEquipment.join(" + ")} from your Training setup.`
-        : "Required equipment is not available in your Training setup."
-      : !profileTotal
-        ? "Muscle metadata is missing, so recovery overlap cannot be assessed yet."
-        : availability === "caution"
-          ? `Routine ${newestRelevant!.set.routineCode} trained ${listMuscles(overlappingMuscles)} ${formatAge(newestRelevantHours)} ago. ${overlapLevel === "high" ? "High" : "Moderate"} overlap is still logged for this routine.`
-          : recentSets.length
-            ? "Lower overlap with completed sets logged in the past 48 hours."
-            : "No completed sets are logged in the past 48 hours. Use how you feel and your warm-up to judge readiness.";
+        ? `Routine ${newestRelevant!.set.routineCode} trained ${listMuscles(overlappingMuscles)} ${formatAge(newestRelevantHours)} ago. ${overlapLevel === "high" ? "High" : "Moderate"} overlap is still logged for this routine.`
+        : recentSets.length
+          ? "Lower overlap with completed sets logged in the past 48 hours."
+          : "No completed sets are logged in the past 48 hours. Use how you feel and your warm-up to judge readiness.";
 
     const lastCompletedAt = lastCompletion.get(code);
     const overdueBonus = lastCompletedAt ? Math.min(18, hoursBetween(now, lastCompletedAt) / 24) : 18;
@@ -289,8 +269,6 @@ export function buildRoutineRecommendations(
       availability,
       availabilityLabel,
       availabilityReason,
-      equipmentCompatible: equipment.compatible,
-      missingEquipment: equipment.missingEquipment,
       goalReason: code === nextInSequence
         ? "Most due in your rolling plan and aligned with its goal balance."
         : defaultGoalReason(code),
@@ -309,18 +287,12 @@ export function buildRoutineRecommendations(
       ? { ...routine, availability: "recommended" as const, availabilityLabel: "Recommended" }
       : routine);
 
-  const hasCompatiblePlanRoutine = draft.some((routine) =>
-    routine.isPlanRoutine && routine.equipmentCompatible);
-  let recommendationKind: RecommendationResult["recommendationKind"] = hasCompatiblePlanRoutine
-    ? "recovery"
-    : "equipment_setup";
-  let summary = hasCompatiblePlanRoutine
-    ? "Every equipment-compatible rolling-plan routine needs caution because of recent muscle overlap or missing muscle tags. Consider rest or a lighter session; this is not a medical readiness assessment."
-    : "Your rolling-plan routines use equipment outside your Training setup. Ask Coach to adapt them or update the equipment you selected.";
+  let recommendationKind: RecommendationResult["recommendationKind"] = "recovery";
+  let summary = "Every rolling-plan routine needs caution because of recent muscle overlap or missing muscle tags. Consider rest or a lighter session; this is not a medical readiness assessment.";
   if (recommended) {
     recommendationKind = "routine";
     if (!validSessions.length && !recentSets.length) {
-      summary = `Routine ${recommended.code} is the best equipment-compatible starting point in your rolling plan. No recent completed sets are logged, so use how you feel and your warm-up to judge readiness.`;
+      summary = `Routine ${recommended.code} is the best starting point in your rolling plan. No recent completed sets are logged, so use how you feel and your warm-up to judge readiness.`;
     } else if (!recentSets.length) {
       summary = `Routine ${recommended.code} best preserves the rolling plan. No completed sets are logged in the past 48 hours, which is not evidence of recovery; use how you feel and your warm-up to decide.`;
     } else if (recommended.code === nextInSequence) {

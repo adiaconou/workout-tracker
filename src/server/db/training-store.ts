@@ -16,15 +16,10 @@ import {
   type RecentCompletedSession,
   type RecentCompletedSet,
   type RecommendationResult,
-  type RoutineEquipmentCompatibility,
   type RoutineProfiles,
   type MuscleGroup,
 } from "../../domain/recommendations";
 import { getEntityServices } from "../services";
-import {
-  missingExerciseEquipmentLabels,
-  parseStoredEquipmentPreferences,
-} from "../../domain/training-profile";
 import { kilogramsToPounds } from "../../domain/profile";
 import { ensureEntityData, ensureEntitySchema, materializeWorkoutFromSnapshot } from "./entity-schema";
 import { getPreviousPerformanceByExercise } from "./previous-performance";
@@ -266,7 +261,7 @@ export async function getRoutineRecommendations(ownerEmail: string): Promise<Rec
   await ensureUserTrainingData(ownerEmail);
   const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
   const d1 = db();
-  const [sessions, completedMuscleRows, profileRows, trainingPreferences, routineEquipmentRows, activeRoutineRows] = await Promise.all([
+  const [sessions, completedMuscleRows, profileRows, activeRoutineRows] = await Promise.all([
     d1
       .prepare(`SELECT r.code AS routineCode, ws.completed_at AS completedAt
         FROM workout_sessions ws
@@ -340,18 +335,6 @@ export async function getRoutineRecommendations(ownerEmail: string): Promise<Rec
       GROUP BY r.code, em.muscle_group`)
       .bind(ownerEmail)
       .all<{ routineCode: string; muscleGroup: MuscleGroup; profileWeight: number }>(),
-    d1.prepare(`SELECT equipment_preferences_json AS equipmentPreferencesJson
-      FROM app_users WHERE owner_email = ?`)
-      .bind(ownerEmail)
-      .first<{ equipmentPreferencesJson: string }>(),
-    d1.prepare(`SELECT r.code AS routineCode, ec.equipment
-      FROM routines r
-      INNER JOIN routine_version_exercises rve
-        ON rve.owner_email = r.owner_email AND rve.routine_version_id = r.current_version_id
-      INNER JOIN exercise_catalog ec ON ec.id = rve.exercise_id AND ec.owner_email = r.owner_email
-      WHERE r.owner_email = ? AND r.is_active = 1`)
-      .bind(ownerEmail)
-      .all<{ routineCode: string; equipment: string }>(),
     d1.prepare(`SELECT code FROM (
         SELECT r.code AS code, rpr.position AS position, 0 AS source
         FROM routine_programs rp
@@ -403,31 +386,11 @@ export async function getRoutineRecommendations(ownerEmail: string): Promise<Rec
     profiles[row.routineCode] ??= {};
     profiles[row.routineCode]![row.muscleGroup] = Number(row.profileWeight);
   }
-  const selectedEquipment = parseStoredEquipmentPreferences(
-    trainingPreferences?.equipmentPreferencesJson,
-  );
-  const equipmentByRoutine = new Map<string, string[]>();
-  for (const row of routineEquipmentRows.results) {
-    const equipment = equipmentByRoutine.get(row.routineCode) ?? [];
-    equipment.push(row.equipment);
-    equipmentByRoutine.set(row.routineCode, equipment);
-  }
-  const equipmentCompatibility: RoutineEquipmentCompatibility = {};
-  for (const [code, storedEquipment] of equipmentByRoutine) {
-    const missingEquipment = [...new Set(storedEquipment.flatMap((equipment) =>
-      missingExerciseEquipmentLabels(equipment, selectedEquipment)))];
-    equipmentCompatibility[code] = {
-      compatible: missingEquipment.length === 0,
-      missingEquipment,
-    };
-  }
-
   return buildRoutineRecommendations(
     sessions.results,
     [...completedSetMap.values()],
     new Date(),
     profiles,
-    equipmentCompatibility,
     activeRoutineRows.results.map((routine) => routine.code),
   );
 }
@@ -480,13 +443,6 @@ export class WorkoutRoutineVersionConflictError extends Error {
   }
 }
 
-export class WorkoutRoutineUnavailableError extends Error {
-  constructor(reason: string) {
-    super(reason);
-    this.name = "WorkoutRoutineUnavailableError";
-  }
-}
-
 export async function startWorkout(
   ownerEmail: string,
   code: string,
@@ -536,11 +492,6 @@ export async function startWorkout(
   }
   if (expectedRoutineVersionId && requestedRoutine.currentVersionId !== expectedRoutineVersionId) {
     throw new WorkoutRoutineVersionConflictError();
-  }
-  const recommendation = (await getRoutineRecommendations(ownerEmail)).routines
-    .find((routine) => routine.code === requestedCode);
-  if (recommendation?.availability === "unavailable") {
-    throw new WorkoutRoutineUnavailableError(recommendation.availabilityReason);
   }
   if (active && !abandonActive) {
     return {
