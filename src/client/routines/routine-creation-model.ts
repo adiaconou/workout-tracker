@@ -2,7 +2,6 @@ import type { Exercise } from "../../contracts/api";
 import type {
   RestRule,
   RoutineVersionInput,
-  TargetType,
 } from "../../domain/entities";
 import { validateRoutineVersionInput } from "../../domain/routines/validation";
 import { validateRoutineDraft } from "./routine-editor-model";
@@ -19,34 +18,22 @@ import {
 
 const DEFAULT_INTERNAL_SET_REST_SECONDS = 90;
 
+export {
+  ROUTINE_DURATION_ESTIMATE_ASSUMPTIONS,
+  ROUTINE_DURATION_ESTIMATE_TOLERANCE,
+  estimateRoutineDuration,
+  routineDurationEstimateIsWithinTolerance,
+  routineDurationToleranceMinutes,
+} from "../../domain/routines/duration";
+export type {
+  RoutineDurationEstimate,
+  RoutineDurationEstimateStatus,
+} from "../../domain/routines/duration";
+
 export type RoutineCreationPayload = {
   code: string;
   version: RoutineVersionInput;
 };
-
-export type RoutineDurationEstimateStatus =
-  | "under_target"
-  | "on_target"
-  | "over_target";
-
-export type RoutineDurationEstimate = {
-  estimatedMinutes: number;
-  targetMinutes: number;
-  deltaMinutes: number;
-  status: RoutineDurationEstimateStatus;
-  approximate: true;
-};
-
-/**
- * A deliberately conservative, deterministic estimate for live editor feedback.
- * It uses each set's upper target, doubles unilateral work, includes programmed
- * rest except after the routine's final set, and always rounds up to a minute.
- */
-export const ROUTINE_DURATION_ESTIMATE_ASSUMPTIONS = {
-  secondsPerRep: 4,
-  secondsPerRound: 60,
-  unilateralWorkMultiplier: 2,
-} as const;
 
 let creationDraftIdentitySequence = 0;
 
@@ -150,31 +137,6 @@ export function editableRoutineFromInput(
             })),
         };
       }),
-  };
-}
-
-export function estimateRoutineDuration(draft: EditableRoutine): RoutineDurationEstimate {
-  const sets = draft.exercises.flatMap((exercise) => exercise.sets);
-  const totalSeconds = sets.reduce((total, set, index) => {
-    const isFinalSet = index === sets.length - 1;
-    const workSeconds = estimatedSetWorkSeconds(set);
-    const restSeconds = isFinalSet ? 0 : safeNonNegative(set.restAfterSec);
-    return total + workSeconds + restSeconds;
-  }, 0);
-  const estimatedMinutes = Math.ceil(totalSeconds / 60);
-  const targetMinutes = safeNonNegative(draft.durationMin);
-  const deltaMinutes = estimatedMinutes - targetMinutes;
-  const status = deltaMinutes < 0
-    ? "under_target"
-    : deltaMinutes > 0
-      ? "over_target"
-      : "on_target";
-  return {
-    estimatedMinutes,
-    targetMinutes,
-    deltaMinutes,
-    status,
-    approximate: true,
   };
 }
 
@@ -284,15 +246,6 @@ export function addExercisesToRoutineDraft(
   };
 }
 
-function estimatedSetWorkSeconds(set: EditableRoutineSet) {
-  const upperTarget = safeNonNegative(set.targetMax ?? set.targetMin ?? 0);
-  const baseSeconds = secondsForTarget(set.targetType, upperTarget);
-  const sideMultiplier = set.sideMode === "bilateral"
-    ? 1
-    : ROUTINE_DURATION_ESTIMATE_ASSUMPTIONS.unilateralWorkMultiplier;
-  return baseSeconds * sideMultiplier;
-}
-
 function withTerminalTransition(
   sets: EditableRoutineSet[],
   terminal: Pick<EditableRoutineSet, "restAfterSec" | "restRule">,
@@ -300,18 +253,6 @@ function withTerminalTransition(
   return sets.map((set, index) => index === sets.length - 1
     ? { ...set, restAfterSec: terminal.restAfterSec, restRule: terminal.restRule }
     : set);
-}
-
-function secondsForTarget(targetType: TargetType, target: number) {
-  if (targetType === "duration") return target;
-  if (targetType === "rounds") {
-    return target * ROUTINE_DURATION_ESTIMATE_ASSUMPTIONS.secondsPerRound;
-  }
-  return target * ROUTINE_DURATION_ESTIMATE_ASSUMPTIONS.secondsPerRep;
-}
-
-function safeNonNegative(value: number) {
-  return Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
 function validRestSeconds(restAfterSec: number) {

@@ -3,6 +3,12 @@ import test from "node:test";
 import type { Exercise, RoutineVersionInput } from "../src/domain/entities";
 import {
   ROUTINE_DURATION_ESTIMATE_ASSUMPTIONS,
+  ROUTINE_DURATION_ESTIMATE_TOLERANCE,
+  estimateRoutineDuration,
+  routineDurationEstimateIsWithinTolerance,
+  routineDurationToleranceMinutes,
+} from "../src/domain/routines/duration";
+import {
   addExercisesToRoutineDraft,
   appendRoutineSetPreservingTransition,
   buildRoutineCreationPayload,
@@ -10,7 +16,6 @@ import {
   deriveRoutineCodeCandidate,
   duplicateRoutineSetPreservingTransition,
   editableRoutineFromInput,
-  estimateRoutineDuration,
   moveRoutineSetPreservingTransition,
   removeRoutineSetPreservingTransition,
   setRestBeforeNextExercise,
@@ -266,6 +271,10 @@ test("estimates conservatively from upper targets, side modes, and programmed re
     secondsPerRound: 60,
     unilateralWorkMultiplier: 2,
   });
+  assert.deepEqual(ROUTINE_DURATION_ESTIMATE_TOLERANCE, {
+    targetFraction: 0.2,
+    minimumMinutes: 5,
+  });
   const draft: EditableRoutine = {
     focus: "Mixed targets",
     summary: "",
@@ -328,6 +337,17 @@ test("estimates conservatively from upper targets, side modes, and programmed re
     status: "over_target",
     approximate: true,
   });
+  assert.equal(routineDurationToleranceMinutes(10), 5);
+  assert.equal(routineDurationToleranceMinutes(45), 9);
+  assert.equal(routineDurationToleranceMinutes(Number.NaN), 5);
+  assert.equal(
+    routineDurationEstimateIsWithinTolerance(estimateRoutineDuration({ ...draft, durationMin: 13 })),
+    true,
+  );
+  assert.equal(
+    routineDurationEstimateIsWithinTolerance(estimateRoutineDuration({ ...draft, durationMin: 14 })),
+    false,
+  );
 
   const invalidLiveDraft = structuredClone(draft);
   invalidLiveDraft.durationMin = Number.NaN;
@@ -337,6 +357,13 @@ test("estimates conservatively from upper targets, side modes, and programmed re
     targetMinutes: 0,
     deltaMinutes: 0,
     status: "on_target",
+    approximate: true,
+  });
+  assert.deepEqual(estimateRoutineDuration({ ...draft, durationMin: -1 }), {
+    estimatedMinutes: 8,
+    targetMinutes: 0,
+    deltaMinutes: 8,
+    status: "over_target",
     approximate: true,
   });
   assert.deepEqual(estimateRoutineDuration(createEmptyRoutineDraft(30)), {

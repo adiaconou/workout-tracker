@@ -1,5 +1,10 @@
 import { validateRoutineVersionInput } from "../../domain/routines/validation";
 import { isRoutineVersionSemanticallyEqual } from "../../domain/routines/comparison";
+import {
+  ROUTINE_DURATION_ESTIMATE_ASSUMPTIONS,
+  ROUTINE_DURATION_ESTIMATE_TOLERANCE,
+  routineDurationToleranceMinutes,
+} from "../../domain/routines/duration";
 import { getEntityServices } from "../services";
 import {
   muscleGroups,
@@ -374,11 +379,18 @@ async function generateRoutineProgram({ request, env, user }: AssistantContext) 
       safetyIdentifier: user.id,
       instructions: `You design practical strength and fitness programs for review inside Workout Tracker.
 
-Return exactly one complete program by calling return_routine_program. Do not return prose. Use only the supplied available exercise IDs, which are active and compatible with the user's Training Setup. Never invent an exercise or ID. Return exactly the requested number of distinct routines, give each a unique code that does not collide case-insensitively with an existing code, and set every routine durationMin to the requested target. Make positions unique positive integers within their scope. Cover every requested muscle group, prioritizing primary-muscle matches where practical. Keep plans realistic for the user's experience, goal, limitations, movements to avoid, equipment, and preferences. Treat duration as a target estimate, not a guarantee. Mention meaningful uncertainty or constraint tradeoffs in warnings using non-medical language. Do not diagnose injuries or medical conditions or make treatment claims. For concerning pain or symptoms, warn the user to stop and seek appropriate professional help.`,
+Return exactly one complete program by calling return_routine_program. Do not return prose. Use only the supplied available exercise IDs, which are active and compatible with the user's Training Setup. Never invent an exercise or ID. Return exactly the requested number of distinct routines, give each a unique code that does not collide case-insensitively with an existing code, and set every routine durationMin to the requested target. Make positions unique positive integers within their scope. Cover every requested muscle group, prioritizing primary-muscle matches where practical. Keep plans realistic for the user's experience, goal, limitations, movements to avoid, equipment, and preferences. Use the supplied durationEstimatePolicy to keep each routine's deterministic estimate within its allowed tolerance: use the upper set target, count each rep and round using the supplied seconds, double unilateral work, include programmed rest except after the final set, and round up to a minute. Treat duration as a target estimate, not a guarantee. Mention meaningful uncertainty or constraint tradeoffs in warnings using non-medical language. Do not diagnose injuries or medical conditions or make treatment claims. For concerning pain or symptoms, warn the user to stop and seek appropriate professional help.`,
       input: [{
         role: "user",
         content: JSON.stringify({
           request: generationRequest,
+          durationEstimatePolicy: {
+            ...ROUTINE_DURATION_ESTIMATE_ASSUMPTIONS,
+            ...ROUTINE_DURATION_ESTIMATE_TOLERANCE,
+            allowedDeltaMinutes: routineDurationToleranceMinutes(
+              generationRequest.targetDurationMin,
+            ),
+          },
           availableEquipment: profile.equipment,
           existingRoutineCodes,
           availableExercises: exerciseGenerationContext(exercises),

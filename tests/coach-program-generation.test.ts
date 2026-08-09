@@ -51,7 +51,10 @@ function routineVersion(exerciseId: string, focus: string): RoutineVersionInput 
       supersetGroup: null,
       instructions: "Move with control.",
       notes: "",
-      sets: [{ ...routineSet }],
+      sets: Array.from({ length: 20 }, (_, index) => ({
+        ...routineSet,
+        position: index + 1,
+      })),
     }],
   };
 }
@@ -177,6 +180,19 @@ test("generated program validation normalizes codes and enforces domain and libr
         version: { ...programFixture().routines[0].version, durationMin: 30 },
       }, programFixture().routines[1]],
     }, /target 45 minutes/i],
+    [{
+      ...programFixture(),
+      routines: [{
+        ...programFixture().routines[0],
+        version: {
+          ...programFixture().routines[0].version,
+          exercises: [{
+            ...programFixture().routines[0].version.exercises[0],
+            sets: [{ ...routineSet }],
+          }],
+        },
+      }, programFixture().routines[1]],
+    }, /estimated at 1 minute.*within 9 minutes.*45-minute target/i],
     [{
       ...programFixture(),
       routines: [{

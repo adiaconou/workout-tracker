@@ -19,6 +19,8 @@ import {
   createEmptyRoutineDraft,
   deriveRoutineCodeCandidate,
   editableRoutineFromInput,
+  estimateRoutineDuration,
+  routineDurationEstimateIsWithinTolerance,
   validateRoutineCreationDraft,
 } from "./routine-creation-model";
 import { RoutineDraftEditor } from "./routine-draft-editor";
@@ -367,18 +369,11 @@ export function RoutineCreateScreen({ initialMode }: { initialMode: CreateMode |
           ) : (
             <View style={styles.generatedList}>
               {generatedRoutines.map((routine, index) => (
-                <Card key={`${routine.code}:${index}`} style={styles.generatedCard}>
-                  <View style={styles.generatedTopline}>
-                    <View style={styles.generatedCopy}>
-                      <Eyebrow>Routine {routine.code}</Eyebrow>
-                      <Heading size="small">{routine.draft.focus}</Heading>
-                    </View>
-                    <Button title="Review & edit" compact variant="secondary" onPress={() => setEditingGeneratedIndex(index)} />
-                  </View>
-                  <Body muted>{routine.draft.summary}</Body>
-                  <Text style={styles.generatedMeta}>{routine.draft.exercises.length} exercises · target {routine.draft.durationMin} min</Text>
-                  <Text style={styles.rationale}>{routine.rationale}</Text>
-                </Card>
+                <GeneratedRoutineOverviewCard
+                  key={`${routine.code}:${index}`}
+                  routine={routine}
+                  onReview={() => setEditingGeneratedIndex(index)}
+                />
               ))}
             </View>
           )}
@@ -452,6 +447,46 @@ export function RoutineCreateScreen({ initialMode }: { initialMode: CreateMode |
   );
 }
 
+function GeneratedRoutineOverviewCard({
+  routine,
+  onReview,
+}: {
+  routine: EditableGeneratedRoutine;
+  onReview: () => void;
+}) {
+  const estimate = estimateRoutineDuration(routine.draft);
+  const withinTargetRange = routineDurationEstimateIsWithinTolerance(estimate);
+  const deltaLabel = estimate.deltaMinutes === 0
+    ? "0 min delta"
+    : `${Math.abs(estimate.deltaMinutes)} min ${estimate.deltaMinutes < 0 ? "under" : "over"}`;
+
+  return (
+    <Card style={styles.generatedCard}>
+      <View style={styles.generatedTopline}>
+        <View style={styles.generatedCopy}>
+          <Eyebrow>Routine {routine.code}</Eyebrow>
+          <Heading size="small">{routine.draft.focus}</Heading>
+        </View>
+        <Button title="Review & edit" compact variant="secondary" onPress={onReview} />
+      </View>
+      <Body muted>{routine.draft.summary}</Body>
+      <Text style={styles.generatedMeta}>{routine.draft.exercises.length} exercises</Text>
+      <View style={styles.generatedTimingRow} accessibilityLiveRegion="polite">
+        <Text style={styles.generatedTiming}>
+          ~{estimate.estimatedMinutes} min estimated · {estimate.targetMinutes} min requested · {deltaLabel}
+        </Text>
+        <Text style={[
+          styles.generatedTimingStatus,
+          !withinTargetRange && styles.generatedTimingStatusWarning,
+        ]}>
+          {withinTargetRange ? "Within requested range" : "Timing needs adjustment"}
+        </Text>
+      </View>
+      <Text style={styles.rationale}>{routine.rationale}</Text>
+    </Card>
+  );
+}
+
 function SelectionChip({ label: chipLabel, selected, onPress }: { label: string; selected: boolean; onPress: () => void }) {
   return (
     <Pressable
@@ -515,6 +550,10 @@ const styles = StyleSheet.create({
   generatedTopline: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: spacing.md, flexWrap: "wrap" },
   generatedCopy: { flex: 1, minWidth: 220, gap: spacing.xs },
   generatedMeta: { color: colors.accent, fontSize: 12, lineHeight: 17, fontWeight: "800" },
+  generatedTimingRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: spacing.sm },
+  generatedTiming: { color: colors.text, fontSize: 13, lineHeight: 19, fontWeight: "800", fontVariant: ["tabular-nums"] },
+  generatedTimingStatus: { color: colors.success, fontSize: 11, lineHeight: 16, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.5 },
+  generatedTimingStatusWarning: { color: colors.warning },
   rationale: { color: colors.textDim, fontSize: 12, lineHeight: 18 },
   editingHeader: { gap: spacing.md },
   pressed: { opacity: 0.72 },

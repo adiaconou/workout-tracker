@@ -7,7 +7,7 @@ import { Miniflare } from "miniflare";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const ownerEmail = "program-generator@example.com";
 
-function generatedRoutine(exerciseId, code, focus) {
+function generatedRoutine(exerciseId, code, focus, setCount = 20) {
   return {
     code,
     rationale: `${focus} supports the requested goal.`,
@@ -21,8 +21,8 @@ function generatedRoutine(exerciseId, code, focus) {
         supersetGroup: null,
         instructions: "Move with control.",
         notes: "",
-        sets: [{
-          position: 1,
+        sets: Array.from({ length: setCount }, (_, index) => ({
+          position: index + 1,
           setType: "regular",
           targetType: "reps",
           targetMin: 8,
@@ -36,7 +36,7 @@ function generatedRoutine(exerciseId, code, focus) {
           sideMode: "bilateral",
           tempo: null,
           notes: "",
-        }],
+        })),
       }],
     },
   };
@@ -214,6 +214,15 @@ test("Coach program generation forces editable, equipment-safe routine output", 
   const exerciseIdSchema = outbound.tools[0].parameters.properties.routines.items
     .properties.version.properties.exercises.items.properties.exerciseId;
   assert.deepEqual(new Set(exerciseIdSchema.enum), new Set(exercises.map((exercise) => exercise.id)));
+  const outboundContext = JSON.parse(outbound.input[0].content);
+  assert.deepEqual(outboundContext.durationEstimatePolicy, {
+    secondsPerRep: 4,
+    secondsPerRound: 60,
+    unilateralWorkMultiplier: 2,
+    targetFraction: 0.2,
+    minimumMinutes: 5,
+    allowedDeltaMinutes: 9,
+  });
 
   queuedResponses.push({
     id: "program-response-2",
@@ -221,6 +230,33 @@ test("Coach program generation forces editable, equipment-safe routine output", 
     output: [{
       type: "function_call",
       call_id: "program-call-2",
+      name: "return_routine_program",
+      arguments: JSON.stringify({
+        name: "Underbuilt output",
+        summary: "One routine is much shorter than requested.",
+        warnings: [],
+        routines: [
+          generatedRoutine(firstExerciseId, "GEN-C", "Short A", 1),
+          generatedRoutine(secondExerciseId, "GEN-D", "Valid B"),
+        ],
+      }),
+    }],
+  });
+  const rejectedDuration = await request("/api/v1/assistant/programs/generate", {
+    method: "POST",
+    body: generationRequest,
+  });
+  assert.equal(rejectedDuration.status, 502);
+  assert.equal(rejectedDuration.body.error.code, "coach_program_generation_failed");
+  assert.equal(rejectedDuration.body.error.retryable, true);
+  assert.match(rejectedDuration.body.error.message, /estimated at 1 minute.*within 9 minutes/i);
+
+  queuedResponses.push({
+    id: "program-response-3",
+    status: "completed",
+    output: [{
+      type: "function_call",
+      call_id: "program-call-3",
       name: "return_routine_program",
       arguments: JSON.stringify({
         name: "Unsafe output",
@@ -251,5 +287,5 @@ test("Coach program generation forces editable, equipment-safe routine output", 
   });
   assert.equal(withoutLibrary.status, 409);
   assert.equal(withoutLibrary.body.error.code, "exercise_library_empty");
-  assert.equal(responseRequests.length, 2, "An empty library must not invoke program generation");
+  assert.equal(responseRequests.length, 3, "An empty library must not invoke program generation");
 });

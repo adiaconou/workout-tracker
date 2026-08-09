@@ -4,6 +4,11 @@ import {
   type MuscleGroup,
   type RoutineVersionInput,
 } from "../../domain/entities";
+import {
+  estimateRoutineDuration,
+  routineDurationEstimateIsWithinTolerance,
+  routineDurationToleranceMinutes,
+} from "../../domain/routines/duration";
 import { validateRoutineVersionInput } from "../../domain/routines/validation";
 
 export const programExperienceLevels = ["beginner", "intermediate", "advanced"] as const;
@@ -249,6 +254,13 @@ export function validateGeneratedProgram(
     const version = validateRoutineVersionInput(routine.version as RoutineVersionInput);
     if (version.durationMin !== context.request.targetDurationMin) {
       throw new Error(`Every generated routine must target ${context.request.targetDurationMin} minutes.`);
+    }
+    const durationEstimate = estimateRoutineDuration(version);
+    if (!routineDurationEstimateIsWithinTolerance(durationEstimate)) {
+      const toleranceMinutes = routineDurationToleranceMinutes(durationEstimate.targetMinutes);
+      throw new Error(
+        `Routine ${code} is estimated at ${durationEstimate.estimatedMinutes} minutes; generated routines must be within ${toleranceMinutes} minutes of the ${durationEstimate.targetMinutes}-minute target.`,
+      );
     }
     for (const exercise of version.exercises) {
       const availableExercise = availableExerciseById.get(exercise.exerciseId);
