@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildRoutineRecommendations,
+  type RecommendationResult,
   type RecentCompletedSession,
   type RecentCompletedSet,
   type RoutineCode,
@@ -10,10 +11,36 @@ import { canonicalRoutines } from "../src/domain/routines";
 
 const NOW = new Date("2026-07-15T12:00:00.000Z");
 
-function completedSession(routineCode: RoutineCode, hoursAgo: number): RecentCompletedSession {
+function completedSession(routineCode: string, hoursAgo: number): RecentCompletedSession {
   return {
     routineCode,
     completedAt: new Date(NOW.getTime() - hoursAgo * 3_600_000).toISOString(),
+  };
+}
+
+function recommendationRow(result: RecommendationResult, code: string) {
+  const routine = result.routines.find((candidate) => candidate.code === code);
+  assert.ok(routine, `Missing recommendation for Routine ${code}`);
+  return routine;
+}
+
+function completedMuscleSet(
+  routineCode: string,
+  hoursAgo: number,
+  muscles: NonNullable<RecentCompletedSet["muscles"]>,
+  options: {
+    actualRir?: number | null;
+    includeActualRir?: boolean;
+    setType?: string;
+  } = {},
+): RecentCompletedSet {
+  return {
+    routineCode,
+    exerciseOrder: 1,
+    setType: options.setType ?? "regular",
+    performedAt: new Date(NOW.getTime() - hoursAgo * 3_600_000).toISOString(),
+    muscles,
+    ...(options.includeActualRir ? { actualRir: options.actualRir } : {}),
   };
 }
 
@@ -53,16 +80,188 @@ test("recommendation fixtures follow the canonical set prescriptions", () => {
   assert.equal(routineB.filter((set) => set.setType === "drop").length, 1);
 });
 
-test("starts a new training history with Routine A and leaves every routine available", () => {
+test("starts canonical history with exactly one recommended routine", () => {
   const result = buildRoutineRecommendations([], [], NOW);
 
   assert.equal(result.recommendedRoutineCode, "A");
   assert.equal(result.recommendationKind, "routine");
   assert.equal(result.nextInSequence, "A");
-  assert.ok(result.routines.every((routine) => routine.availability === "available"));
+  assert.deepEqual(
+    Object.fromEntries(result.routines.map((routine) => [routine.code, routine.availability])),
+    { A: "recommended", B: "available", C: "available", D: "available" },
+  );
 });
 
-test("routes around recent upper-body strength fatigue to Routine C", () => {
+test("assesses active custom routines without displacing the canonical rolling plan", () => {
+  const result = buildRoutineRecommendations(
+    [],
+    [],
+    NOW,
+    { Custom: { back: 1 } },
+    undefined,
+    ["A", "B", "C", "D", "Custom"],
+  );
+
+  assert.deepEqual(result.routines.map(({ code }) => code), ["A", "B", "C", "D", "Custom"]);
+  assert.equal(result.nextInSequence, "A");
+  assert.equal(result.recommendedRoutineCode, "A");
+  assert.equal(recommendationRow(result, "A").availability, "recommended");
+  assert.equal(recommendationRow(result, "Custom").availability, "available");
+  assert.equal(recommendationRow(result, "Custom").isNextInSequence, false);
+});
+
+test("uses active custom routines as a fallback rotation when no canonical routine is active", () => {
+  const result = buildRoutineRecommendations(
+    [],
+    [],
+    NOW,
+    { Custom: { back: 1 }, Mobility: { core: 1 } },
+    undefined,
+    [" Custom ", "Mobility", "Custom", ""],
+  );
+
+  assert.deepEqual(result.routines.map(({ code }) => code), ["Custom", "Mobility"]);
+  assert.equal(result.nextInSequence, "Custom");
+  assert.equal(result.recommendedRoutineCode, "Custom");
+  assert.equal(recommendationRow(result, "Custom").availability, "recommended");
+  assert.equal(recommendationRow(result, "Mobility").availability, "available");
+});
+
+test("returns neutral guidance when there are no active routines", () => {
+  const result = buildRoutineRecommendations([], [], NOW, undefined, undefined, []);
+
+  assert.equal(result.recommendedRoutineCode, null);
+  assert.equal(result.nextInSequence, null);
+  assert.equal(result.recommendationKind, "no_plan");
+  assert.deepEqual(result.routines, []);
+  assert.match(result.summary, /no active routines/i);
+});
+
+test("ignores a legacy canonical set whose exercise position no longer maps", () => {
+  const result = buildRoutineRecommendations(
+    [],
+    [{
+      routineCode: "A",
+      exerciseOrder: 999,
+      setType: "regular",
+      performedAt: NOW.toISOString(),
+    }],
+    NOW,
+    { A: { back: 1 } },
+    undefined,
+    ["A"],
+  );
+
+  assert.equal(result.recommendedRoutineCode, "A");
+  assert.equal(recommendationRow(result, "A").availability, "recommended");
+});
+
+test("excludes completed sets at the exact 48-hour lookback boundary", () => {
+  const profiles = { A: { back: 1 } };
+  const justInside = completedMuscleSet("Source", 48 - 1 / 3_600_000, { back: 6 });
+  const exactlyAtBoundary = completedMuscleSet("Source", 48, { back: 6 });
+  const insideResult = buildRoutineRecommendations(
+    [],
+    [justInside],
+    NOW,
+    profiles,
+    undefined,
+    ["A"],
+  );
+  const boundaryResult = buildRoutineRecommendations(
+    [],
+    [exactlyAtBoundary],
+    NOW,
+    profiles,
+    undefined,
+    ["A"],
+  );
+
+  assert.equal(recommendationRow(insideResult, "A").availability, "caution");
+  assert.equal(insideResult.recommendedRoutineCode, null);
+  assert.match(recommendationRow(insideResult, "A").availabilityReason, /Routine Source/);
+  assert.equal(recommendationRow(boundaryResult, "A").availability, "recommended");
+  assert.equal(boundaryResult.recommendedRoutineCode, "A");
+});
+
+test("does not carry overlap guidance from a six-day-old completion", () => {
+  const result = buildRoutineRecommendations(
+    [completedSession("A", 6 * 24)],
+    completedRoutineSets("A", 6 * 24),
+    NOW,
+  );
+
+  assert.deepEqual(
+    Object.fromEntries(result.routines.map((routine) => [routine.code, routine.availability])),
+    { A: "available", B: "recommended", C: "available", D: "available" },
+  );
+  assert.equal(result.recommendedRoutineCode, "B");
+  assert.match(recommendationRow(result, "A").availabilityReason, /past 48 hours/i);
+});
+
+test("maps high and moderate muscle overlap to caution and names the source routine", () => {
+  const profiles = { A: { back: 1 }, B: { chest: 1 } };
+  const high = buildRoutineRecommendations(
+    [],
+    [completedMuscleSet("Upper Strength", 1, { back: 6 })],
+    NOW,
+    profiles,
+    undefined,
+    ["A", "B"],
+  );
+  const moderate = buildRoutineRecommendations(
+    [],
+    [completedMuscleSet("Upper Volume", 1, { back: 1.5 })],
+    NOW,
+    profiles,
+    undefined,
+    ["A", "B"],
+  );
+
+  assert.equal(recommendationRow(high, "A").availability, "caution");
+  assert.match(
+    recommendationRow(high, "A").availabilityReason,
+    /Routine Upper Strength trained upper back and lats.*High overlap/i,
+  );
+  assert.equal(recommendationRow(moderate, "A").availability, "caution");
+  assert.match(
+    recommendationRow(moderate, "A").availabilityReason,
+    /Routine Upper Volume trained upper back and lats.*Moderate overlap/i,
+  );
+  assert.equal(recommendationRow(high, "B").availability, "recommended");
+  assert.ok(high.routines.every((routine) => routine.availability !== "unavailable"));
+});
+
+test("uses optional actual RIR to adjust completed-set effort", () => {
+  const assess = (
+    muscleWeight: number,
+    actualRir?: number | null,
+    includeActualRir = true,
+  ) => buildRoutineRecommendations(
+    [],
+    [completedMuscleSet(
+      "Source",
+      1,
+      { back: muscleWeight },
+      { actualRir, includeActualRir },
+    )],
+    NOW,
+    { A: { back: 1 } },
+    undefined,
+    ["A"],
+  );
+
+  assert.equal(recommendationRow(assess(1, undefined, false), "A").availability, "recommended");
+  assert.equal(recommendationRow(assess(1, null), "A").availability, "recommended");
+  assert.equal(recommendationRow(assess(1, Number.NaN), "A").availability, "recommended");
+  assert.equal(recommendationRow(assess(1, 0), "A").availability, "caution");
+  assert.equal(recommendationRow(assess(1.05, 1), "A").availability, "caution");
+  assert.equal(recommendationRow(assess(1.05, 2), "A").availability, "recommended");
+  assert.equal(recommendationRow(assess(1.5, 2), "A").availability, "caution");
+  assert.equal(recommendationRow(assess(1.5, 4), "A").availability, "recommended");
+});
+
+test("routes around recent upper-body overlap to Routine C", () => {
   const result = buildRoutineRecommendations(
     [completedSession("A", 18)],
     completedRoutineSets("A", 18),
@@ -71,8 +270,11 @@ test("routes around recent upper-body strength fatigue to Routine C", () => {
 
   assert.equal(result.nextInSequence, "B");
   assert.equal(result.recommendedRoutineCode, "C");
-  assert.equal(result.routines.find((routine) => routine.code === "A")?.availability, "recovering");
-  assert.equal(result.routines.find((routine) => routine.code === "C")?.availability, "available");
+  assert.equal(recommendationRow(result, "A").availability, "caution");
+  assert.equal(recommendationRow(result, "B").availability, "caution");
+  assert.equal(recommendationRow(result, "C").availability, "recommended");
+  assert.match(recommendationRow(result, "A").availabilityReason, /Routine A/);
+  assert.ok(result.routines.every((routine) => routine.availability !== "unavailable"));
 });
 
 test("returns to the most-due upper routine after an isolated leg workout", () => {
@@ -84,73 +286,53 @@ test("returns to the most-due upper routine after an isolated leg workout", () =
 
   assert.equal(result.nextInSequence, "A");
   assert.equal(result.recommendedRoutineCode, "A");
-  assert.equal(result.routines.find((routine) => routine.code === "C")?.availability, "recovering");
-  assert.equal(result.routines.find((routine) => routine.code === "A")?.availability, "available");
+  assert.equal(recommendationRow(result, "C").availability, "caution");
+  assert.equal(recommendationRow(result, "A").availability, "recommended");
 });
 
-test("keeps a recovery detour from skipping the next upper-body routine", () => {
+test("does not recommend a rolling-plan routine while every option needs caution", () => {
   const result = buildRoutineRecommendations(
-    [completedSession("C", 18), completedSession("A", 48)],
-    [...completedRoutineSets("C", 18), ...completedRoutineSets("A", 48)],
+    [completedSession("C", 18), completedSession("A", 47)],
+    [...completedRoutineSets("C", 18), ...completedRoutineSets("A", 47)],
     NOW,
   );
 
   assert.equal(result.nextInSequence, "B");
-  assert.equal(result.recommendedRoutineCode, "B");
-  assert.equal(result.routines.find((routine) => routine.code === "B")?.availabilityLabel, "Moderate logged overlap");
-  assert.match(result.summary, /warm-up performance/i);
+  assert.equal(result.recommendedRoutineCode, null);
+  assert.equal(result.recommendationKind, "recovery");
+  assert.ok(result.routines.every((routine) => routine.availability === "caution"));
+  assert.match(result.summary, /not a medical readiness assessment/i);
 });
 
-test("can recommend the planned upper-body routine with an honest moderate-overlap warning", () => {
-  const result = buildRoutineRecommendations(
-    [completedSession("A", 36)],
-    completedRoutineSets("A", 36),
-    NOW,
-  );
-
-  assert.equal(result.nextInSequence, "B");
-  assert.equal(result.recommendedRoutineCode, "B");
-  assert.equal(result.routines.find((routine) => routine.code === "B")?.availability, "caution");
-  assert.equal(result.routines.find((routine) => routine.code === "B")?.availabilityLabel, "Moderate logged overlap");
-  assert.match(result.summary, /moderate overlap/i);
-  assert.match(result.summary, /soreness, energy, and warm-up performance/i);
-});
-
-test("does not recommend moderate-overlap upper work inside the high-overlap window", () => {
-  const result = buildRoutineRecommendations(
-    [completedSession("A", 35)],
-    completedRoutineSets("A", 35),
-    NOW,
-  );
-
-  assert.equal(result.recommendedRoutineCode, "C");
-  assert.equal(result.routines.find((routine) => routine.code === "B")?.availability, "recovering");
-});
-
-test("does not block the planned routine after only one recently completed pull-up set", () => {
+test("does not block the planned routine after one recently completed pull-up set", () => {
   const result = buildRoutineRecommendations(
     [completedSession("A", 18)],
-    [{ routineCode: "A", exerciseOrder: 1, setType: "regular", performedAt: completedSession("A", 18).completedAt }],
+    [{
+      routineCode: "A",
+      exerciseOrder: 1,
+      setType: "regular",
+      performedAt: completedSession("A", 18).completedAt,
+    }],
     NOW,
   );
 
   assert.equal(result.recommendedRoutineCode, "B");
-  assert.equal(result.routines.find((routine) => routine.code === "B")?.availability, "available");
+  assert.equal(recommendationRow(result, "B").availability, "recommended");
 });
 
-test("recommends recovery when recent upper- and lower-body work blocks every routine", () => {
+test("keeps every overlap-only limitation at caution rather than unavailable", () => {
   const sessions = [completedSession("C", 12), completedSession("A", 18)];
   const sets = [...completedRoutineSets("C", 12), ...completedRoutineSets("A", 18)];
   const result = buildRoutineRecommendations(sessions, sets, NOW);
 
   assert.equal(result.recommendedRoutineCode, null);
   assert.equal(result.recommendationKind, "recovery");
-  assert.ok(result.routines.every((routine) => routine.availability === "recovering"));
+  assert.ok(result.routines.every((routine) => routine.availability === "caution"));
+  assert.ok(result.routines.every((routine) => routine.availability !== "unavailable"));
   assert.match(result.summary, /not a medical readiness assessment/i);
-  assert.doesNotMatch(result.summary, /best goal-aligned|sufficiently recovered/i);
 });
 
-test("never recommends a routine that needs equipment outside Training setup", () => {
+test("uses unavailable only for routines missing required equipment", () => {
   const result = buildRoutineRecommendations([], [], NOW, undefined, {
     A: { compatible: false, missingEquipment: ["Barbell & rack"] },
     B: { compatible: true, missingEquipment: [] },
@@ -159,19 +341,22 @@ test("never recommends a routine that needs equipment outside Training setup", (
   });
 
   assert.notEqual(result.recommendedRoutineCode, "A");
-  assert.equal(
-    result.routines.find((routine) => routine.code === result.recommendedRoutineCode)?.equipmentCompatible,
-    true,
-  );
   assert.equal(result.recommendationKind, "routine");
-  assert.equal(result.routines.find((routine) => routine.code === "A")?.isRecommended, false);
+  assert.equal(recommendationRow(result, "A").availability, "unavailable");
+  assert.deepEqual(recommendationRow(result, "A").missingEquipment, ["Barbell & rack"]);
+  assert.match(recommendationRow(result, "A").availabilityReason, /Barbell & rack/);
   assert.deepEqual(
-    result.routines.find((routine) => routine.code === "A")?.missingEquipment,
-    ["Barbell & rack"],
+    result.routines.filter((routine) => routine.availability === "unavailable").map(({ code }) => code),
+    ["A"],
+  );
+  assert.ok(result.recommendedRoutineCode);
+  assert.equal(
+    recommendationRow(result, result.recommendedRoutineCode).availability,
+    "recommended",
   );
 });
 
-test("asks for routine adaptation instead of claiming recovery when no routine matches equipment", () => {
+test("asks for routine adaptation when no rolling-plan routine has its equipment", () => {
   const incompatible = {
     compatible: false,
     missingEquipment: ["Cable or multi-gym"],
@@ -185,27 +370,41 @@ test("asks for routine adaptation instead of claiming recovery when no routine m
 
   assert.equal(result.recommendedRoutineCode, null);
   assert.equal(result.recommendationKind, "equipment_setup");
+  assert.ok(result.routines.every((routine) => routine.availability === "unavailable"));
   assert.match(result.summary, /ask coach/i);
   assert.doesNotMatch(result.summary, /recovery/i);
+});
+
+test("treats missing muscle metadata as caution rather than unavailable", () => {
+  const result = buildRoutineRecommendations(
+    [],
+    [],
+    NOW,
+    undefined,
+    undefined,
+    ["A", "Custom"],
+  );
+
+  assert.equal(recommendationRow(result, "A").availability, "recommended");
+  assert.equal(recommendationRow(result, "Custom").availability, "caution");
+  assert.match(recommendationRow(result, "Custom").availabilityReason, /metadata is missing/i);
+  assert.equal(recommendationRow(result, "Custom").equipmentCompatible, true);
 });
 
 test("does not treat missing set logs as proof of readiness", () => {
   const result = buildRoutineRecommendations([completedSession("A", 18)], [], NOW);
 
   assert.equal(result.recommendedRoutineCode, "B");
-  assert.match(
-    result.routines.find((routine) => routine.code === "B")?.availabilityReason ?? "",
-    /not evidence of recovery/i,
-  );
+  assert.equal(recommendationRow(result, "B").availability, "recommended");
   assert.match(result.summary, /not evidence of recovery/i);
 });
 
-test("uses exercise muscle metadata in preference to legacy routine-position mappings", () => {
+test("uses exercise muscle metadata in preference to canonical position mappings", () => {
   const performedAt = completedSession("A", 12).completedAt;
   const result = buildRoutineRecommendations(
     [completedSession("A", 12)],
     Array.from({ length: 8 }, () => ({
-      routineCode: "A" as const,
+      routineCode: "A",
       exerciseOrder: 1,
       setType: "regular",
       performedAt,
@@ -214,6 +413,7 @@ test("uses exercise muscle metadata in preference to legacy routine-position map
     NOW,
   );
 
-  assert.equal(result.routines.find((routine) => routine.code === "C")?.availability, "recovering");
-  assert.equal(result.routines.find((routine) => routine.code === "A")?.availability, "available");
+  assert.equal(recommendationRow(result, "C").availability, "caution");
+  assert.equal(recommendationRow(result, "A").availability, "available");
+  assert.equal(recommendationRow(result, "B").availability, "recommended");
 });

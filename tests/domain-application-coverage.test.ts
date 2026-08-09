@@ -51,7 +51,6 @@ import {
   type MuscleWeights,
   type RecentCompletedSession,
   type RecentCompletedSet,
-  type RoutineCode,
   type RoutineEquipmentCompatibility,
   type RoutineProfiles,
 } from "../src/domain/recommendations";
@@ -909,7 +908,7 @@ test("normalized workout construction covers sorting, supersets, targets, rest, 
 
 const recommendationNow = new Date("2026-08-08T12:00:00.000Z");
 
-function session(code: RoutineCode, hoursAgo: number, completedAt?: string): RecentCompletedSession {
+function session(code: string, hoursAgo: number, completedAt?: string): RecentCompletedSession {
   return {
     routineCode: code,
     completedAt: completedAt ?? new Date(recommendationNow.getTime() - hoursAgo * 3_600_000).toISOString(),
@@ -917,7 +916,7 @@ function session(code: RoutineCode, hoursAgo: number, completedAt?: string): Rec
 }
 
 function loggedSet(
-  code: RoutineCode,
+  code: string,
   hoursAgo: number,
   muscles: MuscleWeights,
   setType = "regular",
@@ -942,7 +941,7 @@ test("recommendations cover time decay, muscle labels, invalid history, and rema
     session("C", 90),
     session("D", 100),
     session("A", 110),
-    { routineCode: "Z" as RoutineCode, completedAt: "invalid" },
+    { routineCode: "Z", completedAt: "invalid" },
   ];
   const sets = [
     loggedSet("A", 0.5, { back: 1 }, "warmup"),
@@ -978,6 +977,22 @@ test("recommendations cover time decay, muscle labels, invalid history, and rema
     recentOverlap.routines.find((routine) => routine.code === "A")!.availabilityReason,
     /less than an hour ago/,
   );
+  const dayOldOverlap = buildRoutineRecommendations(
+    [],
+    [loggedSet("A", 24, { back: 6 })],
+    recommendationNow,
+    profiles,
+  );
+  assert.equal(dayOldOverlap.routines.find((routine) => routine.code === "A")!.availability, "caution");
+  const sixDayOldCompletion = buildRoutineRecommendations(
+    [session("A", 144)],
+    [loggedSet("A", 144, { back: 6 })],
+    recommendationNow,
+    profiles,
+  );
+  assert.equal(sixDayOldCompletion.routines.find((routine) => routine.code === "A")!.availability, "available");
+  assert.equal(sixDayOldCompletion.recommendationKind, "routine");
+  assert.match(sixDayOldCompletion.summary, /past 48 hours/);
   const allMuscles: MuscleWeights = {
     back: 1.32,
     chest: 1.32,
@@ -1002,12 +1017,13 @@ test("recommendations cover time decay, muscle labels, invalid history, and rema
     recommendationNow,
     spreadProfiles,
   );
-  assert.ok(spreadOverlap.routines.some((routine) => /same muscles/.test(routine.availabilityReason)));
+  assert.ok(spreadOverlap.routines.some((routine) =>
+    /Routine A trained/.test(routine.availabilityReason)));
 
   const fallbackMetadata = buildRoutineRecommendations(
     [],
     [{
-      routineCode: "Z" as RoutineCode,
+      routineCode: "Z",
       exerciseOrder: 999,
       setType: "regular",
       performedAt: recommendationNow.toISOString(),

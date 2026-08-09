@@ -22,7 +22,6 @@ function guidance(
     equipmentCompatible: true,
     missingEquipment: [],
     goalReason: "Goal",
-    isRecommended: false,
     isNextInSequence: false,
     ...overrides,
   };
@@ -109,17 +108,12 @@ test("sorts by most recent completion without mutating input and keeps never-don
 });
 
 test("reduces recommendation guidance to the icon states shown in the routines list", () => {
-  assert.equal(routineAvailabilityKind(undefined), "not_assessed");
-  assert.equal(routineAvailabilityKind(guidance({ equipmentCompatible: false })), "equipment");
-  assert.equal(routineAvailabilityKind(guidance({ isRecommended: true })), "recommended");
-  assert.equal(
-    routineAvailabilityKind(guidance({ availability: "caution", isRecommended: true })),
-    "recommended_caution",
-  );
-  assert.equal(
-    routineAvailabilityKind(guidance({ availability: "recovering", isRecommended: true })),
-    "recovery",
-  );
+  assert.equal(routineAvailabilityKind(undefined), "caution");
+  assert.equal(routineAvailabilityKind(guidance({
+    availability: "recommended",
+    equipmentCompatible: false,
+  })), "unavailable");
+  assert.equal(routineAvailabilityKind(guidance({ availability: "recommended" })), "recommended");
   assert.equal(routineAvailabilityKind(guidance({ availability: "caution" })), "caution");
   assert.equal(routineAvailabilityKind(guidance()), "available");
 });

@@ -24,7 +24,7 @@ The source spreadsheet describes the plan clearly, but it is optimized for readi
 5. Handle the plan's real programming details, including warm-ups, rep ranges, timed holds, per-side work, failure sets, a drop set, supersets, and EMOM rounds.
 6. Make an in-progress workout recoverable after refresh, navigation, connection loss, or accidental app closure.
 7. Capture the complete plan and its behavior precisely enough that the app can be reproduced from this PRD plus an eventual technical design.
-8. Recommend a goal-aligned routine without hiding the recovery status of the other routines or preventing manual choice.
+8. Recommend a goal-aligned routine while showing the availability of every active routine. Recovery caution preserves manual choice; only a missing-equipment hard blocker prevents a new start.
 
 ## 4. Non-goals for the first release
 
@@ -107,16 +107,15 @@ The existing wide format is useful for manual review, but it does not represent 
 
 ### 7.1 Home and routine library
 
-- Show all four routines with identifier, focus, summary, exercise count, estimated duration, and most recent completion date.
-- Show one prominent **Best today** recommendation that combines goal fit with current recovery availability.
-- Show a separate availability state for every routine: **Available**, **Available with caution**, or **Recovering**.
-- Calculate recovery from muscle-group overlap with completed sets logged during the prior 72 hours. Warm-ups contribute less recovery load; failure and drop sets contribute more.
+- Show every active routine with identifier, focus, summary, exercise count, estimated duration, and most recent completion date. The four canonical routines remain the baseline plan, and active custom routines are assessed too.
+- Show exactly four availability states: **Recommended**, **Available**, **Use caution**, and **Unavailable**. When an eligible routine can be recommended, encode that choice with the **Recommended** state instead of a separate recommendation flag.
+- Calculate the logged-training overlap estimate from completed sets in the prior 48 hours. A set performed exactly 48 hours ago is outside the window. Warm-ups contribute less load; failure and drop sets contribute more. Actual RIR, when recorded, adjusts regular-set effort; missing or invalid Actual RIR is neutral.
 - Calculate goal fit from the plan's priorities: improve pull-ups, build upper-body strength and definition, train legs once per rolling cycle, strengthen the core, and preserve the A → B → C → D balance.
-- Prefer the next routine in the rolling sequence when it is available. If it has substantial recent overlap, recommend the strongest available goal fit instead.
-- Explain why a routine is recommended and why a routine is limited, using plain-language muscle groups and the age of the relevant workout data.
-- If every routine has substantial recent overlap, recommend a recovery day rather than presenting a routine as recovered.
-- Allow the user to start any routine even when it is not the recommended next routine.
-- Never disable or hide a routine because of recovery guidance; the user retains the final decision.
+- Prefer the next routine in the rolling sequence when it is **Available**. If it has moderate or high recent overlap, mark it **Use caution** and recommend the strongest other available goal fit.
+- Assess every active custom routine. While any canonical routine is active, custom routines do not enter or perturb the canonical rolling recommendation; if no canonical routines are active, the active custom routines form the fallback rotation.
+- Explain caution using the source routine name, plain-language muscle groups, and the age of the relevant logged set data.
+- If every equipment-compatible rolling-plan routine needs caution, recommend rest or a lighter session instead of assigning **Recommended** or falsely calling any routine **Unavailable**.
+- **Use caution** is advisory and never disables or hides a routine. **Unavailable** is reserved for missing required equipment and blocks only a new start; an already-active workout for that routine remains resumable.
 - Identify this guidance as an estimate from logged training, not a guarantee of readiness or a medical safety assessment.
 - If an incomplete workout exists, show **Resume workout** as the primary action.
 
@@ -249,13 +248,18 @@ Each prescribed set in a session must have one logical performance record with:
 
 ### 8.6 Goal and recovery guidance
 
-- Each canonical exercise must have a maintained association with its primary and supporting muscle groups. These associations may be product-owned configuration rather than user-visible data in the first release.
-- Recovery scoring uses only sets that were actually completed. Skipped sets do not add recovery load.
-- A completed routine advances the rolling sequence; a partial or abandoned routine does not. Its completed sets may still affect recovery availability.
+- Each canonical exercise must have a maintained association with its primary and supporting muscle groups. Active custom routines must also provide muscle metadata to receive a normal overlap assessment; missing metadata produces **Use caution**, not **Unavailable**.
+- Logged-training overlap uses only sets that were actually completed during the prior 48 hours. Skipped sets do not add load, and sets at the exact 48-hour boundary are excluded.
+- Warm-up, failure, and drop-set types affect effort consistently. Actual RIR is optional and adjusts regular-set effort when it is finite; an omitted, null, or invalid value is treated neutrally.
+- A completed routine advances the rolling sequence; a partial or abandoned routine does not. Its completed sets may still contribute to availability caution.
+- Only active routine codes appear in the recommendation response. Active custom routines receive availability guidance without changing the canonical rolling sequence or its selected recommendation while a canonical routine remains active.
 - The same history and time must always produce the same recommendation. The first release does not use generative AI or silently modify routine prescriptions.
-- The recommendation response must preserve, for every routine: availability state, short availability reason, goal-fit reason, whether it is next in sequence, and whether it is the single recommended routine.
-- No workout history means all routines are available and Routine A is the starting recommendation.
-- Recommendation thresholds and muscle associations are product configuration that must be regression-tested against no-history, partial-session, upper-body, lower-body, and all-routines-recovering scenarios.
+- The recommendation response must preserve, for every active routine: one of exactly **Recommended**, **Available**, **Use caution**, or **Unavailable**; a short availability reason; a goal-fit reason; and whether it is next in sequence. The single recommendation is encoded by the **Recommended** state rather than a separate boolean.
+- Moderate and high recent muscle overlap both map to **Use caution**. Overlap guidance never maps to **Unavailable** and never blocks a start.
+- **Unavailable** is used only when required equipment is missing from Training setup. It blocks a new start but does not prevent resuming an already-active workout for the same routine.
+- A caution reason must name the routine that supplied the newest relevant completed-set evidence.
+- With no workout history, Routine A is **Recommended** and the other canonical routines are **Available**.
+- Recommendation thresholds and muscle associations are product configuration that must be regression-tested against no-history, the exact 48-hour boundary, optional Actual RIR, partial-session, upper-body, lower-body, custom-routine, all-caution, and missing-equipment scenarios.
 
 ## 9. Functional requirements and acceptance criteria
 
@@ -276,7 +280,7 @@ Each prescribed set in a session must have one logical performance record with:
 | FR-13 | P1 | Apply progression guidance | Relevant pull-up progression prompt appears after qualifying sessions without automatically changing the plan |
 | FR-14 | P1 | Edit prior set data, if enabled | Edit updates the existing logical record and audit timestamp without duplicating it |
 | FR-15 | P2 | Export/share a session summary | User can create a readable summary without exposing private credentials or unrelated workout data |
-| FR-16 | P0 | Recommend a workout for today | The routine library shows one explainable goal-aligned recommendation plus an independent recovery status for all routines, based on recent completed sets, while preserving manual access to every routine |
+| FR-16 | P0 | Recommend a workout for today | Every active routine shows exactly one of Recommended, Available, Use caution, or Unavailable from the prior 48 hours of completed-set evidence; one eligible rolling-plan routine is Recommended, caution remains startable, and only missing equipment blocks a new start |
 | FR-17 | P0 | Provide a reusable entity and API layer | Authenticated owner-scoped APIs can create, read, update, and archive exercises, routines, and workouts; routine versions and workout-set corrections preserve the versioning and history invariants in Section 8 |
 
 ## 10. Reliability, security, and quality requirements
@@ -290,7 +294,7 @@ Each prescribed set in a session must have one logical performance record with:
 - Keep interactive controls usable on a phone, with large touch targets, readable contrast, keyboard avoidance, and screen-reader labels.
 - Initial app load should show routine names promptly. Set logging should feel immediate even if durable confirmation takes longer.
 - The app must not provide medical diagnosis or encourage training through pain; retain the plan's instruction to stop or modify an exercise if pain develops.
-- Recovery availability must be labeled as guidance derived from logged training. It must not claim to measure soreness, injury, sleep, or medical readiness that the product does not observe.
+- Availability must be labeled as guidance derived from logged training and Training setup. It must not claim to measure soreness, injury, sleep, or medical readiness that the product does not observe.
 - The technical design must map these product-level security and durability requirements to concrete controls and failure handling.
 
 ## 11. Analytics and operational events
@@ -316,7 +320,7 @@ Workout values remain private user data. Product analytics should not include ex
 - One durable session per workout
 - Immediate, idempotent persistence of every performed/skipped set
 - Basic session summary and sync/error states
-- Explainable Best today recommendation and per-routine recovery availability
+- Explainable Recommended routine and four-state availability for every active routine
 - Reusable exercise catalog, immutable routine versions, materialized workout logs, and authenticated entity APIs
 
 ### Follow-up / P1
@@ -456,4 +460,4 @@ Workout A progresses through these set targets:
 
 ## 16. Definition of done for the first release
 
-The first release is done when the user can authenticate, view all four canonical routines, see an explainable Best today recommendation and independent availability status for each routine, start any routine, log or skip every prescribed set, receive the correct rest/EMOM/superset behavior, safely resume after interruption, and finish the workout with every performed or skipped set reflected exactly once in durable workout history. Exercise, routine-version, workout, and workout-set data must also be accessible through the owner-scoped entity services and APIs without bypassing version or history protections.
+The first release is done when the user can authenticate; view every active routine, including the four canonical routines; see exactly one of Recommended, Available, Use caution, or Unavailable for each; start any Recommended, Available, or caution routine; resume the same active workout regardless of later equipment availability; log or skip every prescribed set; receive the correct rest/EMOM/superset behavior; safely resume after interruption; and finish the workout with every performed or skipped set reflected exactly once in durable workout history. Exercise, routine-version, workout, and workout-set data must also be accessible through the owner-scoped entity services and APIs without bypassing version or history protections.

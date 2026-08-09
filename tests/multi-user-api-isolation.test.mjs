@@ -342,6 +342,57 @@ test("allowed ChatGPT users have isolated seeded data, resources, workouts, and 
   }), 201).session;
   assert.notEqual(firstWorkout.id, secondWorkout.id);
 
+  expectStatus(await request(firstEmail, "/api/v1/onboarding", {
+    method: "PUT",
+    body: { equipment: ["bodyweight"], sessionDurationMin: 60 },
+  }), 200);
+  const constrainedBootstrap = expectStatus(
+    await request(firstEmail, "/api/v1/bootstrap"),
+    200,
+  );
+  const unavailableOtherRoutine = constrainedBootstrap.recommendations.routines.find(
+    (routine) => routine.code !== routineCode && routine.availability === "unavailable",
+  );
+  assert.ok(unavailableOtherRoutine, "the reduced equipment profile should block another routine");
+  const activeRoutine = firstSeededRoutines.find((routine) => routine.code === routineCode);
+  assert.ok(activeRoutine);
+  assert.equal(
+    (await database.prepare("SELECT routine_id AS routineId FROM workout_sessions WHERE id = ?")
+      .bind(firstWorkout.id)
+      .first()).routineId,
+    activeRoutine.id,
+    "new workouts must persist immutable routine identity",
+  );
+  await database.prepare("UPDATE workout_sessions SET routine_code = ? WHERE id = ?")
+    .bind("STALE-SNAPSHOT-CODE", firstWorkout.id)
+    .run();
+  const resumedWorkout = expectStatus(await request(firstEmail, "/api/v1/workouts", {
+    method: "POST",
+    body: { routineId: routineCode, expectedRoutineVersionId: "stale-version" },
+  }), 200);
+  assert.equal(resumedWorkout.created, false);
+  assert.equal(resumedWorkout.session.id, firstWorkout.id);
+  await database.prepare("UPDATE workout_sessions SET routine_code = ? WHERE id = ?")
+    .bind(routineCode, firstWorkout.id)
+    .run();
+  const unavailableStart = await request(firstEmail, "/api/v1/workouts", {
+    method: "POST",
+    body: { routineId: unavailableOtherRoutine.code, abandonActive: true },
+  });
+  expectStatus(unavailableStart, 409);
+  assert.equal(unavailableStart.body.error.code, "routine_unavailable");
+  assert.equal(
+    (await database.prepare("SELECT status FROM workout_sessions WHERE id = ?")
+      .bind(firstWorkout.id)
+      .first()).status,
+    "In Progress",
+    "rejecting an unavailable start must not abandon the active workout",
+  );
+  expectStatus(await request(firstEmail, "/api/v1/onboarding", {
+    method: "PUT",
+    body: { equipment: allEquipment, sessionDurationMin: 60 },
+  }), 200);
+
   const encodedFirstWorkoutId = encodeURIComponent(firstWorkout.id);
   const encodedSecondWorkoutId = encodeURIComponent(secondWorkout.id);
   const secondReadsFirstWorkout = await request(secondEmail, `/api/v1/workouts/${encodedFirstWorkoutId}`);

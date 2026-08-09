@@ -18,7 +18,6 @@ import {
   type RecentCompletedSet,
   type RecommendationResult,
   type RoutineEquipmentCompatibility,
-  type RoutineCode,
   type RoutineProfiles,
   type MuscleGroup,
 } from "../../domain/recommendations";
@@ -308,23 +307,49 @@ export async function getRoutineList(ownerEmail: string): Promise<RoutineSummary
 
 export async function getRoutineRecommendations(ownerEmail: string): Promise<RecommendationResult> {
   await ensureUserRoutines(ownerEmail);
-  const cutoff = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString();
+  const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
   const d1 = db();
-  const [sessions, completedMuscleRows, profileRows, trainingPreferences, routineEquipmentRows] = await Promise.all([
+  const [sessions, completedMuscleRows, profileRows, trainingPreferences, routineEquipmentRows, activeRoutineRows] = await Promise.all([
     d1
-      .prepare(`SELECT routine_code AS routineCode, completed_at AS completedAt
-        FROM workout_sessions
-        WHERE owner_email = ? AND status = 'Completed' AND completed_at IS NOT NULL
-        ORDER BY completed_at DESC LIMIT 12`)
+      .prepare(`SELECT r.code AS routineCode, ws.completed_at AS completedAt
+        FROM workout_sessions ws
+        INNER JOIN routines r
+          ON r.owner_email = ws.owner_email AND r.is_active = 1
+          AND (
+            (ws.routine_id IS NOT NULL AND r.id = ws.routine_id)
+            OR (ws.routine_id IS NULL AND r.code = ws.routine_code)
+          )
+        WHERE ws.owner_email = ? AND ws.status = 'Completed' AND ws.completed_at IS NOT NULL
+          AND (
+            NOT EXISTS (
+              SELECT 1 FROM routines canonical
+              WHERE canonical.owner_email = ws.owner_email AND canonical.is_active = 1
+                AND canonical.code IN ('A', 'B', 'C', 'D')
+            )
+            OR r.code IN ('A', 'B', 'C', 'D')
+          )
+        ORDER BY ws.completed_at DESC LIMIT 12`)
       .bind(ownerEmail)
       .all<RecentCompletedSession>(),
     d1
-      .prepare(`SELECT ws.routine_code AS routineCode, sp.prescribed_set_id AS prescribedSetId,
+      .prepare(`SELECT COALESCE(source_routine.code, ws.routine_code) AS routineCode,
+        sp.prescribed_set_id AS prescribedSetId,
         sp.exercise_order AS exerciseOrder, sp.set_type AS setType, sp.performed_at AS performedAt,
+        normalized_set.actual_rir AS actualRir,
         em.muscle_group AS muscleGroup, em.weight AS muscleWeight
         FROM set_performances sp
         INNER JOIN workout_sessions ws ON ws.id = sp.session_id AND ws.owner_email = sp.owner_email
+        LEFT JOIN routines source_routine
+          ON source_routine.owner_email = ws.owner_email
+          AND (
+            (ws.routine_id IS NOT NULL AND source_routine.id = ws.routine_id)
+            OR (ws.routine_id IS NULL AND source_routine.code = ws.routine_code)
+          )
         INNER JOIN workout_exercises we ON we.workout_id = sp.session_id AND we.position = sp.exercise_order
+        LEFT JOIN workout_sets normalized_set
+          ON normalized_set.owner_email = sp.owner_email
+          AND normalized_set.workout_id = sp.session_id
+          AND normalized_set.prescribed_set_id = sp.prescribed_set_id
         INNER JOIN exercise_muscles em ON em.exercise_id = we.exercise_id
         WHERE sp.owner_email = ? AND sp.status = 'Completed' AND sp.performed_at >= ?
         ORDER BY sp.performed_at DESC`)
@@ -339,7 +364,7 @@ export async function getRoutineRecommendations(ownerEmail: string): Promise<Rec
       WHERE r.owner_email = ? AND r.is_active = 1
       GROUP BY r.code, em.muscle_group`)
       .bind(ownerEmail)
-      .all<{ routineCode: RoutineCode; muscleGroup: MuscleGroup; profileWeight: number }>(),
+      .all<{ routineCode: string; muscleGroup: MuscleGroup; profileWeight: number }>(),
     d1.prepare(`SELECT equipment_preferences_json AS equipmentPreferencesJson
       FROM app_users WHERE owner_email = ?`)
       .bind(ownerEmail)
@@ -351,6 +376,10 @@ export async function getRoutineRecommendations(ownerEmail: string): Promise<Rec
       WHERE r.owner_email = ? AND r.is_active = 1`)
       .bind(ownerEmail)
       .all<{ routineCode: string; equipment: string }>(),
+    d1.prepare(`SELECT code FROM routines
+      WHERE owner_email = ? AND is_active = 1 ORDER BY code`)
+      .bind(ownerEmail)
+      .all<{ code: string }>(),
   ]);
 
   const completedSetMap = new Map<string, RecentCompletedSet>();
@@ -361,6 +390,10 @@ export async function getRoutineRecommendations(ownerEmail: string): Promise<Rec
       exerciseOrder: Number(row.exerciseOrder),
       setType: row.setType,
       performedAt: row.performedAt,
+      actualRir:
+        row.actualRir === null || row.actualRir === undefined
+          ? null
+          : Number(row.actualRir),
       muscles: {},
     };
     set.muscles![row.muscleGroup] = Number(row.muscleWeight);
@@ -374,13 +407,11 @@ export async function getRoutineRecommendations(ownerEmail: string): Promise<Rec
   const selectedEquipment = parseStoredEquipmentPreferences(
     trainingPreferences?.equipmentPreferencesJson,
   );
-  const equipmentByRoutine = new Map<RoutineCode, string[]>();
+  const equipmentByRoutine = new Map<string, string[]>();
   for (const row of routineEquipmentRows.results) {
-    if (!["A", "B", "C", "D"].includes(row.routineCode)) continue;
-    const code = row.routineCode as RoutineCode;
-    const equipment = equipmentByRoutine.get(code) ?? [];
+    const equipment = equipmentByRoutine.get(row.routineCode) ?? [];
     equipment.push(row.equipment);
-    equipmentByRoutine.set(code, equipment);
+    equipmentByRoutine.set(row.routineCode, equipment);
   }
   const equipmentCompatibility: RoutineEquipmentCompatibility = {};
   for (const [code, storedEquipment] of equipmentByRoutine) {
@@ -398,6 +429,7 @@ export async function getRoutineRecommendations(ownerEmail: string): Promise<Rec
     new Date(),
     profiles,
     equipmentCompatibility,
+    activeRoutineRows.results.map((routine) => routine.code),
   );
 }
 
@@ -449,6 +481,13 @@ export class WorkoutRoutineVersionConflictError extends Error {
   }
 }
 
+export class WorkoutRoutineUnavailableError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = "WorkoutRoutineUnavailableError";
+  }
+}
+
 export async function startWorkout(
   ownerEmail: string,
   code: string,
@@ -457,25 +496,64 @@ export async function startWorkout(
 ) {
   await ensureUserRoutines(ownerEmail);
   const d1 = db();
-  const requestedRoutine = await d1.prepare(`SELECT code, current_version_id AS currentVersionId
+  const requestedRoutine = await d1.prepare(`SELECT id, code, current_version_id AS currentVersionId
       FROM routines WHERE owner_email = ? AND is_active = 1 AND (id = ? OR code = ?)`)
-    .bind(ownerEmail, code, code.toUpperCase()).first<{ code: string; currentVersionId: string | null }>();
+    .bind(ownerEmail, code, code.toUpperCase()).first<{
+      id: string;
+      code: string;
+      currentVersionId: string | null;
+    }>();
   if (!requestedRoutine) return null;
+  const requestedCode = requestedRoutine.code;
+  const active = await d1
+    .prepare(`SELECT id, routine_id AS routineId, routine_code AS routineCode,
+      started_at AS startedAt, total_sets AS totalSets
+      FROM workout_sessions WHERE owner_email = ? AND status = 'In Progress' LIMIT 1`)
+    .bind(ownerEmail)
+    .first<{
+      id: string;
+      routineId: string | null;
+      routineCode: string;
+      startedAt: string;
+      totalSets: number;
+    }>();
+  const activeMatchesRequestedRoutine = active && (
+    active.routineId === requestedRoutine.id
+    || (active.routineId === null && active.routineCode === requestedCode)
+  );
+  if (activeMatchesRequestedRoutine) {
+    await materializeWorkoutFromSnapshot(d1, ownerEmail, active.id);
+    await initializeFirstWorkoutSet(d1, ownerEmail, active.id, active.startedAt);
+    return {
+      created: false,
+      requiresConfirmation: false,
+      session: {
+        id: active.id,
+        routineCode: active.routineCode,
+        startedAt: active.startedAt,
+        totalSets: active.totalSets,
+      },
+    };
+  }
   if (expectedRoutineVersionId && requestedRoutine.currentVersionId !== expectedRoutineVersionId) {
     throw new WorkoutRoutineVersionConflictError();
   }
-  const requestedCode = requestedRoutine.code;
-  const active = await d1
-    .prepare("SELECT id, routine_code AS routineCode, started_at AS startedAt, total_sets AS totalSets FROM workout_sessions WHERE owner_email = ? AND status = 'In Progress' LIMIT 1")
-    .bind(ownerEmail)
-    .first<{ id: string; routineCode: string; startedAt: string; totalSets: number }>();
-  if (active?.routineCode === requestedCode) {
-    await materializeWorkoutFromSnapshot(d1, ownerEmail, active.id);
-    await initializeFirstWorkoutSet(d1, ownerEmail, active.id, active.startedAt);
-    return { created: false, requiresConfirmation: false, session: active };
+  const recommendation = (await getRoutineRecommendations(ownerEmail)).routines
+    .find((routine) => routine.code === requestedCode);
+  if (recommendation?.availability === "unavailable") {
+    throw new WorkoutRoutineUnavailableError(recommendation.availabilityReason);
   }
   if (active && !abandonActive) {
-    return { created: false, requiresConfirmation: true, session: active };
+    return {
+      created: false,
+      requiresConfirmation: true,
+      session: {
+        id: active.id,
+        routineCode: active.routineCode,
+        startedAt: active.startedAt,
+        totalSets: active.totalSets,
+      },
+    };
   }
 
   const services = getEntityServices();
@@ -568,27 +646,31 @@ export async function startWorkout(
   const snapshotJson = JSON.stringify(snapshotRoutine);
   const createSession = expectedRoutineVersionId
     ? d1.prepare(`INSERT INTO workout_sessions (
-      id, owner_email, routine_code, routine_version, status, snapshot_json,
+      id, owner_email, routine_id, routine_version_id, routine_code, routine_version,
+      status, snapshot_json,
       current_exercise, current_set, completed_sets, skipped_sets, total_sets,
         body_weight, body_weight_source, weight_unit, started_at, updated_at
-      ) SELECT ?, ?, ?, ?, 'In Progress', ?, 1, 1, 0, 0, ?, ?, ?, ?, ?, ?
+      ) SELECT ?, ?, ?, ?, ?, ?, 'In Progress', ?, 1, 1, 0, 0, ?, ?, ?, ?, ?, ?
       WHERE EXISTS (
         SELECT 1 FROM routines
         WHERE owner_email = ? AND code = ? AND current_version_id = ?
       )`)
       .bind(
-        id, ownerEmail, snapshotRoutine.code, snapshotRoutine.version, snapshotJson,
+        id, ownerEmail, requestedRoutine.id, currentVersion!.id,
+        snapshotRoutine.code, snapshotRoutine.version, snapshotJson,
         totalSets, measurementSnapshot.bodyWeight, measurementSnapshot.bodyWeightSource,
         measurementSnapshot.weightUnit, now, now,
         ownerEmail, requestedCode, expectedRoutineVersionId,
       )
     : d1.prepare(`INSERT INTO workout_sessions (
-        id, owner_email, routine_code, routine_version, status, snapshot_json,
+        id, owner_email, routine_id, routine_version_id, routine_code, routine_version,
+        status, snapshot_json,
         current_exercise, current_set, completed_sets, skipped_sets, total_sets,
         body_weight, body_weight_source, weight_unit, started_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'In Progress', ?, 1, 1, 0, 0, ?, ?, ?, ?, ?, ?)`)
+      ) VALUES (?, ?, ?, ?, ?, ?, 'In Progress', ?, 1, 1, 0, 0, ?, ?, ?, ?, ?, ?)`)
       .bind(
-        id, ownerEmail, snapshotRoutine.code, snapshotRoutine.version, snapshotJson,
+        id, ownerEmail, requestedRoutine.id, currentVersion?.id ?? requestedRoutine.currentVersionId,
+        snapshotRoutine.code, snapshotRoutine.version, snapshotJson,
         totalSets, measurementSnapshot.bodyWeight, measurementSnapshot.bodyWeightSource,
         measurementSnapshot.weightUnit, now, now,
       );

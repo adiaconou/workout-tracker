@@ -11,12 +11,9 @@ type RoutineWithLastWorkout = {
 
 export type RoutineAvailabilityKind =
   | "recommended"
-  | "recommended_caution"
   | "available"
   | "caution"
-  | "recovery"
-  | "equipment"
-  | "not_assessed";
+  | "unavailable";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_ROUTINE_TITLE_LENGTH = 30;
@@ -137,12 +134,7 @@ export function sortRoutinesByLastDone<T extends RoutineWithLastWorkout>(
 export function routineAvailabilityKind(
   guidance: RoutineRecommendation | undefined,
 ): RoutineAvailabilityKind {
-  if (!guidance) return "not_assessed";
-  if (!guidance.equipmentCompatible) return "equipment";
-  if (guidance.availability === "recovering") return "recovery";
-  if (guidance.isRecommended && guidance.availability === "caution") {
-    return "recommended_caution";
-  }
-  if (guidance.isRecommended) return "recommended";
+  if (!guidance) return "caution";
+  if (!guidance.equipmentCompatible) return "unavailable";
   return guidance.availability;
 }

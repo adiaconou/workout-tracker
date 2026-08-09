@@ -72,34 +72,19 @@ const AVAILABILITY_KEY: Array<{
     description: "Best available option for today’s rolling plan.",
   },
   {
-    kind: "recommended_caution",
-    label: "Recommended, use caution",
-    description: "Best plan option, with moderate recent overlap.",
-  },
-  {
     kind: "available",
     label: "Available",
-    description: "Lower overlap with recently logged work.",
+    description: "Equipment is available with lower recent muscle overlap.",
   },
   {
     kind: "caution",
     label: "Use caution",
-    description: "Moderate overlap; adjust based on recovery.",
+    description: "Recent muscle overlap or missing guidance; you can still start.",
   },
   {
-    kind: "recovery",
-    label: "Recovery suggested",
-    description: "High overlap with recently logged work.",
-  },
-  {
-    kind: "equipment",
-    label: "Needs equipment",
-    description: "Required equipment is not in your setup.",
-  },
-  {
-    kind: "not_assessed",
-    label: "Not assessed",
-    description: "No availability guidance is available.",
+    kind: "unavailable",
+    label: "Unavailable",
+    description: "Required equipment is not in your Training setup.",
   },
 ];
 
@@ -419,11 +404,11 @@ export function RoutinesScreen() {
           ) : null}
 
           {recommendation?.recommendationKind === "equipment_setup" ? (
-            <View style={styles.recoveryNotice}>
-              <View style={styles.recoveryMark} />
-              <View style={styles.recoveryCopy}>
-                <Text style={styles.recoveryTitle}>Routine update needed</Text>
-                <Text style={styles.recoveryText}>{recommendation.summary}</Text>
+            <View style={styles.guidanceNotice}>
+              <View style={styles.guidanceMark} />
+              <View style={styles.guidanceCopy}>
+                <Text style={styles.guidanceTitle}>Routine update needed</Text>
+                <Text style={styles.guidanceText}>{recommendation.summary}</Text>
                 <View style={styles.setupAction}>
                   <Button title="Ask Coach to adapt them" onPress={() => router.push("/coach")} />
                 </View>
@@ -432,13 +417,13 @@ export function RoutinesScreen() {
           ) : recommendation?.recommendationKind === "recovery" ? (
             <View
               accessible
-              accessibilityLabel={`Recovery suggested. ${recommendation.summary}`}
-              style={styles.recoveryNotice}
+              accessibilityLabel={`Use caution today. ${recommendation.summary}`}
+              style={styles.guidanceNotice}
             >
-              <View style={styles.recoveryMark} />
-              <View style={styles.recoveryCopy}>
-                <Text style={styles.recoveryTitle}>Recovery suggested today</Text>
-                <Text style={styles.recoveryText}>{recommendation.summary}</Text>
+              <View style={styles.guidanceMark} />
+              <View style={styles.guidanceCopy}>
+                <Text style={styles.guidanceTitle}>Use caution today</Text>
+                <Text style={styles.guidanceText}>{recommendation.summary}</Text>
               </View>
             </View>
           ) : null}
@@ -476,26 +461,23 @@ export function RoutinesScreen() {
                   const defaultAvailability = AVAILABILITY_KEY.find(
                     (item) => item.kind === availabilityKind,
                   )!;
-                  const availabilityDescription = !guidance
-                    ? defaultAvailability.description
-                    : !guidance.equipmentCompatible
-                      ? `${defaultAvailability.description} ${
-                        guidance.missingEquipment.length
-                          ? `Needs ${guidance.missingEquipment.join(" + ")}.`
-                          : ""
-                      }`.trim()
-                      : `${guidance.availabilityLabel}. ${guidance.availabilityReason}`;
+                  const availabilityDescription = guidance?.availabilityReason
+                    ?? defaultAvailability.description;
+                  const active = data.activeWorkout?.routineCode === routine.code;
                   return (
                     <RoutineListRow
                       key={routine.code}
-                      active={data.activeWorkout?.routineCode === routine.code}
+                      active={active}
                       availabilityDescription={availabilityDescription}
                       availabilityKind={availabilityKind}
                       compact={compactLayout}
                       expanded={expandedRoutineCode === routine.code}
                       now={renderedAt}
                       routine={routine}
-                      startDisabled={Boolean(startingRoutineCode)}
+                      startDisabled={
+                        Boolean(startingRoutineCode) ||
+                        (availabilityKind === "unavailable" && !active)
+                      }
                       starting={startingRoutineCode === routine.code}
                       onOpen={() => router.push(`/routines/${encodeURIComponent(routine.code)}`)}
                       onStart={() => void startWorkout(routine.code)}
@@ -626,6 +608,9 @@ function RoutineListRow({
   const lastDoneLabel = routineLastDoneLabel(routine.lastWorkoutAt, { now });
   const description = routine.summary.trim() || "No description has been added.";
   const descriptionLabelId = `routine-${routine.code.replace(/[^a-z0-9_-]/gi, "-")}-description-label`;
+  const availabilityLabel = AVAILABILITY_KEY.find(
+    (item) => item.kind === availabilityKind,
+  )!.label;
 
   const actions = (
     <View
@@ -653,6 +638,9 @@ function RoutineListRow({
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`${active ? "Resume" : "Start"} Routine ${routine.code}, ${title}`}
+        accessibilityHint={availabilityKind === "unavailable" && !active
+          ? availabilityDescription
+          : undefined}
         accessibilityState={{ busy: starting, disabled: startDisabled }}
         disabled={startDisabled}
         onBlur={() => setFocusedAction(null)}
@@ -725,6 +713,10 @@ function RoutineListRow({
               Description
             </Text>
             <Text style={styles.descriptionText}>{description}</Text>
+            <Text style={styles.descriptionLabel}>Availability</Text>
+            <Text style={styles.descriptionText}>
+              {availabilityLabel}. {availabilityDescription}
+            </Text>
             <Pressable
               accessibilityRole="link"
               accessibilityLabel={`Open full Routine ${routine.code}, ${title}`}
@@ -766,17 +758,11 @@ function AvailabilityIcon({
   const entry = AVAILABILITY_KEY.find((item) => item.kind === kind)!;
   const glyph = kind === "recommended"
     ? "★"
-    : kind === "recommended_caution"
-      ? "✦"
     : kind === "available"
       ? "✓"
       : kind === "caution"
         ? "!"
-        : kind === "recovery"
-          ? "×"
-          : kind === "equipment"
-            ? "◆"
-            : "?";
+        : "×";
   return (
     <View
       accessible={!decorative}
@@ -790,12 +776,9 @@ function AvailabilityIcon({
       <Text aria-hidden accessible={false} style={[
         styles.availabilityGlyph,
         kind === "recommended" && styles.availabilityRecommended,
-        kind === "recommended_caution" && styles.availabilityRecommendedCaution,
         kind === "available" && styles.availabilityAvailable,
         kind === "caution" && styles.availabilityCaution,
-        kind === "recovery" && styles.availabilityRecovery,
-        kind === "equipment" && styles.availabilityEquipment,
-        kind === "not_assessed" && styles.availabilityUnknown,
+        kind === "unavailable" && styles.availabilityUnavailable,
       ]}>{glyph}</Text>
     </View>
   );
@@ -997,7 +980,7 @@ const styles = StyleSheet.create({
   },
   discardActionPressed: { backgroundColor: colors.dangerSurface },
   discardActionText: { color: colors.textDim, fontSize: 12, fontWeight: "700" },
-  recoveryNotice: {
+  guidanceNotice: {
     flexDirection: "row",
     alignItems: "flex-start",
     gap: spacing.md,
@@ -1007,16 +990,16 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
     backgroundColor: colors.warningSurface,
   },
-  recoveryMark: {
+  guidanceMark: {
     width: 8,
     height: 8,
     marginTop: 5,
     borderRadius: radii.pill,
     backgroundColor: colors.warning,
   },
-  recoveryCopy: { flex: 1, minWidth: 0, gap: 2 },
-  recoveryTitle: { color: colors.warning, fontSize: 13, fontWeight: "800" },
-  recoveryText: { color: colors.textMuted, fontSize: 12, lineHeight: 18 },
+  guidanceCopy: { flex: 1, minWidth: 0, gap: 2 },
+  guidanceTitle: { color: colors.warning, fontSize: 13, fontWeight: "800" },
+  guidanceText: { color: colors.textMuted, fontSize: 12, lineHeight: 18 },
   setupAction: { alignSelf: "flex-start", marginTop: spacing.sm },
   actionError: {
     paddingHorizontal: spacing.md,
@@ -1140,12 +1123,9 @@ const styles = StyleSheet.create({
   },
   availabilityGlyph: { fontSize: 18, lineHeight: 22, fontWeight: "900" },
   availabilityRecommended: { color: colors.accent },
-  availabilityRecommendedCaution: { color: colors.warning },
   availabilityAvailable: { color: colors.success },
   availabilityCaution: { color: colors.warning },
-  availabilityRecovery: { color: colors.danger },
-  availabilityEquipment: { color: colors.warning },
-  availabilityUnknown: { color: colors.textMuted },
+  availabilityUnavailable: { color: colors.danger },
   routineActions: {
     width: 168,
     flexShrink: 0,

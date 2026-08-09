@@ -4,6 +4,7 @@ import {
   recordWorkoutSet,
   skipWorkoutRest,
   startWorkout,
+  WorkoutRoutineUnavailableError,
   WorkoutRoutineVersionConflictError,
 } from "../db/training-store";
 import { apiError, apiResponse, errorMessage, readJson } from "../http";
@@ -62,6 +63,9 @@ export async function handleWorkouts({ request, user, segments }: RouteContext) 
         ? apiResponse(request, result, { status: result.created ? 201 : 200 })
         : apiError(request, 404, "routine_not_found", "Routine not found.");
     } catch (error) {
+      if (error instanceof WorkoutRoutineUnavailableError) {
+        return apiError(request, 409, "routine_unavailable", error.message);
+      }
       if (error instanceof WorkoutRoutineVersionConflictError) {
         return apiError(request, 409, "routine_version_stale", error.message);
       }
