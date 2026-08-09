@@ -10,6 +10,7 @@ import { handleAssistantRequest } from "./coach/assistant";
 import { handleExercises } from "./exercises/routes";
 import { apiError, errorMessage, preflightResponse } from "./http";
 import { handleOnboardingRequest } from "./profile/onboarding";
+import { handlePrograms } from "./programs/routes";
 import type { RouteContext } from "./route-context";
 import { handleRoutines } from "./routines/routes";
 import { apiPathSegments, apiRootRoute } from "./routing";
@@ -46,6 +47,7 @@ export async function handleApiRequest(request: Request, env: WorkerEnv) {
     }
     if (rootRoute === "bootstrap") return handleBootstrap(context);
     if (rootRoute === "exercises") return handleExercises(context);
+    if (rootRoute === "programs") return handlePrograms(context);
     if (rootRoute === "routines") return handleRoutines(context);
     if (rootRoute === "workouts") return handleWorkouts(context);
     if (rootRoute === "assistant") return handleAssistantRequest(context);

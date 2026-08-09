@@ -39,6 +39,13 @@ import {
   completeRoutineCreationProposal,
 } from "./routine-change";
 import {
+  buildProgramGenerationTool,
+  exerciseGenerationContext,
+  generatedProgramFromResponse,
+  normalizeProgramGenerationRequest,
+  unavailableSelectedMuscleGroups,
+} from "./program-generation";
+import {
   boundedInteger,
   cleanCoachProfile,
   cleanModel,
@@ -165,6 +172,7 @@ export async function handleAssistantRequest(context: AssistantContext) {
   if (decision?.kind === "thread-create") return createAssistantThread(context);
   if (decision?.kind === "message-create") return createAssistantMessage(context);
   if (decision?.kind === "check-in-create") return createCoachCheckIn(context);
+  if (decision?.kind === "program-generate") return generateRoutineProgram(context);
   if (decision?.kind === "plan-apply") return applyChangePlan(context, decision.planId);
   if (decision?.kind === "plan-reject") return rejectChangePlan(context, decision.planId);
 
@@ -285,6 +293,123 @@ async function createCoachCheckIn({ request, env, user }: AssistantContext) {
     return apiResponse(request, { checkIn }, { status: 201 });
   } catch (error) {
     return apiError(request, 400, "coach_check_in_invalid", errorMessage(error, "The readiness check-in could not be saved."));
+  }
+}
+
+async function generateRoutineProgram({ request, env, user }: AssistantContext) {
+  if (!env.OPENAI_API_KEY) {
+    return apiError(
+      request,
+      503,
+      "openai_not_configured",
+      "Program generation needs an OpenAI API key configured in the Site environment.",
+    );
+  }
+
+  let generationRequest;
+  try {
+    generationRequest = normalizeProgramGenerationRequest(await readJson(request));
+  } catch (error) {
+    return apiError(
+      request,
+      400,
+      "coach_program_generation_invalid",
+      errorMessage(error, "Program generation details are invalid."),
+    );
+  }
+
+  try {
+    const services = getEntityServices();
+    const [profile, catalog, exercises, routines] = await Promise.all([
+      ensureCoachProfile(env, user.email),
+      listModelCatalog(env),
+      services.exercises.list(user.email, { availableOnly: true }),
+      services.routines.list(user.email, true),
+    ]);
+    if (!exercises.length) {
+      return apiError(
+        request,
+        409,
+        "exercise_library_empty",
+        "Add an active exercise supported by your Training Setup before generating a program.",
+      );
+    }
+    const unavailableMuscles = unavailableSelectedMuscleGroups(
+      generationRequest.selectedMuscleGroups,
+      exercises,
+    );
+    if (unavailableMuscles.length) {
+      return apiError(
+        request,
+        409,
+        "selected_muscles_unavailable",
+        `No available exercise is tagged for: ${unavailableMuscles.join(", ")}. Update your Training Setup, exercise tags, or priority muscles.`,
+      );
+    }
+
+    const model = cleanModel(profile.model ?? pickDefaultModel(env, catalog.models));
+    const availableModel = catalog.models.find((option) => option.id === model);
+    if (!availableModel) {
+      return apiError(
+        request,
+        400,
+        "assistant_model_unavailable",
+        "The Coach model saved in your profile is not available for this API key.",
+      );
+    }
+    const reasoningEffort = cleanReasoningEffort(
+      profile.reasoningEffort,
+      availableModel.reasoningEfforts,
+    );
+    const availableExerciseIds = exercises.map((exercise) => exercise.id);
+    const existingRoutineCodes = routines.map((routine) => routine.code);
+    const generationTool = buildProgramGenerationTool(
+      availableExerciseIds,
+      generationRequest.routineCount,
+      generationRequest.targetDurationMin,
+    );
+    const response = await createOpenAIResponse(env, {
+      model,
+      reasoningEffort,
+      safetyIdentifier: user.id,
+      instructions: `You design practical strength and fitness programs for review inside Workout Tracker.
+
+Return exactly one complete program by calling return_routine_program. Do not return prose. Use only the supplied available exercise IDs, which are active and compatible with the user's Training Setup. Never invent an exercise or ID. Return exactly the requested number of distinct routines, give each a unique code that does not collide case-insensitively with an existing code, and set every routine durationMin to the requested target. Make positions unique positive integers within their scope. Cover every requested muscle group, prioritizing primary-muscle matches where practical. Keep plans realistic for the user's experience, goal, limitations, movements to avoid, equipment, and preferences. Treat duration as a target estimate, not a guarantee. Mention meaningful uncertainty or constraint tradeoffs in warnings using non-medical language. Do not diagnose injuries or medical conditions or make treatment claims. For concerning pain or symptoms, warn the user to stop and seek appropriate professional help.`,
+      input: [{
+        role: "user",
+        content: JSON.stringify({
+          request: generationRequest,
+          availableEquipment: profile.equipment,
+          existingRoutineCodes,
+          availableExercises: exerciseGenerationContext(exercises),
+        }),
+      }],
+      tools: [generationTool],
+      toolChoice: { type: "function", name: "return_routine_program" },
+    });
+    try {
+      const program = generatedProgramFromResponse(response, {
+        request: generationRequest,
+        availableExercises: exercises,
+        existingRoutineCodes,
+      });
+      return apiResponse(request, { program });
+    } catch (error) {
+      throw new OpenAIRequestError(
+        errorMessage(error, "The model returned an invalid routine program."),
+      );
+    }
+  } catch (error) {
+    const status = error instanceof OpenAIRequestError ? error.status : 500;
+    return apiError(
+      request,
+      status,
+      error instanceof OpenAIRequestError
+        ? "coach_program_generation_failed"
+        : "coach_program_generation_error",
+      errorMessage(error, "The program could not be generated."),
+      status === 429 || status >= 500,
+    );
   }
 }
 
@@ -730,7 +855,7 @@ async function createOpenAIResponse(
     instructions: string;
     input: unknown[];
     tools: unknown[];
-    toolChoice: CoachToolChoice;
+    toolChoice: CoachToolChoice | { type: "function"; name: string };
   },
 ) {
   const controller = new AbortController();

@@ -187,8 +187,7 @@ export function buildRoutineRecommendations(
       routines: [],
     };
   }
-  const canonicalPlanOrder = routineOrder.filter(isCanonicalRoutineCode);
-  const planOrder = canonicalPlanOrder.length ? canonicalPlanOrder : routineOrder;
+  const planOrder = routineOrder;
   const planCodes = new Set(planOrder);
   const validSessions = sessions
     .filter((session) => planCodes.has(session.routineCode) && Number.isFinite(new Date(session.completedAt).getTime()))
@@ -278,7 +277,7 @@ export function buildRoutineRecommendations(
 
     const lastCompletedAt = lastCompletion.get(code);
     const overdueBonus = lastCompletedAt ? Math.min(18, hoursBetween(now, lastCompletedAt) / 24) : 18;
-    const balanceBonus = (maxCount - (completionCounts[code] ?? 0)) * 8;
+    const balanceBonus = (maxCount - completionCounts[code]) * 8;
     const sequenceBonus = code === nextInSequence ? 45 : 0;
     const lowerBodyBonus = code === "C" && lowerBodyDue ? 16 : 0;
     const postLegPullupBonus = code !== "C" && validSessions[0]?.routineCode === "C" ? 6 : 0;

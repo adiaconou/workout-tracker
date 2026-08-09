@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  programIdempotencyKey,
+  programRequestOperation,
+} from "../src/server/programs/request-policy";
+import {
   authRequestOperation,
   googleExchangeInput,
   refreshTokenInput,
@@ -45,6 +49,7 @@ test("parses API paths and classifies every root route", () => {
     [["onboarding"], "onboarding"],
     [["bootstrap"], "bootstrap"],
     [["exercises"], "exercises"],
+    [["programs"], "programs"],
     [["routines"], "routines"],
     [["workouts"], "workouts"],
     [["assistant"], "assistant"],
@@ -54,6 +59,26 @@ test("parses API paths and classifies every root route", () => {
   for (const [segments, expected] of cases) {
     assert.equal(apiRootRoute(segments), expected);
   }
+});
+
+test("classifies program reads, idempotent creation, and activation", () => {
+  const cases: Array<[string, string[], unknown]> = [
+    ["GET", ["programs"], { kind: "list" }],
+    ["POST", ["programs"], { kind: "create" }],
+    ["PATCH", ["programs"], { kind: "method_not_allowed" }],
+    ["GET", ["programs", "p1"], { kind: "get", programId: "p1" }],
+    ["POST", ["programs", "p1"], { kind: "method_not_allowed" }],
+    ["POST", ["programs", "p1", "activate"], { kind: "activate", programId: "p1" }],
+    ["GET", ["programs", "p1", "activate"], { kind: "method_not_allowed" }],
+    ["POST", ["programs", "p1", "activate", "extra"], { kind: "method_not_allowed" }],
+  ];
+  for (const [method, segments, expected] of cases) {
+    assert.deepEqual(programRequestOperation(method, segments), expected);
+  }
+  assert.equal(programIdempotencyKey(new Request("https://app/programs")), "");
+  assert.equal(programIdempotencyKey(new Request("https://app/programs", {
+    headers: { "x-idempotency-key": "  create-1  " },
+  })), "create-1");
 });
 
 test("classifies authenticated profile, session, and logout operations", () => {

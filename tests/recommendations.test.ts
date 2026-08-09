@@ -391,6 +391,24 @@ test("treats missing muscle metadata as caution rather than unavailable", () => 
   assert.equal(recommendationRow(result, "Custom").equipmentCompatible, true);
 });
 
+test("keeps a mixed active program in its configured order", () => {
+  const result = buildRoutineRecommendations(
+    [],
+    [],
+    NOW,
+    {
+      Custom: { core: 2 },
+      A: { chest: 2 },
+    },
+    undefined,
+    ["Custom", "A"],
+  );
+
+  assert.equal(result.nextInSequence, "Custom");
+  assert.equal(result.recommendedRoutineCode, "Custom");
+  assert.deepEqual(result.routines.map((routine) => routine.code), ["Custom", "A"]);
+});
+
 test("does not treat missing set logs as proof of readiness", () => {
   const result = buildRoutineRecommendations([completedSession("A", 18)], [], NOW);
 

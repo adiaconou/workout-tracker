@@ -176,7 +176,19 @@ export function ExerciseDetailScreen({ exerciseId }: { exerciseId: string }) {
             <Text style={styles.muscleName}>{label(muscle.muscleGroup)}</Text>
             <Text style={styles.muscleRole}>{label(muscle.role)}</Text>
           </View>
-        )) : <Body muted>No muscle groups have been tagged.</Body>}
+        )) : (
+          <View style={styles.missingMuscles}>
+            <Body muted>
+              This legacy exercise has no muscle tags, so muscle filtering and generated routines may skip it.
+            </Body>
+            <Button
+              title="Ask Coach to add tags"
+              compact
+              variant="secondary"
+              onPress={() => router.push("/coach")}
+            />
+          </View>
+        )}
       </Card>
 
       <Card style={styles.linksCard}>
@@ -244,6 +256,7 @@ const styles = StyleSheet.create({
   muscleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, paddingVertical: spacing.sm },
   muscleName: { color: colors.text, fontSize: 13, fontWeight: "700" },
   muscleRole: { color: colors.textMuted, fontSize: 11 },
+  missingMuscles: { alignItems: "flex-start", gap: spacing.sm, paddingTop: spacing.sm },
   linksCard: { paddingHorizontal: 0 },
   cardHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.lg },
   count: { color: colors.textDim, fontSize: 12, fontWeight: "800" },

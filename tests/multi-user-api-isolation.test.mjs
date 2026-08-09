@@ -31,6 +31,35 @@ const exerciseInput = (name, muscleGroup) => ({
   muscles: [{ muscleGroup, role: "primary", weight: 1 }],
 });
 
+const singleSetRoutine = (exerciseId, focus) => ({
+  focus,
+  summary: `${focus} account-isolation routine.`,
+  durationMin: 30,
+  exercises: [{
+    exerciseId,
+    position: 1,
+    supersetGroup: null,
+    instructions: "Move with control.",
+    notes: "",
+    sets: [{
+      position: 1,
+      setType: "regular",
+      targetType: "reps",
+      targetMin: 8,
+      targetMax: 10,
+      targetDisplay: "8-10 reps",
+      targetRirMin: 2,
+      targetRirMax: 2,
+      restAfterSec: 90,
+      restRule: "standard",
+      loadInstruction: "",
+      sideMode: "bilateral",
+      tempo: null,
+      notes: "",
+    }],
+  }],
+});
+
 const versionInput = (version) => ({
   focus: version.focus,
   summary: version.summary,
@@ -64,7 +93,7 @@ const versionInput = (version) => ({
     })),
 });
 
-test("allowed ChatGPT users have isolated seeded data, resources, workouts, and coach state", async (context) => {
+test("allowed ChatGPT users start empty and have isolated resources, workouts, and coach state", async (context) => {
   const bundle = await build({
     absWorkingDir: root,
     entryPoints: [fileURLToPath(new URL("../src/worker.ts", import.meta.url))],
@@ -183,36 +212,196 @@ test("allowed ChatGPT users have isolated seeded data, resources, workouts, and 
   const secondBootstrap = expectStatus(await request(secondEmail, "/api/v1/bootstrap"), 200);
   assert.deepEqual(firstBootstrap.user, restoredFirstSetup.user);
   assert.deepEqual(secondBootstrap.user, secondSetup.user);
-  assert.ok(firstBootstrap.routines.length > 0);
+  assert.deepEqual(firstBootstrap.routines, [], "a new account must not inherit starter routines");
+  assert.deepEqual(secondBootstrap.routines, [], "each new account must start with no routines");
   assert.deepEqual(
-    firstBootstrap.routines.map((routine) => routine.code),
-    secondBootstrap.routines.map((routine) => routine.code),
-    "each account receives the same starter routine templates",
+    expectStatus(await request(firstEmail, "/api/v1/routines"), 200).routines,
+    [],
+  );
+  assert.deepEqual(
+    expectStatus(await request(secondEmail, "/api/v1/routines"), 200).routines,
+    [],
+  );
+  assert.deepEqual(
+    expectStatus(await request(firstEmail, "/api/v1/routines"), 200).routines,
+    [],
+    "repeated routine reads must not provision routines as a side effect",
+  );
+  for (const email of [firstEmail, secondEmail]) {
+    const row = await database.prepare("SELECT COUNT(*) AS count FROM routines WHERE owner_email = ?")
+      .bind(email)
+      .first();
+    assert.equal(Number(row.count), 0, "routine reads must leave storage empty for a new account");
+  }
+
+  const firstDefaultExercises = expectStatus(
+    await request(firstEmail, "/api/v1/exercises?scope=all"),
+    200,
+  ).exercises;
+  const secondDefaultExercises = expectStatus(
+    await request(secondEmail, "/api/v1/exercises?scope=all"),
+    200,
+  ).exercises;
+  const firstDefaultIds = new Set(firstDefaultExercises.map((exercise) => exercise.id));
+  assert.ok(firstDefaultExercises.length > 0);
+  assert.ok(firstDefaultExercises.every((exercise) => exercise.ownerEmail === firstEmail));
+  assert.ok(secondDefaultExercises.every((exercise) => exercise.ownerEmail === secondEmail));
+  assert.deepEqual(
+    firstDefaultExercises.map((exercise) => exercise.name).sort(),
+    secondDefaultExercises.map((exercise) => exercise.name).sort(),
+    "accounts receive the same curated default exercise templates",
+  );
+  assert.ok(
+    secondDefaultExercises.every((exercise) => !firstDefaultIds.has(exercise.id)),
+    "default exercise libraries must be independently owned records",
+  );
+  const defaultCatalogRows = (await database.prepare(`SELECT id, owner_email AS ownerEmail,
+    origin, template_key AS templateKey FROM exercise_catalog
+    WHERE owner_email IN (?, ?) ORDER BY owner_email, template_key`)
+    .bind(firstEmail, secondEmail)
+    .all()).results;
+  const firstDefaultCatalog = defaultCatalogRows.filter((row) => row.ownerEmail === firstEmail);
+  const secondDefaultCatalog = defaultCatalogRows.filter((row) => row.ownerEmail === secondEmail);
+  assert.ok(defaultCatalogRows.every((row) => row.origin === "default"));
+  assert.ok(defaultCatalogRows.every((row) => row.templateKey?.startsWith("home-gym:")));
+  assert.deepEqual(
+    firstDefaultCatalog.map((row) => row.templateKey),
+    secondDefaultCatalog.map((row) => row.templateKey),
+    "default provenance keys identify the same templates across owner-local copies",
+  );
+  assert.ok(secondDefaultCatalog.every((row) => !firstDefaultIds.has(row.id)));
+  const reloadedFirstDefaults = expectStatus(
+    await request(firstEmail, "/api/v1/exercises?scope=all"),
+    200,
+  ).exercises;
+  assert.deepEqual(
+    reloadedFirstDefaults.map((exercise) => exercise.id).sort(),
+    firstDefaultExercises.map((exercise) => exercise.id).sort(),
+    "repeated library reads must not duplicate or replace default exercises",
+  );
+  assert.equal(
+    Number((await database.prepare("SELECT COUNT(*) AS count FROM exercise_catalog WHERE owner_email = ?")
+      .bind(firstEmail)
+      .first()).count),
+    firstDefaultExercises.length,
   );
 
-  const firstSeededRoutines = expectStatus(await request(firstEmail, "/api/v1/routines"), 200).routines;
-  const secondSeededRoutines = expectStatus(await request(secondEmail, "/api/v1/routines"), 200).routines;
-  const firstRoutineIds = new Set(firstSeededRoutines.map((routine) => routine.id));
-  assert.ok(firstSeededRoutines.every((routine) => routine.ownerEmail === firstEmail));
-  assert.ok(secondSeededRoutines.every((routine) => routine.ownerEmail === secondEmail));
-  assert.ok(
-    secondSeededRoutines.every((routine) => !firstRoutineIds.has(routine.id)),
-    "starter routines must be independently owned records",
+  const customizedDefault = firstDefaultExercises.find(
+    (exercise) => exercise.id !== hiddenExercise.id,
   );
-  const firstRoutine = firstSeededRoutines[0];
-  const secondRoutine = secondSeededRoutines[0];
+  assert.ok(customizedDefault);
+  const customizedDefaultName = `${customizedDefault.name} (customized)`;
+  expectStatus(await request(firstEmail, `/api/v1/exercises/${encodeURIComponent(customizedDefault.id)}`, {
+    method: "PATCH",
+    body: { name: customizedDefaultName },
+  }), 200);
+  expectStatus(await request(firstEmail, `/api/v1/exercises/${encodeURIComponent(customizedDefault.id)}`, {
+    method: "DELETE",
+  }), 200);
+  expectStatus(await request(firstEmail, "/api/v1/bootstrap"), 200);
+  const preservedDefault = expectStatus(
+    await request(firstEmail, `/api/v1/exercises/${encodeURIComponent(customizedDefault.id)}`),
+    200,
+  ).exercise;
+  assert.equal(preservedDefault.name, customizedDefaultName);
+  assert.equal(preservedDefault.isActive, false, "provisioning must not restore an archived default");
+  assert.equal(
+    Number((await database.prepare("SELECT COUNT(*) AS count FROM exercise_catalog WHERE owner_email = ?")
+      .bind(firstEmail)
+      .first()).count),
+    firstDefaultExercises.length,
+    "provisioning must not recreate a renamed or archived default",
+  );
+
+  const firstExercise = expectStatus(await request(firstEmail, "/api/v1/exercises", {
+    method: "POST",
+    body: { ...exerciseInput("Primary private carry", "core"), equipment: "bodyweight" },
+  }), 201).exercise;
+  const secondExercise = expectStatus(await request(secondEmail, "/api/v1/exercises", {
+    method: "POST",
+    body: { ...exerciseInput("Second private row", "back"), equipment: "bodyweight" },
+  }), 201).exercise;
+  assert.equal(firstExercise.ownerEmail, firstEmail);
+  assert.equal(secondExercise.ownerEmail, secondEmail);
+  assert.notEqual(firstExercise.id, secondExercise.id);
+  assert.deepEqual(
+    await database.prepare(`SELECT origin, template_key AS templateKey
+      FROM exercise_catalog WHERE id = ? AND owner_email = ?`)
+      .bind(firstExercise.id, firstEmail)
+      .first(),
+    { origin: "custom", templateKey: null },
+    "user-created exercises must remain distinguishable from curated defaults",
+  );
+
+  const encodedFirstExerciseId = encodeURIComponent(firstExercise.id);
+  const encodedSecondExerciseId = encodeURIComponent(secondExercise.id);
+  const secondReadsFirstExercise = await request(secondEmail, `/api/v1/exercises/${encodedFirstExerciseId}`);
+  expectStatus(secondReadsFirstExercise, 404);
+  assert.equal(secondReadsFirstExercise.body.error.code, "exercise_not_found");
+  expectStatus(await request(secondEmail, `/api/v1/exercises/${encodedFirstExerciseId}`, {
+    method: "PATCH",
+    body: { name: "Cross-account rename" },
+  }), 404);
+  expectStatus(await request(secondEmail, `/api/v1/exercises/${encodedFirstExerciseId}`, {
+    method: "DELETE",
+  }), 404);
+  expectStatus(await request(firstEmail, `/api/v1/exercises/${encodedSecondExerciseId}`), 404);
+  assert.equal(
+    expectStatus(await request(firstEmail, `/api/v1/exercises/${encodedFirstExerciseId}`), 200).exercise.name,
+    firstExercise.name,
+    "cross-account mutation attempts must leave the exercise unchanged",
+  );
+  assert.equal(
+    expectStatus(await request(secondEmail, "/api/v1/exercises?scope=all"), 200).exercises
+      .some((exercise) => exercise.id === firstExercise.id),
+    false,
+    "custom exercises must stay out of every other account's library",
+  );
+
+  const createdFirstRoutine = expectStatus(await request(firstEmail, "/api/v1/routines", {
+    method: "POST",
+    body: { code: "PRIVATE", version: singleSetRoutine(firstExercise.id, "Primary private") },
+  }), 201).routine;
+  const createdSecondRoutine = expectStatus(await request(secondEmail, "/api/v1/routines", {
+    method: "POST",
+    body: { code: "PRIVATE", version: singleSetRoutine(secondExercise.id, "Second private") },
+  }), 201).routine;
+  const unavailableRoutine = expectStatus(await request(firstEmail, "/api/v1/routines", {
+    method: "POST",
+    body: { code: "EQUIPMENT", version: singleSetRoutine(hiddenExercise.id, "Dumbbell only") },
+  }), 201).routine;
+  const crossAccountRoutine = await request(secondEmail, "/api/v1/routines", {
+    method: "POST",
+    body: { code: "STOLEN", version: singleSetRoutine(firstExercise.id, "Stolen exercise") },
+  });
+  expectStatus(crossAccountRoutine, 400);
+  assert.equal(crossAccountRoutine.body.error.code, "routine_invalid");
+
+  const firstOwnedRoutines = expectStatus(await request(firstEmail, "/api/v1/routines"), 200).routines;
+  const secondOwnedRoutines = expectStatus(await request(secondEmail, "/api/v1/routines"), 200).routines;
+  const firstRoutineIds = new Set(firstOwnedRoutines.map((routine) => routine.id));
+  assert.deepEqual(new Set(firstOwnedRoutines.map((routine) => routine.id)), new Set([
+    createdFirstRoutine.id,
+    unavailableRoutine.id,
+  ]));
+  assert.deepEqual(secondOwnedRoutines.map((routine) => routine.id), [createdSecondRoutine.id]);
+  assert.ok(firstOwnedRoutines.every((routine) => routine.ownerEmail === firstEmail));
+  assert.ok(secondOwnedRoutines.every((routine) => routine.ownerEmail === secondEmail));
+  assert.ok(secondOwnedRoutines.every((routine) => !firstRoutineIds.has(routine.id)));
+  const firstRoutine = firstOwnedRoutines.find((routine) => routine.id === createdFirstRoutine.id);
+  const secondRoutine = secondOwnedRoutines.find((routine) => routine.id === createdSecondRoutine.id);
+  assert.ok(firstRoutine);
+  assert.ok(secondRoutine);
   const encodedFirstRoutineId = encodeURIComponent(firstRoutine.id);
   const encodedSecondRoutineId = encodeURIComponent(secondRoutine.id);
   expectStatus(await request(secondEmail, `/api/v1/routines/${encodedFirstRoutineId}`), 404);
   expectStatus(await request(secondEmail, `/api/v1/routines/${encodedFirstRoutineId}/editor`), 404);
-  assert.deepEqual(
-    expectStatus(
-      await request(secondEmail, `/api/v1/routines/${encodedFirstRoutineId}/versions`),
-      200,
-    ).versions,
-    [],
-    "a routine version listing for another owner must disclose no versions",
+  const crossAccountVersions = await request(
+    secondEmail,
+    `/api/v1/routines/${encodedFirstRoutineId}/versions`,
   );
+  expectStatus(crossAccountVersions, 404);
+  assert.equal(crossAccountVersions.body.error.code, "routine_not_found");
   const encodedFirstVersionId = encodeURIComponent(firstRoutine.currentVersionId);
   expectStatus(
     await request(
@@ -288,50 +477,8 @@ test("allowed ChatGPT users have isolated seeded data, resources, workouts, and 
     "cross-account routine mutations must leave the owner's routine unchanged",
   );
 
-  const firstSeededExercises = expectStatus(await request(firstEmail, "/api/v1/exercises"), 200).exercises;
-  const secondSeededExercises = expectStatus(await request(secondEmail, "/api/v1/exercises"), 200).exercises;
-  const firstExerciseIds = new Set(firstSeededExercises.map((exercise) => exercise.id));
-  assert.ok(firstSeededExercises.length > 0);
-  assert.ok(firstSeededExercises.every((exercise) => exercise.ownerEmail === firstEmail));
-  assert.ok(secondSeededExercises.every((exercise) => exercise.ownerEmail === secondEmail));
-  assert.ok(
-    secondSeededExercises.every((exercise) => !firstExerciseIds.has(exercise.id)),
-    "starter exercise libraries must be independently owned records",
-  );
-
-  const firstExercise = expectStatus(await request(firstEmail, "/api/v1/exercises", {
-    method: "POST",
-    body: exerciseInput("Primary private carry", "core"),
-  }), 201).exercise;
-  const secondExercise = expectStatus(await request(secondEmail, "/api/v1/exercises", {
-    method: "POST",
-    body: exerciseInput("Second private row", "back"),
-  }), 201).exercise;
-  assert.equal(firstExercise.ownerEmail, firstEmail);
-  assert.equal(secondExercise.ownerEmail, secondEmail);
-  assert.notEqual(firstExercise.id, secondExercise.id);
-
-  const encodedFirstExerciseId = encodeURIComponent(firstExercise.id);
-  const encodedSecondExerciseId = encodeURIComponent(secondExercise.id);
-  const secondReadsFirstExercise = await request(secondEmail, `/api/v1/exercises/${encodedFirstExerciseId}`);
-  expectStatus(secondReadsFirstExercise, 404);
-  assert.equal(secondReadsFirstExercise.body.error.code, "exercise_not_found");
-  expectStatus(await request(secondEmail, `/api/v1/exercises/${encodedFirstExerciseId}`, {
-    method: "PATCH",
-    body: { name: "Cross-account rename" },
-  }), 404);
-  expectStatus(await request(secondEmail, `/api/v1/exercises/${encodedFirstExerciseId}`, {
-    method: "DELETE",
-  }), 404);
-  expectStatus(await request(firstEmail, `/api/v1/exercises/${encodedSecondExerciseId}`), 404);
-  assert.equal(
-    expectStatus(await request(firstEmail, `/api/v1/exercises/${encodedFirstExerciseId}`), 200).exercise.name,
-    firstExercise.name,
-    "cross-account mutation attempts must leave the exercise unchanged",
-  );
-
-  const routineCode = firstBootstrap.routines[0].code;
-  assert.ok(secondBootstrap.routines.some((routine) => routine.code === routineCode));
+  const routineCode = firstRoutine.code;
+  assert.equal(secondRoutine.code, routineCode);
   const firstWorkout = expectStatus(await request(firstEmail, "/api/v1/workouts", {
     method: "POST",
     body: { routineId: routineCode },
@@ -351,10 +498,10 @@ test("allowed ChatGPT users have isolated seeded data, resources, workouts, and 
     200,
   );
   const unavailableOtherRoutine = constrainedBootstrap.recommendations.routines.find(
-    (routine) => routine.code !== routineCode && routine.availability === "unavailable",
+    (routine) => routine.code === unavailableRoutine.code && routine.availability === "unavailable",
   );
   assert.ok(unavailableOtherRoutine, "the reduced equipment profile should block another routine");
-  const activeRoutine = firstSeededRoutines.find((routine) => routine.code === routineCode);
+  const activeRoutine = firstOwnedRoutines.find((routine) => routine.code === routineCode);
   assert.ok(activeRoutine);
   assert.equal(
     (await database.prepare("SELECT routine_id AS routineId FROM workout_sessions WHERE id = ?")

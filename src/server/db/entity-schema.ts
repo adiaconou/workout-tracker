@@ -4,7 +4,6 @@ import {
   type WorkoutPrescription,
 } from "../../domain/workout";
 import { EXERCISE_MUSCLES, type RoutineCode } from "../../domain/recommendations";
-import { canonicalRoutines } from "../../domain/routines";
 import { homeGymExercises } from "../../domain/home-gym-exercises";
 import { normalizeExerciseName, type MuscleGroup } from "../../domain/entities/exercise";
 import { expandLegacyPrescription } from "../../domain/prescription";
@@ -48,6 +47,25 @@ const createStatements = [
     duration_min INTEGER NOT NULL DEFAULT 60, updated_at TEXT NOT NULL
   )`,
   "CREATE UNIQUE INDEX IF NOT EXISTS routines_owner_code_idx ON routines(owner_email, code)",
+  `CREATE TABLE IF NOT EXISTS routine_programs (
+    id TEXT PRIMARY KEY, owner_email TEXT NOT NULL, name TEXT NOT NULL,
+    goal TEXT NOT NULL, selected_muscle_groups_json TEXT NOT NULL DEFAULT '[]',
+    training_days_per_week INTEGER NOT NULL, target_duration_min INTEGER NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 0, idempotency_key TEXT,
+    request_fingerprint TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  "CREATE UNIQUE INDEX IF NOT EXISTS routine_programs_owner_idempotency_idx ON routine_programs(owner_email, idempotency_key)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS routine_programs_one_active_owner_idx ON routine_programs(owner_email) WHERE is_active = 1",
+  "CREATE INDEX IF NOT EXISTS routine_programs_owner_updated_idx ON routine_programs(owner_email, updated_at)",
+  `CREATE TABLE IF NOT EXISTS routine_program_routines (
+    program_id TEXT NOT NULL REFERENCES routine_programs(id) ON DELETE CASCADE,
+    routine_id TEXT NOT NULL REFERENCES routines(id) ON DELETE RESTRICT,
+    position INTEGER NOT NULL, created_at TEXT NOT NULL,
+    PRIMARY KEY (program_id, routine_id)
+  )`,
+  "CREATE UNIQUE INDEX IF NOT EXISTS routine_program_routines_position_idx ON routine_program_routines(program_id, position)",
+  "CREATE INDEX IF NOT EXISTS routine_program_routines_routine_idx ON routine_program_routines(routine_id)",
   `CREATE TABLE IF NOT EXISTS exercises (
     id TEXT PRIMARY KEY, owner_email TEXT NOT NULL, routine_code TEXT NOT NULL,
     exercise_order INTEGER NOT NULL, name TEXT NOT NULL, warmup TEXT NOT NULL,
@@ -87,7 +105,8 @@ const createStatements = [
     normalized_name TEXT NOT NULL, equipment TEXT NOT NULL DEFAULT 'other',
     movement_pattern TEXT NOT NULL DEFAULT 'other', tracking_type TEXT NOT NULL DEFAULT 'reps',
     default_load_type TEXT NOT NULL DEFAULT 'external', side_mode TEXT NOT NULL DEFAULT 'bilateral',
-    instructions TEXT NOT NULL DEFAULT '', is_active INTEGER NOT NULL DEFAULT 1,
+    instructions TEXT NOT NULL DEFAULT '', origin TEXT NOT NULL DEFAULT 'custom',
+    template_key TEXT, is_active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
   )`,
   "CREATE UNIQUE INDEX IF NOT EXISTS exercise_catalog_owner_name_idx ON exercise_catalog(owner_email, normalized_name)",
@@ -261,7 +280,15 @@ const additiveColumns: Record<string, Record<string, string>> = {
     elapsed_seconds: "INTEGER",
     workout_elapsed_seconds: "INTEGER",
   },
+  exercise_catalog: {
+    origin: "TEXT NOT NULL DEFAULT 'custom'",
+    template_key: "TEXT",
+  },
 };
+
+const postAdditiveStatements = [
+  "CREATE UNIQUE INDEX IF NOT EXISTS exercise_catalog_owner_template_idx ON exercise_catalog(owner_email, template_key)",
+];
 
 export async function ensureEntitySchema(d1: D1Database) {
   await d1.batch(createStatements.map((sql) => d1.prepare(sql)));
@@ -272,37 +299,15 @@ export async function ensureEntitySchema(d1: D1Database) {
       if (!existing.has(name)) await d1.prepare(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`).run();
     }
   }
+  await d1.prepare(`UPDATE exercise_catalog
+    SET origin = 'default', template_key = 'home-gym:' || substr(id, length(owner_email) + 13)
+    WHERE substr(id, 1, length(owner_email) + 12) = owner_email || '::home-gym::'
+      AND origin = 'custom' AND template_key IS NULL`).run();
+  await d1.batch(postAdditiveStatements.map((sql) => d1.prepare(sql)));
   await d1.prepare(`UPDATE app_users SET onboarding_completed_at = updated_at
     WHERE onboarding_version >= ? AND onboarding_completed_at IS NULL`)
     .bind(currentOnboardingVersion)
     .run();
-}
-
-async function ensureLegacySeed(d1: D1Database, ownerEmail: string) {
-  const existing = await d1.prepare("SELECT COUNT(*) AS count FROM routines WHERE owner_email = ?")
-    .bind(ownerEmail).first<{ count: number }>();
-  if (Number(existing?.count ?? 0) > 0) return;
-  const now = new Date().toISOString();
-  const statements: D1PreparedStatement[] = [];
-  for (const routine of canonicalRoutines) {
-    const routineId = `${ownerEmail}::routine::${routine.code}`;
-    statements.push(d1.prepare(`INSERT OR IGNORE INTO routines (
-      id, owner_email, code, version, focus, summary, duration_min, updated_at
-    ) VALUES (?, ?, ?, 1, ?, ?, ?, ?)`)
-      .bind(routineId, ownerEmail, routine.code, routine.focus, routine.summary, routine.durationMin, now));
-    routine.exercises.forEach((exercise, index) => {
-      statements.push(d1.prepare(`INSERT OR IGNORE INTO exercises (
-        id, owner_email, routine_code, exercise_order, name, warmup, warmup_sets,
-        regular_sets, failure_sets, drop_sets, target, rest, effort, purpose,
-        load_type, weight_unit, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'lb', ?)`)
-        .bind(`${ownerEmail}::exercise::${routine.code}::${index + 1}`, ownerEmail, routine.code,
-          index + 1, exercise.name, exercise.warmup, exercise.warmupSets, exercise.regularSets,
-          exercise.failureSets, exercise.dropSets, exercise.target, exercise.rest, exercise.effort,
-          exercise.purpose, exercise.loadType, now));
-    });
-  }
-  await d1.batch(statements);
 }
 
 function inferEquipment(name: string) {
@@ -330,6 +335,20 @@ function inferSideMode(target: string) {
   return "bilateral";
 }
 
+function defaultExerciseTemplateKey(normalizedName: string) {
+  return `home-gym:${encodeURIComponent(normalizedName)}`;
+}
+
+const defaultExerciseTemplateByName = new Map(
+  homeGymExercises.map((exercise) => {
+    const normalizedName = normalizeExerciseName(exercise.name);
+    return [normalizedName, {
+      exercise,
+      templateKey: defaultExerciseTemplateKey(normalizedName),
+    }] as const;
+  }),
+);
+
 async function catalogExercise(
   d1: D1Database,
   ownerEmail: string,
@@ -339,18 +358,29 @@ async function catalogExercise(
   now: string,
 ) {
   const normalizedName = normalizeExerciseName(exercise.name);
-  let record = await d1.prepare("SELECT id FROM exercise_catalog WHERE owner_email = ? AND normalized_name = ?")
-    .bind(ownerEmail, normalizedName).first<{ id: string }>();
+  const defaultTemplate = defaultExerciseTemplateByName.get(normalizedName);
+  const encodedName = encodeURIComponent(normalizedName);
+  const generatedId = defaultTemplate
+    ? `${ownerEmail}::home-gym::${encodedName}`
+    : `${ownerEmail}::catalog::${encodedName}`;
+  let record = defaultTemplate
+    ? await d1.prepare(`SELECT id FROM exercise_catalog
+        WHERE owner_email = ? AND (id = ? OR template_key = ? OR normalized_name = ?)`)
+      .bind(ownerEmail, generatedId, defaultTemplate.templateKey, normalizedName)
+      .first<{ id: string }>()
+    : await d1.prepare("SELECT id FROM exercise_catalog WHERE owner_email = ? AND normalized_name = ?")
+      .bind(ownerEmail, normalizedName).first<{ id: string }>();
   const statements: D1PreparedStatement[] = [];
   if (!record) {
-    record = { id: `${ownerEmail}::catalog::${encodeURIComponent(normalizedName)}` };
+    record = { id: generatedId };
     statements.push(d1.prepare(`INSERT OR IGNORE INTO exercise_catalog (
       id, owner_email, name, normalized_name, equipment, movement_pattern, tracking_type,
-      default_load_type, side_mode, instructions, is_active, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', 1, ?, ?)`)
+      default_load_type, side_mode, instructions, origin, template_key, is_active, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, 1, ?, ?)`)
       .bind(record.id, ownerEmail, exercise.name, normalizedName, inferEquipment(exercise.name),
         inferMovement(code, order), /sec/i.test(exercise.target) ? "duration" : "reps",
-        exercise.loadType, inferSideMode(exercise.target), now, now));
+        exercise.loadType, inferSideMode(exercise.target), defaultTemplate ? "default" : "custom",
+        defaultTemplate?.templateKey ?? null, now, now));
   }
   const muscles = EXERCISE_MUSCLES[code as RoutineCode]?.[order] ?? {};
   for (const [muscle, weight] of Object.entries(muscles) as Array<[MuscleGroup, number]>) {
@@ -361,20 +391,59 @@ async function catalogExercise(
   return record.id;
 }
 
-async function ensureHomeGymExerciseCatalog(d1: D1Database, ownerEmail: string) {
+async function ensureDefaultExerciseCatalog(d1: D1Database, ownerEmail: string) {
   const now = new Date().toISOString();
   for (const exercise of homeGymExercises) {
     const normalizedName = normalizeExerciseName(exercise.name);
-    const exerciseId = `${ownerEmail}::home-gym::${encodeURIComponent(normalizedName)}`;
-    const existing = await d1.prepare("SELECT id FROM exercise_catalog WHERE owner_email = ? AND (id = ? OR normalized_name = ?)")
-      .bind(ownerEmail, exerciseId, normalizedName).first<{ id: string }>();
-    if (existing) continue;
+    const encodedName = encodeURIComponent(normalizedName);
+    const exerciseId = `${ownerEmail}::home-gym::${encodedName}`;
+    const legacyCatalogId = `${ownerEmail}::catalog::${encodedName}`;
+    const templateKey = defaultExerciseTemplateKey(normalizedName);
+    const existing = await d1.prepare(`SELECT id, origin, template_key AS templateKey FROM exercise_catalog
+      WHERE owner_email = ?
+        AND (id = ? OR id = ? OR template_key = ? OR normalized_name = ?)
+      ORDER BY CASE
+        WHEN template_key = ? THEN 0
+        WHEN id = ? THEN 1
+        WHEN id = ? THEN 2
+        ELSE 3
+      END LIMIT 1`)
+      .bind(
+        ownerEmail,
+        exerciseId,
+        legacyCatalogId,
+        templateKey,
+        normalizedName,
+        templateKey,
+        exerciseId,
+        legacyCatalogId,
+      )
+      .first<{ id: string; origin: string; templateKey: string | null }>();
+    if (existing) {
+      const isGeneratedDefault = existing.id === exerciseId || existing.id === legacyCatalogId;
+      if (isGeneratedDefault && existing.origin === "custom" && existing.templateKey === null) {
+        await d1.prepare(`UPDATE exercise_catalog SET origin = 'default', template_key = ?
+          WHERE id = ? AND owner_email = ? AND origin = 'custom' AND template_key IS NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM exercise_catalog existing_template
+              WHERE existing_template.owner_email = ? AND existing_template.template_key = ?
+            )`)
+          .bind(templateKey, existing.id, ownerEmail, ownerEmail, templateKey)
+          .run();
+      } else if (existing.origin === "custom" && existing.templateKey === templateKey) {
+        await d1.prepare(`UPDATE exercise_catalog SET origin = 'default'
+          WHERE id = ? AND owner_email = ? AND origin = 'custom' AND template_key = ?`)
+          .bind(existing.id, ownerEmail, templateKey)
+          .run();
+      }
+      continue;
+    }
 
     const statements: D1PreparedStatement[] = [
       d1.prepare(`INSERT OR IGNORE INTO exercise_catalog (
         id, owner_email, name, normalized_name, equipment, movement_pattern, tracking_type,
-        default_load_type, side_mode, instructions, is_active, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`).bind(
+        default_load_type, side_mode, instructions, origin, template_key, is_active, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'default', ?, 1, ?, ?)`).bind(
         exerciseId,
         ownerEmail,
         exercise.name,
@@ -385,6 +454,7 @@ async function ensureHomeGymExerciseCatalog(d1: D1Database, ownerEmail: string) 
         exercise.defaultLoadType ?? "external",
         exercise.sideMode ?? "bilateral",
         exercise.instructions ?? "",
+        templateKey,
         now,
         now,
       ),
@@ -410,11 +480,13 @@ export async function syncLegacyRoutineVersion(d1: D1Database, ownerEmail: strin
   if (!routine) return null;
   const now = routine.updatedAt || new Date().toISOString();
   const generatedVersionId = `${routine.id}::version::${routine.version}`;
-  const exists = await d1.prepare("SELECT id FROM routine_versions WHERE routine_id = ? AND version_number = ?")
-    .bind(routine.id, routine.version).first<{ id: string }>();
+  const exists = await d1.prepare(`SELECT id FROM routine_versions
+    WHERE owner_email = ? AND routine_id = ? AND version_number = ?`)
+    .bind(ownerEmail, routine.id, routine.version).first<{ id: string }>();
   if (exists) {
-    await d1.prepare("UPDATE routines SET current_version_id = ?, created_at = COALESCE(created_at, ?) WHERE id = ?")
-      .bind(exists.id, now, routine.id).run();
+    await d1.prepare(`UPDATE routines SET current_version_id = ?, created_at = COALESCE(created_at, ?)
+      WHERE id = ? AND owner_email = ?`)
+      .bind(exists.id, now, routine.id, ownerEmail).run();
     return exists.id;
   }
   const versionId = generatedVersionId;
@@ -458,13 +530,16 @@ export async function syncLegacyRoutineVersion(d1: D1Database, ownerEmail: strin
     }
     await d1.batch(statements);
   }
-  await d1.prepare("UPDATE routines SET current_version_id = ?, created_at = COALESCE(created_at, ?) WHERE id = ?")
-    .bind(versionId, now, routine.id).run();
+  await d1.prepare(`UPDATE routines SET current_version_id = ?, created_at = COALESCE(created_at, ?)
+    WHERE id = ? AND owner_email = ?`)
+    .bind(versionId, now, routine.id, ownerEmail).run();
   return versionId;
 }
 
 export async function materializeWorkoutFromSnapshot(d1: D1Database, ownerEmail: string, sessionId: string) {
-  const existing = await d1.prepare("SELECT id FROM workout_exercises WHERE workout_id = ? LIMIT 1").bind(sessionId).first<{ id: string }>();
+  const existing = await d1.prepare(`SELECT id FROM workout_exercises
+    WHERE owner_email = ? AND workout_id = ? LIMIT 1`)
+    .bind(ownerEmail, sessionId).first<{ id: string }>();
   if (existing) return;
   const session = await d1.prepare(`SELECT routine_code AS routineCode, routine_version AS routineVersion,
     snapshot_json AS snapshotJson, started_at AS startedAt FROM workout_sessions
@@ -474,8 +549,9 @@ export async function materializeWorkoutFromSnapshot(d1: D1Database, ownerEmail:
   const routine = JSON.parse(session.snapshotJson) as WorkoutPrescription;
   const routineRow = await d1.prepare("SELECT id, current_version_id AS currentVersionId FROM routines WHERE owner_email = ? AND code = ?")
     .bind(ownerEmail, session.routineCode).first<{ id: string; currentVersionId: string | null }>();
-  const versionExists = routineRow ? await d1.prepare("SELECT id FROM routine_versions WHERE routine_id = ? AND version_number = ?")
-    .bind(routineRow.id, session.routineVersion).first<{ id: string }>() : null;
+  const versionExists = routineRow ? await d1.prepare(`SELECT id FROM routine_versions
+    WHERE owner_email = ? AND routine_id = ? AND version_number = ?`)
+    .bind(ownerEmail, routineRow.id, session.routineVersion).first<{ id: string }>() : null;
   await d1.prepare("UPDATE workout_sessions SET routine_id = ?, routine_version_id = ? WHERE id = ? AND owner_email = ?")
     .bind(routineRow?.id ?? null, versionExists?.id ?? null, sessionId, ownerEmail).run();
 
@@ -494,7 +570,8 @@ export async function materializeWorkoutFromSnapshot(d1: D1Database, ownerEmail:
   const sourceRows = versionExists ? await d1.prepare(`SELECT rve.id AS placementId, rve.position AS exercisePosition,
     rst.id AS setId, rst.position AS setPosition FROM routine_version_exercises rve
     LEFT JOIN routine_set_templates rst ON rst.routine_exercise_id = rve.id
-    WHERE rve.routine_version_id = ?`).bind(versionExists.id).all<{
+      AND rst.owner_email = rve.owner_email
+    WHERE rve.owner_email = ? AND rve.routine_version_id = ?`).bind(ownerEmail, versionExists.id).all<{
       placementId: string; exercisePosition: number; setId: string | null; setPosition: number | null;
     }>() : { results: [] };
   const placementByPosition = new Map<number, string>();
@@ -593,15 +670,23 @@ export async function materializeWorkoutFromSnapshot(d1: D1Database, ownerEmail:
 }
 
 export async function ensureEntityData(d1: D1Database, ownerEmail: string) {
-  await ensureLegacySeed(d1, ownerEmail);
+  await ensureDefaultExerciseCatalog(d1, ownerEmail);
+  await normalizeExistingRoutineData(d1, ownerEmail);
+  await materializeExistingWorkoutData(d1, ownerEmail);
+}
+
+async function normalizeExistingRoutineData(d1: D1Database, ownerEmail: string) {
   const routines = await d1.prepare(`SELECT r.code FROM routines r
-    LEFT JOIN routine_versions rv ON rv.routine_id = r.id AND rv.version_number = r.version
+    LEFT JOIN routine_versions rv ON rv.routine_id = r.id
+      AND rv.owner_email = r.owner_email AND rv.version_number = r.version
     WHERE r.owner_email = ? AND (r.current_version_id IS NULL OR rv.id IS NULL OR r.current_version_id <> rv.id)
     ORDER BY r.code`).bind(ownerEmail).all<{ code: string }>();
   for (const routine of routines.results) await syncLegacyRoutineVersion(d1, ownerEmail, routine.code);
-  await ensureHomeGymExerciseCatalog(d1, ownerEmail);
+}
+
+async function materializeExistingWorkoutData(d1: D1Database, ownerEmail: string) {
   const sessions = await d1.prepare(`SELECT ws.id FROM workout_sessions ws
-    LEFT JOIN workout_exercises we ON we.workout_id = ws.id
+    LEFT JOIN workout_exercises we ON we.workout_id = ws.id AND we.owner_email = ws.owner_email
     WHERE ws.owner_email = ? GROUP BY ws.id HAVING COUNT(we.id) = 0`)
     .bind(ownerEmail).all<{ id: string }>();
   for (const session of sessions.results) await materializeWorkoutFromSnapshot(d1, ownerEmail, session.id);

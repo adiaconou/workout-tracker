@@ -86,8 +86,11 @@ export class D1EntityRepository implements EntityRepository {
   }
 
   private async exerciseFromRow(row: Row): Promise<Exercise> {
-    const muscles = await this.d1.prepare("SELECT muscle_group AS muscleGroup, role, weight FROM exercise_muscles WHERE exercise_id = ? ORDER BY weight DESC, muscle_group")
-      .bind(String(row.id)).all<ExerciseMuscle>();
+    const muscles = await this.d1.prepare(`SELECT em.muscle_group AS muscleGroup, em.role, em.weight
+      FROM exercise_muscles em
+      INNER JOIN exercise_catalog ec ON ec.id = em.exercise_id
+      WHERE ec.owner_email = ? AND em.exercise_id = ? ORDER BY em.weight DESC, em.muscle_group`)
+      .bind(String(row.ownerEmail), String(row.id)).all<ExerciseMuscle>();
     return {
       id: String(row.id), ownerEmail: String(row.ownerEmail), name: String(row.name),
       normalizedName: String(row.normalizedName), equipment: String(row.equipment),
@@ -266,8 +269,8 @@ export class D1EntityRepository implements EntityRepository {
     const statements: D1PreparedStatement[] = [
       this.d1.prepare(`INSERT INTO exercise_catalog (
         id, owner_email, name, normalized_name, equipment, movement_pattern, tracking_type,
-        default_load_type, side_mode, instructions, is_active, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`)
+        default_load_type, side_mode, instructions, origin, template_key, is_active, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'custom', NULL, 1, ?, ?)`)
         .bind(id, ownerEmail, input.name, normalizeExerciseName(input.name), input.equipment ?? "other",
           input.movementPattern ?? "other", input.trackingType ?? "reps", input.defaultLoadType ?? "external",
           input.sideMode ?? "bilateral", input.instructions ?? "", now, now),
@@ -440,7 +443,8 @@ export class D1EntityRepository implements EntityRepository {
       rve.routine_version_id AS routineVersionId, rve.exercise_id AS exerciseId,
       ec.name AS exerciseName, rve.position, rve.superset_group AS supersetGroup,
       rve.instructions, rve.notes, rve.created_at AS createdAt, rve.updated_at AS updatedAt
-      FROM routine_version_exercises rve INNER JOIN exercise_catalog ec ON ec.id = rve.exercise_id
+      FROM routine_version_exercises rve
+      INNER JOIN exercise_catalog ec ON ec.id = rve.exercise_id AND ec.owner_email = rve.owner_email
       WHERE rve.owner_email = ? AND rve.routine_version_id = ? ORDER BY rve.position`)
       .bind(ownerEmail, versionId).all<Row>();
     const exercises: RoutineExercise[] = [];
@@ -577,15 +581,15 @@ export class D1EntityRepository implements EntityRepository {
         INNER JOIN routine_versions rv ON rv.id = rve.routine_version_id
         INNER JOIN routines r ON r.id = rv.routine_id AND r.owner_email = rv.owner_email
         WHERE r.id = ? AND r.owner_email = ? AND r.current_version_id IS NULL
-      )`).bind(routineId, ownerEmail),
+      ) AND owner_email = ?`).bind(routineId, ownerEmail, ownerEmail),
       this.d1.prepare(`DELETE FROM routine_version_exercises WHERE routine_version_id IN (
         SELECT rv.id FROM routine_versions rv
         INNER JOIN routines r ON r.id = rv.routine_id AND r.owner_email = rv.owner_email
         WHERE r.id = ? AND r.owner_email = ? AND r.current_version_id IS NULL
-      )`).bind(routineId, ownerEmail),
+      ) AND owner_email = ?`).bind(routineId, ownerEmail, ownerEmail),
       this.d1.prepare(`DELETE FROM routine_versions WHERE routine_id IN (
         SELECT id FROM routines WHERE id = ? AND owner_email = ? AND current_version_id IS NULL
-      )`).bind(routineId, ownerEmail),
+      ) AND owner_email = ?`).bind(routineId, ownerEmail, ownerEmail),
       this.d1.prepare("DELETE FROM routines WHERE id = ? AND owner_email = ? AND current_version_id IS NULL")
         .bind(routineId, ownerEmail),
     ]);
@@ -606,7 +610,8 @@ export class D1EntityRepository implements EntityRepository {
       ? this.d1.prepare(`UPDATE routines SET code = ?, is_active = 1, updated_at = ?
           WHERE id = ? AND owner_email = ? AND NOT EXISTS (
             SELECT 1 FROM routine_version_exercises rve
-            LEFT JOIN exercise_catalog ec ON ec.id = rve.exercise_id
+            LEFT JOIN exercise_catalog ec
+              ON ec.id = rve.exercise_id AND ec.owner_email = rve.owner_email
             WHERE rve.owner_email = routines.owner_email
               AND rve.routine_version_id = routines.current_version_id
               AND (ec.id IS NULL OR ec.owner_email <> routines.owner_email OR ec.is_active <> 1)
@@ -647,8 +652,9 @@ export class D1EntityRepository implements EntityRepository {
     await this.ready(ownerEmail);
     const routine = await this.routineRow(ownerEmail, idOrCode);
     if (!routine) throw new Error("Routine not found.");
-    const latest = await this.d1.prepare("SELECT MAX(version_number) AS versionNumber FROM routine_versions WHERE routine_id = ?")
-      .bind(routine.id).first<{ versionNumber: number | null }>();
+    const latest = await this.d1.prepare(`SELECT MAX(version_number) AS versionNumber
+      FROM routine_versions WHERE owner_email = ? AND routine_id = ?`)
+      .bind(ownerEmail, routine.id).first<{ versionNumber: number | null }>();
     return this.insertVersion(ownerEmail, String(routine.id), Number(latest?.versionNumber ?? 0) + 1, input);
   }
 
@@ -666,8 +672,12 @@ export class D1EntityRepository implements EntityRepository {
     }
     const now = new Date().toISOString();
     const statements: D1PreparedStatement[] = [
-      this.d1.prepare("DELETE FROM routine_set_templates WHERE routine_exercise_id IN (SELECT id FROM routine_version_exercises WHERE routine_version_id = ?)").bind(versionId),
-      this.d1.prepare("DELETE FROM routine_version_exercises WHERE routine_version_id = ?").bind(versionId),
+      this.d1.prepare(`DELETE FROM routine_set_templates WHERE owner_email = ?
+        AND routine_exercise_id IN (
+          SELECT id FROM routine_version_exercises WHERE owner_email = ? AND routine_version_id = ?
+        )`).bind(ownerEmail, ownerEmail, versionId),
+      this.d1.prepare("DELETE FROM routine_version_exercises WHERE owner_email = ? AND routine_version_id = ?")
+        .bind(ownerEmail, versionId),
       this.d1.prepare(`UPDATE routine_versions SET focus = ?, summary = ?, duration_min = ?, updated_at = ?
         WHERE id = ? AND routine_id = ? AND owner_email = ? AND status = 'draft'`)
         .bind(input.focus, input.summary, input.durationMin, now, versionId, routine.id, ownerEmail),
@@ -703,9 +713,14 @@ export class D1EntityRepository implements EntityRepository {
     if (!version) return false;
     if (version.status !== "draft") throw new Error("Published routine versions cannot be deleted.");
     await this.d1.batch([
-      this.d1.prepare("DELETE FROM routine_set_templates WHERE routine_exercise_id IN (SELECT id FROM routine_version_exercises WHERE routine_version_id = ?)").bind(versionId),
-      this.d1.prepare("DELETE FROM routine_version_exercises WHERE routine_version_id = ?").bind(versionId),
-      this.d1.prepare("DELETE FROM routine_versions WHERE id = ?").bind(versionId),
+      this.d1.prepare(`DELETE FROM routine_set_templates WHERE owner_email = ?
+        AND routine_exercise_id IN (
+          SELECT id FROM routine_version_exercises WHERE owner_email = ? AND routine_version_id = ?
+        )`).bind(ownerEmail, ownerEmail, versionId),
+      this.d1.prepare("DELETE FROM routine_version_exercises WHERE owner_email = ? AND routine_version_id = ?")
+        .bind(ownerEmail, versionId),
+      this.d1.prepare("DELETE FROM routine_versions WHERE id = ? AND routine_id = ? AND owner_email = ?")
+        .bind(versionId, routine.id, ownerEmail),
     ]);
     return true;
   }
@@ -750,12 +765,13 @@ export class D1EntityRepository implements EntityRepository {
     const statements: D1PreparedStatement[] = [
       routineUpdate,
       this.d1.prepare(`UPDATE routine_versions SET status = 'superseded', updated_at = ?
-        WHERE routine_id = ? AND status = 'published' AND id <> ? AND ${publishedGuard}`)
-        .bind(now, routineId, versionId, routineId, ownerEmail, versionId, now),
+        WHERE owner_email = ? AND routine_id = ? AND status = 'published' AND id <> ?
+          AND ${publishedGuard}`)
+        .bind(now, ownerEmail, routineId, versionId, routineId, ownerEmail, versionId, now),
       this.d1.prepare(`UPDATE routine_versions SET status = 'published',
         published_at = COALESCE(published_at, ?), updated_at = ?
-        WHERE id = ? AND routine_id = ? AND ${publishedGuard}`)
-        .bind(now, now, versionId, routineId, routineId, ownerEmail, versionId, now),
+        WHERE id = ? AND owner_email = ? AND routine_id = ? AND ${publishedGuard}`)
+        .bind(now, now, versionId, ownerEmail, routineId, routineId, ownerEmail, versionId, now),
       this.d1.prepare(`DELETE FROM exercises WHERE owner_email = ? AND routine_code = ?
         AND ${publishedGuard}`)
         .bind(ownerEmail, code, routineId, ownerEmail, versionId, now),

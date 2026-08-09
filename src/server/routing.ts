@@ -5,6 +5,7 @@ export type ApiRootRoute =
   | "onboarding"
   | "bootstrap"
   | "exercises"
+  | "programs"
   | "routines"
   | "workouts"
   | "assistant"
@@ -29,6 +30,7 @@ export function apiRootRoute(segments: readonly string[]): ApiRootRoute {
   if (segments[0] === "onboarding") return "onboarding";
   if (segments[0] === "bootstrap") return "bootstrap";
   if (segments[0] === "exercises") return "exercises";
+  if (segments[0] === "programs") return "programs";
   if (segments[0] === "routines") return "routines";
   if (segments[0] === "workouts") return "workouts";
   if (segments[0] === "assistant") return "assistant";

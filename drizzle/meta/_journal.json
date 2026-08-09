@@ -85,6 +85,20 @@
       "when": 1786233074741,
       "tag": "0011_repair_workout_set_metrics",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1786313539302,
+      "tag": "0012_sturdy_harpoon",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1786314194156,
+      "tag": "0013_outstanding_jean_grey",
+      "breakpoints": true
     }
   ]
 }

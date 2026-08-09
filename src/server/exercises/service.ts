@@ -31,7 +31,11 @@ export class ExerciseService {
   }
 
   create(ownerEmail: string, input: ExerciseInput) {
-    return this.repository.createExercise(ownerEmail, validateExerciseInput(input));
+    const validated = validateExerciseInput(input);
+    if (!validated.muscles?.some((muscle) => muscle.role === "primary")) {
+      throw new Error("At least one primary muscle is required for a new exercise.");
+    }
+    return this.repository.createExercise(ownerEmail, validated);
   }
 
   async update(ownerEmail: string, id: string, input: Partial<ExerciseInput>) {

@@ -27,6 +27,7 @@ test("assistant request policy resolves every supported route and rejects incomp
     ["POST", ["assistant", "threads"], { kind: "thread-create" }],
     ["POST", ["assistant", "messages"], { kind: "message-create" }],
     ["POST", ["assistant", "check-ins"], { kind: "check-in-create" }],
+    ["POST", ["assistant", "programs", "generate"], { kind: "program-generate" }],
     ["POST", ["assistant", "plans", "plan-1", "apply"], { kind: "plan-apply", planId: "plan-1" }],
     ["POST", ["assistant", "plans", "plan-2", "reject"], { kind: "plan-reject", planId: "plan-2" }],
   ] as const;
@@ -41,6 +42,9 @@ test("assistant request policy resolves every supported route and rejects incomp
     ["GET", ["assistant", "threads"]],
     ["GET", ["assistant", "messages"]],
     ["GET", ["assistant", "check-ins"]],
+    ["GET", ["assistant", "programs", "generate"]],
+    ["POST", ["assistant", "programs"]],
+    ["POST", ["assistant", "programs", "unexpected"]],
     ["POST", ["assistant", "plans"]],
     ["POST", ["assistant", "plans", "plan-1"]],
     ["GET", ["assistant", "plans", "plan-1", "apply"]],

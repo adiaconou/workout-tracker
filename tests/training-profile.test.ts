@@ -49,6 +49,7 @@ test("preserves legacy users while keeping explicit empty new-user preferences i
 });
 
 test("checks compound equipment requirements and leaves unknown custom equipment visible", () => {
+  assert.deepEqual(missingExerciseEquipmentLabels("bench", []), ["Bench"]);
   assert.equal(
     isExerciseEquipmentAvailable("dumbbell_and_bench", ["dumbbells", "bench"]),
     true,

@@ -12,6 +12,7 @@ export type AssistantRequestDecision =
   | { kind: "thread-create" }
   | { kind: "message-create" }
   | { kind: "check-in-create" }
+  | { kind: "program-generate" }
   | { kind: "plan-apply"; planId: string }
   | { kind: "plan-reject"; planId: string };
 
@@ -30,6 +31,9 @@ export function resolveAssistantRequest(
   if (action === "threads" && method === "POST") return { kind: "thread-create" };
   if (action === "messages" && method === "POST") return { kind: "message-create" };
   if (action === "check-ins" && method === "POST") return { kind: "check-in-create" };
+  if (action === "programs" && resourceId === "generate" && method === "POST") {
+    return { kind: "program-generate" };
+  }
   if (action === "plans" && resourceId && childAction === "apply" && method === "POST") {
     return { kind: "plan-apply", planId: resourceId };
   }

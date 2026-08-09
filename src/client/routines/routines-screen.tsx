@@ -276,6 +276,12 @@ export function RoutinesScreen() {
       <View style={styles.header}>
         <Heading>Routines</Heading>
         <View style={styles.headerActions}>
+          <Button
+            title="New routine"
+            accessibilityLabel="Create a new routine"
+            compact
+            onPress={() => router.push("/routines/new")}
+          />
           {refreshing && (!compactLayout || !data?.routines.length) ? (
             <Text accessibilityLiveRegion="polite" style={styles.refreshing}>Refreshing…</Text>
           ) : null}
@@ -497,8 +503,9 @@ export function RoutinesScreen() {
             <Card style={styles.stateCard}>
               <Eyebrow>Start your program</Eyebrow>
               <Heading size="small">No routines yet</Heading>
-              <Body muted>Ask Coach to build a routine, or return after one has been added from another device.</Body>
-              <Button title="Open Coach" onPress={() => router.push("/coach")} />
+              <Body muted>Build one yourself or ask Coach to generate a program around your goals.</Body>
+              <Button title="Build manually" onPress={() => router.push("/routines/new?mode=manual")} />
+              <Button title="Create with Coach" variant="secondary" onPress={() => router.push("/routines/new?mode=ai")} />
             </Card>
           )}
 

@@ -1,6 +1,9 @@
 import type {
   Exercise,
   ExerciseProgress,
+  RoutineProgram,
+  RoutineProgramCreateInput,
+  RoutineProgramMembership,
   RoutineAggregate,
   RoutineExercise,
   RoutineExerciseInput,
@@ -116,6 +119,9 @@ export type BootstrapPayload = {
 export type {
   Exercise,
   ExerciseProgress,
+  RoutineProgram,
+  RoutineProgramCreateInput,
+  RoutineProgramMembership,
   RoutineAggregate,
   RoutineExercise,
   RoutineExerciseInput,

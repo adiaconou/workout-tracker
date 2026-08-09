@@ -1,5 +1,4 @@
 import { env } from "cloudflare:workers";
-import { canonicalRoutines } from "../../domain/routines";
 import {
   buildGuidedSets,
   type GuidedSet,
@@ -214,57 +213,15 @@ export async function ensureWorkoutSchema() {
   }
 }
 
-function routineId(ownerEmail: string, code: string) {
-  return `${ownerEmail}::routine::${code}`;
-}
-
-function exerciseId(ownerEmail: string, code: string, order: number) {
-  return `${ownerEmail}::exercise::${code}::${order}`;
-}
-
-export async function ensureUserRoutines(ownerEmail: string) {
+export async function ensureUserTrainingData(ownerEmail: string) {
   await ensureWorkoutSchema();
   const d1 = db();
   await ensureEntitySchema(d1);
-  const existing = await d1
-    .prepare("SELECT COUNT(*) AS count FROM routines WHERE owner_email = ?")
-    .bind(ownerEmail)
-    .first<{ count: number }>();
-
-  if (Number(existing?.count ?? 0) === 0) {
-    const now = new Date().toISOString();
-    const statements: D1PreparedStatement[] = [];
-    for (const routine of canonicalRoutines) {
-      statements.push(
-        d1
-          .prepare("INSERT OR IGNORE INTO routines (id, owner_email, code, version, focus, summary, duration_min, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?)")
-          .bind(routineId(ownerEmail, routine.code), ownerEmail, routine.code, routine.focus, routine.summary, routine.durationMin, now),
-      );
-      routine.exercises.forEach((exercise, index) => {
-        const order = index + 1;
-        statements.push(
-          d1
-            .prepare(`INSERT OR IGNORE INTO exercises (
-              id, owner_email, routine_code, exercise_order, name, warmup, warmup_sets,
-              regular_sets, failure_sets, drop_sets, target, rest, effort, purpose,
-              load_type, weight_unit, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'lb', ?)`)
-            .bind(
-              exerciseId(ownerEmail, routine.code, order), ownerEmail, routine.code, order,
-              exercise.name, exercise.warmup, exercise.warmupSets, exercise.regularSets,
-              exercise.failureSets, exercise.dropSets, exercise.target, exercise.rest,
-              exercise.effort, exercise.purpose, exercise.loadType, now,
-            ),
-        );
-      });
-    }
-    await d1.batch(statements);
-  }
   await ensureEntityData(d1, ownerEmail);
 }
 
 export async function getRoutineList(ownerEmail: string): Promise<RoutineSummary[]> {
-  await ensureUserRoutines(ownerEmail);
+  await ensureUserTrainingData(ownerEmail);
   const result = await db()
     .prepare(`SELECT r.code, r.version, r.focus, r.summary, r.duration_min AS durationMin,
       r.updated_at AS updatedAt, COUNT(e.id) AS exerciseCount,
@@ -306,7 +263,7 @@ export async function getRoutineList(ownerEmail: string): Promise<RoutineSummary
 }
 
 export async function getRoutineRecommendations(ownerEmail: string): Promise<RecommendationResult> {
-  await ensureUserRoutines(ownerEmail);
+  await ensureUserTrainingData(ownerEmail);
   const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
   const d1 = db();
   const [sessions, completedMuscleRows, profileRows, trainingPreferences, routineEquipmentRows, activeRoutineRows] = await Promise.all([
@@ -321,12 +278,26 @@ export async function getRoutineRecommendations(ownerEmail: string): Promise<Rec
           )
         WHERE ws.owner_email = ? AND ws.status = 'Completed' AND ws.completed_at IS NOT NULL
           AND (
-            NOT EXISTS (
-              SELECT 1 FROM routines canonical
-              WHERE canonical.owner_email = ws.owner_email AND canonical.is_active = 1
-                AND canonical.code IN ('A', 'B', 'C', 'D')
+            EXISTS (
+              SELECT 1 FROM routine_programs rp
+              INNER JOIN routine_program_routines rpr
+                ON rpr.program_id = rp.id AND rpr.routine_id = r.id
+              WHERE rp.owner_email = ws.owner_email AND rp.is_active = 1
             )
-            OR r.code IN ('A', 'B', 'C', 'D')
+            OR (
+              NOT EXISTS (
+                SELECT 1 FROM routine_programs rp
+                WHERE rp.owner_email = ws.owner_email AND rp.is_active = 1
+              )
+              AND (
+                r.code IN ('A', 'B', 'C', 'D')
+                OR NOT EXISTS (
+                  SELECT 1 FROM routines canonical
+                  WHERE canonical.owner_email = ws.owner_email AND canonical.is_active = 1
+                    AND canonical.code IN ('A', 'B', 'C', 'D')
+                )
+              )
+            )
           )
         ORDER BY ws.completed_at DESC LIMIT 12`)
       .bind(ownerEmail)
@@ -345,7 +316,9 @@ export async function getRoutineRecommendations(ownerEmail: string): Promise<Rec
             (ws.routine_id IS NOT NULL AND source_routine.id = ws.routine_id)
             OR (ws.routine_id IS NULL AND source_routine.code = ws.routine_code)
           )
-        INNER JOIN workout_exercises we ON we.workout_id = sp.session_id AND we.position = sp.exercise_order
+        INNER JOIN workout_exercises we
+          ON we.owner_email = sp.owner_email
+          AND we.workout_id = sp.session_id AND we.position = sp.exercise_order
         LEFT JOIN workout_sets normalized_set
           ON normalized_set.owner_email = sp.owner_email
           AND normalized_set.workout_id = sp.session_id
@@ -358,8 +331,10 @@ export async function getRoutineRecommendations(ownerEmail: string): Promise<Rec
     d1.prepare(`SELECT r.code AS routineCode, em.muscle_group AS muscleGroup,
         SUM(em.weight * CASE WHEN rst.set_type = 'warmup' THEN 0.25 WHEN rst.set_type IN ('failure', 'drop') THEN 1.25 ELSE 1 END) AS profileWeight
       FROM routines r
-      INNER JOIN routine_version_exercises rve ON rve.routine_version_id = r.current_version_id
-      INNER JOIN routine_set_templates rst ON rst.routine_exercise_id = rve.id
+      INNER JOIN routine_version_exercises rve
+        ON rve.owner_email = r.owner_email AND rve.routine_version_id = r.current_version_id
+      INNER JOIN routine_set_templates rst
+        ON rst.owner_email = r.owner_email AND rst.routine_exercise_id = rve.id
       INNER JOIN exercise_muscles em ON em.exercise_id = rve.exercise_id
       WHERE r.owner_email = ? AND r.is_active = 1
       GROUP BY r.code, em.muscle_group`)
@@ -371,14 +346,38 @@ export async function getRoutineRecommendations(ownerEmail: string): Promise<Rec
       .first<{ equipmentPreferencesJson: string }>(),
     d1.prepare(`SELECT r.code AS routineCode, ec.equipment
       FROM routines r
-      INNER JOIN routine_version_exercises rve ON rve.routine_version_id = r.current_version_id
+      INNER JOIN routine_version_exercises rve
+        ON rve.owner_email = r.owner_email AND rve.routine_version_id = r.current_version_id
       INNER JOIN exercise_catalog ec ON ec.id = rve.exercise_id AND ec.owner_email = r.owner_email
       WHERE r.owner_email = ? AND r.is_active = 1`)
       .bind(ownerEmail)
       .all<{ routineCode: string; equipment: string }>(),
-    d1.prepare(`SELECT code FROM routines
-      WHERE owner_email = ? AND is_active = 1 ORDER BY code`)
-      .bind(ownerEmail)
+    d1.prepare(`SELECT code FROM (
+        SELECT r.code AS code, rpr.position AS position, 0 AS source
+        FROM routine_programs rp
+        INNER JOIN routine_program_routines rpr ON rpr.program_id = rp.id
+        INNER JOIN routines r ON r.id = rpr.routine_id AND r.owner_email = rp.owner_email
+        WHERE rp.owner_email = ? AND rp.is_active = 1 AND r.is_active = 1
+        UNION ALL
+        SELECT r.code AS code,
+          CASE r.code WHEN 'A' THEN 1 WHEN 'B' THEN 2 WHEN 'C' THEN 3 WHEN 'D' THEN 4 ELSE 5 END AS position,
+          1 AS source
+        FROM routines r
+        WHERE r.owner_email = ? AND r.is_active = 1
+          AND NOT EXISTS (
+            SELECT 1 FROM routine_programs rp
+            WHERE rp.owner_email = r.owner_email AND rp.is_active = 1
+          )
+          AND (
+            r.code IN ('A', 'B', 'C', 'D')
+            OR NOT EXISTS (
+              SELECT 1 FROM routines canonical
+              WHERE canonical.owner_email = r.owner_email AND canonical.is_active = 1
+                AND canonical.code IN ('A', 'B', 'C', 'D')
+            )
+          )
+      ) ORDER BY source, position, code`)
+      .bind(ownerEmail, ownerEmail)
       .all<{ code: string }>(),
   ]);
 
@@ -434,7 +433,7 @@ export async function getRoutineRecommendations(ownerEmail: string): Promise<Rec
 }
 
 export async function getRoutine(ownerEmail: string, code: string): Promise<WorkoutPrescription | null> {
-  await ensureUserRoutines(ownerEmail);
+  await ensureUserTrainingData(ownerEmail);
   const routine = await db()
     .prepare("SELECT code, version, focus, summary, duration_min AS durationMin, updated_at AS updatedAt FROM routines WHERE owner_email = ? AND code = ?")
     .bind(ownerEmail, code.toUpperCase())
@@ -494,7 +493,7 @@ export async function startWorkout(
   abandonActive = false,
   expectedRoutineVersionId?: string,
 ) {
-  await ensureUserRoutines(ownerEmail);
+  await ensureUserTrainingData(ownerEmail);
   const d1 = db();
   const requestedRoutine = await d1.prepare(`SELECT id, code, current_version_id AS currentVersionId
       FROM routines WHERE owner_email = ? AND is_active = 1 AND (id = ? OR code = ?)`)

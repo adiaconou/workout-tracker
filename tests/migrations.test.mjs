@@ -6,26 +6,28 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 const root = new URL("../", import.meta.url);
+const entityMigrationFilenames = [
+  "drizzle/0000_bent_starjammers.sql",
+  "drizzle/0001_windy_timeslip.sql",
+  "drizzle/0002_workable_whizzer.sql",
+  "drizzle/0003_faulty_sandman.sql",
+  "drizzle/0004_nebulous_lila_cheney.sql",
+  "drizzle/0005_plain_rocket_raccoon.sql",
+  "drizzle/0006_freezing_betty_ross.sql",
+  "drizzle/0007_glorious_vermin.sql",
+  "drizzle/0008_nervous_selene.sql",
+  "drizzle/0009_profile_measurements.sql",
+  "drizzle/0010_opposite_microbe.sql",
+  "drizzle/0011_repair_workout_set_metrics.sql",
+  "drizzle/0012_sturdy_harpoon.sql",
+  "drizzle/0013_outstanding_jean_grey.sql",
+];
 
 test("applies the complete migration chain and creates the normalized entity model", async () => {
   const directory = await mkdtemp(join(tmpdir(), "workout-entities-"));
   const database = join(directory, "entities.sqlite");
   try {
-    const filenames = [
-      "drizzle/0000_bent_starjammers.sql",
-      "drizzle/0001_windy_timeslip.sql",
-      "drizzle/0002_workable_whizzer.sql",
-      "drizzle/0003_faulty_sandman.sql",
-      "drizzle/0004_nebulous_lila_cheney.sql",
-      "drizzle/0005_plain_rocket_raccoon.sql",
-      "drizzle/0006_freezing_betty_ross.sql",
-      "drizzle/0007_glorious_vermin.sql",
-      "drizzle/0008_nervous_selene.sql",
-      "drizzle/0009_profile_measurements.sql",
-      "drizzle/0010_opposite_microbe.sql",
-      "drizzle/0011_repair_workout_set_metrics.sql",
-    ];
-    const sql = (await Promise.all(filenames.map((filename) => readFile(new URL(filename, root), "utf8"))))
+    const sql = (await Promise.all(entityMigrationFilenames.map((filename) => readFile(new URL(filename, root), "utf8"))))
       .join("\n").replaceAll("--> statement-breakpoint", "\n");
     const sqlite = new DatabaseSync(database);
     sqlite.exec(sql);
@@ -33,9 +35,13 @@ test("applies the complete migration chain and creates the normalized entity mod
     const workoutSetColumns = sqlite.prepare("PRAGMA table_info(workout_sets)").all();
     const setPerformanceColumns = sqlite.prepare("PRAGMA table_info(set_performances)").all();
     const appUserColumns = sqlite.prepare("PRAGMA table_info(app_users)").all();
+    const programIndexes = sqlite.prepare("PRAGMA index_list(routine_programs)").all();
+    const exerciseCatalogColumns = sqlite.prepare("PRAGMA table_info(exercise_catalog)").all();
+    const exerciseCatalogIndexes = sqlite.prepare("PRAGMA index_list(exercise_catalog)").all();
     const inspected = JSON.stringify({
       tables,
       appUsers: appUserColumns,
+      exerciseCatalog: sqlite.prepare("PRAGMA table_info(exercise_catalog)").all(),
       routines: sqlite.prepare("PRAGMA table_info(routines)").all(),
       workoutSessions: sqlite.prepare("PRAGMA table_info(workout_sessions)").all(),
       workoutSets: workoutSetColumns,
@@ -47,7 +53,7 @@ test("applies the complete migration chain and creates the normalized entity mod
       workoutSetForeignKeys: sqlite.prepare("PRAGMA foreign_key_list(workout_sets)").all(),
     });
     sqlite.close();
-    for (const table of ["app_users", "auth_identities", "auth_sessions", "exercise_catalog", "exercise_favorites", "exercise_muscles", "routine_versions", "routine_version_exercises", "routine_set_templates", "workout_exercises", "workout_sets", "coach_profiles", "assistant_threads", "assistant_messages", "coach_check_ins", "assistant_change_plans", "assistant_exercise_change_plans", "assistant_tool_calls"]) {
+    for (const table of ["app_users", "auth_identities", "auth_sessions", "exercise_catalog", "exercise_favorites", "exercise_muscles", "routine_programs", "routine_program_routines", "routine_versions", "routine_version_exercises", "routine_set_templates", "workout_exercises", "workout_sets", "coach_profiles", "assistant_threads", "assistant_messages", "coach_check_ins", "assistant_change_plans", "assistant_exercise_change_plans", "assistant_tool_calls"]) {
       assert.match(inspected, new RegExp(`\\b${table}\\b`));
     }
     assert.match(inspected, /current_version_id/);
@@ -65,6 +71,8 @@ test("applies the complete migration chain and creates the normalized entity mod
     assert.match(inspected, /preferred_workout_duration_min/);
     assert.match(inspected, /onboarding_version/);
     assert.match(inspected, /onboarding_completed_at/);
+    assert.match(inspected, /origin/);
+    assert.match(inspected, /template_key/);
     assert.match(inspected, /workout_exercises/);
     assert.match(inspected, /routine_set_templates/);
     assert.match(inspected, /refresh_token_hash/);
@@ -73,6 +81,19 @@ test("applies the complete migration chain and creates the normalized entity mod
     assert.match(inspected, /applied_exercise_id/);
     assert.match(inspected, /assistant_exercise_change_plans_owner_status_idx/);
     assert.match(inspected, /assistant_exercise_change_plans_thread_created_idx/);
+    assert.ok(programIndexes.some((index) => index.name === "routine_programs_one_active_owner_idx" && index.unique === 1));
+    assert.deepEqual(
+      exerciseCatalogColumns
+        .filter((column) => ["origin", "template_key"].includes(column.name))
+        .map((column) => column.name),
+      ["origin", "template_key"],
+    );
+    const originColumn = exerciseCatalogColumns.find((column) => column.name === "origin");
+    assert.equal(originColumn.notnull, 1);
+    assert.equal(originColumn.dflt_value, "'custom'");
+    assert.ok(exerciseCatalogIndexes.some(
+      (index) => index.name === "exercise_catalog_owner_template_idx" && index.unique === 1,
+    ));
     assert.deepEqual(
       workoutSetColumns.filter((column) => ["started_at", "elapsed_seconds"].includes(column.name)).map((column) => column.name),
       ["started_at", "elapsed_seconds"],
@@ -81,6 +102,65 @@ test("applies the complete migration chain and creates the normalized entity mod
       setPerformanceColumns.filter((column) => ["started_at", "elapsed_seconds", "workout_elapsed_seconds"].includes(column.name)).map((column) => column.name),
       ["started_at", "elapsed_seconds", "workout_elapsed_seconds"],
     );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("exercise provenance migration adopts generated defaults without changing owner customizations", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "workout-exercise-provenance-"));
+  const database = join(directory, "exercise-provenance.sqlite");
+  try {
+    const sqlite = new DatabaseSync(database);
+    const priorSql = (await Promise.all(entityMigrationFilenames.slice(0, -1).map(
+      (filename) => readFile(new URL(filename, root), "utf8"),
+    ))).join("\n").replaceAll("--> statement-breakpoint", "\n");
+    sqlite.exec(priorSql);
+    const owner = "legacy-defaults@example.com";
+    const generatedId = `${owner}::home-gym::wide-grip%20pull-up`;
+    const now = "2026-08-09T12:00:00.000Z";
+    sqlite.prepare(`INSERT INTO exercise_catalog (
+      id, owner_email, name, normalized_name, equipment, movement_pattern,
+      tracking_type, default_load_type, side_mode, instructions, is_active,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 'pull_up_station', 'vertical_pull', 'reps',
+      'bodyweight', 'bilateral', '', 0, ?, ?)`).run(
+      generatedId,
+      owner,
+      "My renamed archived pull-up",
+      "my renamed archived pull-up",
+      now,
+      now,
+    );
+    sqlite.prepare(`INSERT INTO exercise_catalog (
+      id, owner_email, name, normalized_name, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?)`).run(
+      "custom-exercise-id",
+      owner,
+      "Private custom exercise",
+      "private custom exercise",
+      now,
+      now,
+    );
+
+    sqlite.exec((await readFile(
+      new URL("drizzle/0013_outstanding_jean_grey.sql", root),
+      "utf8",
+    )).replaceAll("--> statement-breakpoint", "\n"));
+
+    assert.deepEqual({ ...sqlite.prepare(`SELECT name, is_active AS isActive,
+      origin, template_key AS templateKey FROM exercise_catalog WHERE id = ?`).get(generatedId) }, {
+      name: "My renamed archived pull-up",
+      isActive: 0,
+      origin: "default",
+      templateKey: "home-gym:wide-grip%20pull-up",
+    });
+    assert.deepEqual({ ...sqlite.prepare(`SELECT origin, template_key AS templateKey
+      FROM exercise_catalog WHERE id = ?`).get("custom-exercise-id") }, {
+      origin: "custom",
+      templateKey: null,
+    });
+    sqlite.close();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

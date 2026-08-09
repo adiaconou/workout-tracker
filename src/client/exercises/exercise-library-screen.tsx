@@ -111,6 +111,11 @@ export function ExerciseLibraryScreen() {
           <Text style={styles.total}>
             {exercises.length} available · {favoriteCount} favorite{favoriteCount === 1 ? "" : "s"}
           </Text>
+          <Button
+            title="Add exercise"
+            compact
+            onPress={() => router.push("/exercises/new")}
+          />
           <Pressable
             accessibilityRole="link"
             accessibilityLabel="Open equipment settings"

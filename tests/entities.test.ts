@@ -177,6 +177,60 @@ test("exercise service performs catalog CRUD through the repository boundary", a
   assert.equal((await service.get("owner@example.com", created.id))?.isActive, false);
 });
 
+test("exercise service requires a primary muscle only when creating a new exercise", async () => {
+  let stored: Exercise | null = null;
+  let createCalls = 0;
+  const repository = {
+    async createExercise(ownerEmail: string, input: Parameters<EntityRepository["createExercise"]>[1]) {
+      createCalls += 1;
+      stored = {
+        id: "exercise-new", ownerEmail, name: input.name, normalizedName: input.name.toLowerCase(),
+        equipment: input.equipment ?? "other", movementPattern: input.movementPattern ?? "other",
+        trackingType: input.trackingType ?? "reps", defaultLoadType: input.defaultLoadType ?? "external",
+        sideMode: input.sideMode ?? "bilateral", instructions: input.instructions ?? "",
+        muscles: input.muscles ?? [], isFavorite: false, isActive: true, createdAt: "now", updatedAt: "now",
+      };
+      return stored;
+    },
+    async getExercise() { return stored; },
+    async updateExercise(_ownerEmail: string, _id: string, input: Parameters<EntityRepository["updateExercise"]>[2]) {
+      stored = { ...stored!, ...input, normalizedName: (input.name ?? stored!.name).toLowerCase() };
+      return stored;
+    },
+  } as unknown as EntityRepository;
+  const service = new ExerciseService(repository);
+
+  assert.throws(
+    () => service.create("owner@example.com", { name: "Untagged movement" }),
+    /primary muscle is required/i,
+  );
+  assert.throws(
+    () => service.create("owner@example.com", {
+      name: "Secondary-only movement",
+      muscles: [{ muscleGroup: "triceps", role: "secondary", weight: 0.5 }],
+    }),
+    /primary muscle is required/i,
+  );
+  assert.equal(createCalls, 0, "invalid new exercises must not reach persistence");
+
+  const created = await service.create("owner@example.com", {
+    name: "Tagged movement",
+    muscles: [
+      { muscleGroup: "chest", role: "primary", weight: 1 },
+      { muscleGroup: "triceps", role: "secondary", weight: 0.5 },
+    ],
+  });
+  assert.equal(createCalls, 1);
+  assert.equal(created.muscles.length, 2, "secondary muscle tags remain optional additions");
+
+  stored = { ...created, id: "exercise-legacy", muscles: [] };
+  const updatedLegacy = await service.update("owner@example.com", stored.id, {
+    instructions: "Keep the legacy row editable.",
+  });
+  assert.deepEqual(updatedLegacy?.muscles, []);
+  assert.equal(updatedLegacy?.instructions, "Keep the legacy row editable.");
+});
+
 test("exercise progress validates units and normalizes the requested start date", async () => {
   let receivedQuery: Parameters<EntityRepository["getExerciseProgress"]>[2];
   const repository = {

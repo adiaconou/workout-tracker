@@ -67,7 +67,9 @@ function AuthenticatedNavigator() {
       </Stack.Protected>
       <Stack.Protected guard={Boolean(user?.trainingProfile.onboardingCompleted)}>
         <Stack.Screen name="(tabs)" options={accountHeaderOptions} />
+        <Stack.Screen name="routines/new" options={accountHeaderOptions} />
         <Stack.Screen name="routines/[routineId]" options={accountHeaderOptions} />
+        <Stack.Screen name="exercises/new" options={accountHeaderOptions} />
         <Stack.Screen name="exercises/[exerciseId]" options={accountHeaderOptions} />
         <Stack.Screen name="history/[workoutId]" options={accountHeaderOptions} />
         <Stack.Screen name="profile" options={accountHeaderOptions} />

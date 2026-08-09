@@ -288,7 +288,10 @@ test("entity services delegate every operation and preserve validation boundarie
   await exercises.progress(owner, "exercise-1");
   await exercises.progress(owner, "exercise-1", { limit: 4, unit: "lb" });
   assert.throws(() => exercises.progress(owner, "exercise-1", { from: "not-a-date" }), /start date/);
-  await exercises.create(owner, { name: "  Bench press  " });
+  await exercises.create(owner, {
+    name: "  Bench press  ",
+    muscles: [{ muscleGroup: "chest", role: "primary", weight: 1 }],
+  });
   assert.equal(await exercises.update(owner, "missing", { name: "x" }), null);
   await exercises.update(owner, "exercise-1", {
     name: "Incline press",

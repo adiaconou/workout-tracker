@@ -169,6 +169,19 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
     body: { equipment: allEquipment, sessionDurationMin: 60 },
   }), 200);
 
+  const untaggedExercise = await request("/api/v1/exercises", {
+    method: "POST",
+    body: {
+      name: "Editor untagged movement",
+      equipment: "bodyweight",
+      movementPattern: "other",
+      muscles: [{ muscleGroup: "core", role: "secondary", weight: 0.5 }],
+    },
+  });
+  expectStatus(untaggedExercise, 400);
+  assert.equal(untaggedExercise.body.error.code, "exercise_invalid");
+  assert.match(untaggedExercise.body.error.message, /primary muscle is required/i);
+
   const createdExercise = expectStatus(await request("/api/v1/exercises", {
     method: "POST",
     body: {
@@ -188,6 +201,17 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
     method: "POST",
     body: { code: "Q", version: original },
   }), 201).routine;
+  expectStatus(await request("/api/v1/routines", {
+    method: "POST",
+    body: {
+      code: "UNUSED",
+      version: {
+        ...original,
+        focus: "Unused routine",
+        summary: "This routine intentionally has no workout history.",
+      },
+    },
+  }), 201);
   assert.equal(createdRoutine.currentVersion.exercises.length, 2);
   assert.equal(createdRoutine.currentVersion.exercises[0].exerciseId, createdRoutine.currentVersion.exercises[1].exerciseId);
 
@@ -554,7 +578,7 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
   }), 200);
   const replacement = expectStatus(await request("/api/v1/workouts", {
     method: "POST",
-    body: { routineId: "A", abandonActive: true },
+    body: { routineId: "UNUSED", abandonActive: true },
   }), 201);
   const replacedSession = await database.prepare(`SELECT status, body_weight AS bodyWeight,
     body_weight_source AS bodyWeightSource, weight_unit AS weightUnit
@@ -591,7 +615,7 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
 
   const laterStarted = expectStatus(await request("/api/v1/workouts", {
     method: "POST",
-    body: { routineId: "B" },
+    body: { routineId: "UNUSED" },
   }), 201);
   const laterWorkout = expectStatus(await request(`/api/v1/workouts/${laterStarted.session.id}`), 200).workout;
   assert.equal(laterWorkout.bodyWeight, 95);

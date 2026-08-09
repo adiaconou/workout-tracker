@@ -65,6 +65,7 @@ const equipmentLabelById = new Map(
 
 const requirementsByStoredEquipment: Record<string, EquipmentRequirement> = {
   bodyweight: { allOf: ["bodyweight"] },
+  bench: { allOf: ["bench"] },
   bench_and_bodyweight: { allOf: ["bodyweight", "bench"] },
   dumbbell: { allOf: ["dumbbells"] },
   dumbbells: { allOf: ["dumbbells"] },

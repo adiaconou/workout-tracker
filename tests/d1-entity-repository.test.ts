@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { convertWeight } from "../src/domain/exercise-progress";
+import { normalizeExerciseName } from "../src/domain/entities/exercise";
+import { homeGymExercises } from "../src/domain/home-gym-exercises";
 import { D1EntityRepository } from "../src/server/db/entity-repository";
 import { ensureEntityData, ensureEntitySchema, materializeWorkoutFromSnapshot } from "../src/server/db/entity-schema";
 import { getPreviousPerformanceByExercise } from "../src/server/db/previous-performance";
@@ -632,7 +634,100 @@ test("exercise progress returns owner-scoped historical best working sets and re
   }
 });
 
-test("D1 entity repository seeds, versions, publishes, materializes, discards, and archives normalized entities", async () => {
+test("default exercise provisioning adopts only generated legacy rows and preserves owner changes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "workout-default-exercises-"));
+  const database = join(directory, "defaults.sqlite");
+  const sqlite = new DatabaseSync(database);
+  const d1 = new SqliteD1(sqlite) as unknown as D1Database;
+  const owner = "defaults@example.com";
+  const legacyTemplate = homeGymExercises[0]!;
+  const collidingTemplate = homeGymExercises[1]!;
+  const legacyNormalizedName = normalizeExerciseName(legacyTemplate.name);
+  const collisionNormalizedName = normalizeExerciseName(collidingTemplate.name);
+  const legacyId = `${owner}::catalog::${encodeURIComponent(legacyNormalizedName)}`;
+  const generatedCollisionId = `${owner}::home-gym::${encodeURIComponent(collisionNormalizedName)}`;
+  const now = "2026-08-09T12:00:00.000Z";
+  try {
+    await ensureEntitySchema(d1);
+    await d1.prepare(`INSERT INTO exercise_catalog (
+      id, owner_email, name, normalized_name, equipment, movement_pattern,
+      tracking_type, default_load_type, side_mode, instructions, origin,
+      template_key, is_active, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'custom', NULL, ?, ?, ?)`).bind(
+      legacyId,
+      owner,
+      "My renamed archived pull-up",
+      "my renamed archived pull-up",
+      legacyTemplate.equipment,
+      legacyTemplate.movementPattern,
+      legacyTemplate.trackingType,
+      legacyTemplate.defaultLoadType,
+      legacyTemplate.sideMode,
+      0,
+      now,
+      now,
+    ).run();
+    await d1.prepare(`INSERT INTO exercise_catalog (
+      id, owner_email, name, normalized_name, equipment, movement_pattern,
+      tracking_type, default_load_type, side_mode, instructions, origin,
+      template_key, is_active, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 'other', 'other', 'reps', 'external', 'bilateral',
+      '', 'custom', NULL, 1, ?, ?)`).bind(
+      "custom-name-collision",
+      owner,
+      collidingTemplate.name,
+      collisionNormalizedName,
+      now,
+      now,
+    ).run();
+
+    await ensureEntityData(d1, owner);
+
+    const migratedLegacyDefault = await d1.prepare(`SELECT name, origin,
+      template_key AS templateKey, is_active AS isActive
+      FROM exercise_catalog WHERE id = ? AND owner_email = ?`)
+      .bind(legacyId, owner)
+      .first();
+    assert.deepEqual(
+      { ...migratedLegacyDefault },
+      {
+        name: "My renamed archived pull-up",
+        origin: "default",
+        templateKey: `home-gym:${encodeURIComponent(legacyNormalizedName)}`,
+        isActive: 0,
+      },
+      "a generated legacy default keeps the owner's rename and archive state",
+    );
+    const preservedCustom = await d1.prepare(`SELECT origin,
+      template_key AS templateKey FROM exercise_catalog
+      WHERE id = ? AND owner_email = ?`)
+      .bind("custom-name-collision", owner)
+      .first();
+    assert.deepEqual(
+      { ...preservedCustom },
+      { origin: "custom", templateKey: null },
+      "a UUID-style custom exercise is not reclassified because its name matches a default",
+    );
+    assert.equal(
+      await d1.prepare("SELECT id FROM exercise_catalog WHERE id = ? AND owner_email = ?")
+        .bind(generatedCollisionId, owner)
+        .first(),
+      null,
+      "the name uniqueness rule avoids adding a duplicate default beside the custom exercise",
+    );
+    assert.equal(
+      Number((await d1.prepare("SELECT COUNT(*) AS count FROM exercise_catalog WHERE owner_email = ?")
+        .bind(owner)
+        .first<{ count: number }>())?.count),
+      homeGymExercises.length,
+    );
+  } finally {
+    sqlite.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("D1 entity repository provisions exercises, versions, publishes, materializes, discards, and archives normalized entities", async () => {
   const directory = await mkdtemp(join(tmpdir(), "workout-d1-repository-"));
   const database = join(directory, "repository.sqlite");
   const sqlite = new DatabaseSync(database);
@@ -650,13 +745,12 @@ test("D1 entity repository seeds, versions, publishes, materializes, discards, a
 
     const seededExercises = await repository.listExercises(owner);
     const seededRoutines = await repository.listRoutineAggregates(owner);
-    assert.ok(seededExercises.length >= 70);
+    assert.equal(seededExercises.length, homeGymExercises.length);
     assert.ok(seededExercises.some((exercise) => exercise.name === "Machine chest press"));
     assert.ok(seededExercises.some((exercise) => exercise.name === "Kettlebell Turkish get-up"));
     assert.ok(seededExercises.some((exercise) => exercise.name === "EZ-bar biceps curl"));
     assert.ok(seededExercises.every((exercise) => !exercise.isFavorite));
-    assert.equal(seededRoutines.length, 4);
-    assert.ok(seededRoutines.every((routine) => routine.currentVersion?.status === "published"));
+    assert.equal(seededRoutines.length, 0, "a new owner must not receive starter routines");
 
     await assert.rejects(
       () => repository.createRoutine(

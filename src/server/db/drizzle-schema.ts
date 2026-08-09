@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 import {
   currentOnboardingVersion,
@@ -90,6 +91,49 @@ export const routines = sqliteTable(
   ],
 );
 
+export const routinePrograms = sqliteTable(
+  "routine_programs",
+  {
+    id: text("id").primaryKey(),
+    ownerEmail: text("owner_email").notNull(),
+    name: text("name").notNull(),
+    goal: text("goal").notNull(),
+    selectedMuscleGroupsJson: text("selected_muscle_groups_json").notNull().default("[]"),
+    trainingDaysPerWeek: integer("training_days_per_week").notNull(),
+    targetDurationMin: integer("target_duration_min").notNull(),
+    isActive: integer("is_active", { mode: "boolean" }).notNull().default(false),
+    idempotencyKey: text("idempotency_key"),
+    requestFingerprint: text("request_fingerprint").notNull().default(""),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("routine_programs_owner_idempotency_idx").on(
+      table.ownerEmail,
+      table.idempotencyKey,
+    ),
+    uniqueIndex("routine_programs_one_active_owner_idx")
+      .on(table.ownerEmail)
+      .where(sql`${table.isActive} = 1`),
+    index("routine_programs_owner_updated_idx").on(table.ownerEmail, table.updatedAt),
+  ],
+);
+
+export const routineProgramRoutines = sqliteTable(
+  "routine_program_routines",
+  {
+    programId: text("program_id").notNull().references(() => routinePrograms.id, { onDelete: "cascade" }),
+    routineId: text("routine_id").notNull().references(() => routines.id, { onDelete: "restrict" }),
+    position: integer("position").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.programId, table.routineId] }),
+    uniqueIndex("routine_program_routines_position_idx").on(table.programId, table.position),
+    index("routine_program_routines_routine_idx").on(table.routineId),
+  ],
+);
+
 export const exercises = sqliteTable(
   "exercises",
   {
@@ -133,12 +177,15 @@ export const exerciseCatalog = sqliteTable(
     defaultLoadType: text("default_load_type").notNull().default("external"),
     sideMode: text("side_mode").notNull().default("bilateral"),
     instructions: text("instructions").notNull().default(""),
+    origin: text("origin").notNull().default("custom"),
+    templateKey: text("template_key"),
     isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
   (table) => [
     uniqueIndex("exercise_catalog_owner_name_idx").on(table.ownerEmail, table.normalizedName),
+    uniqueIndex("exercise_catalog_owner_template_idx").on(table.ownerEmail, table.templateKey),
     index("exercise_catalog_owner_active_idx").on(table.ownerEmail, table.isActive),
   ],
 );

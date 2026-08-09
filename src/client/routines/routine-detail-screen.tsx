@@ -1,14 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AppState,
   BackHandler,
   Modal,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { router, useFocusEffect } from "expo-router";
@@ -28,16 +26,19 @@ import {
 import { colors, radii, spacing } from "../ui/tokens";
 import {
   createRoutineExerciseFromLibrary,
-  duplicateRoutineSet,
   editableRoutineFromVersion,
   moveRoutineExercise,
-  moveRoutineSet,
   removeRoutineExercise,
-  removeRoutineSet,
   type EditableRoutine,
   type EditableRoutineExercise,
   type EditableRoutineSet,
 } from "./routine-exercise-editing";
+import {
+  duplicateRoutineSetPreservingTransition,
+  moveRoutineSetPreservingTransition,
+  removeRoutineSetPreservingTransition,
+} from "./routine-creation-model";
+import { ExerciseLibraryPicker } from "./exercise-library-picker";
 import {
   createRoutineEditorSaveRequest,
   deriveRoutineEditorModel,
@@ -96,7 +97,6 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
   const [exerciseLibrary, setExerciseLibrary] = useState<Exercise[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [libraryError, setLibraryError] = useState("");
-  const [libraryQuery, setLibraryQuery] = useState("");
   const [expandedExerciseIds, setExpandedExerciseIds] = useState<Set<string>>(() => new Set());
   const [expandedSetIds, setExpandedSetIds] = useState<Set<string>>(() => new Set());
   const [activeRoutineCode, setActiveRoutineCode] = useState<string | null>(null);
@@ -193,10 +193,6 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
   const { validationError, canSave } = editorModel;
   editorState.current = editorModel.snapshot;
   const savedDrafts = versions.filter((version) => version.status === "draft");
-  const availableExercises = useMemo(() => {
-    const query = libraryQuery.trim().toLowerCase();
-    return exerciseLibrary.filter((exercise) => !query || exerciseSearchText(exercise).includes(query));
-  }, [exerciseLibrary, libraryQuery]);
 
   useEffect(() => {
     if (!dirty || saving) return;
@@ -382,7 +378,7 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
     if (saving) return;
     const exercise = draft?.exercises[exerciseIndex];
     if (!exercise) return;
-    patchExercise(exerciseIndex, { sets: moveRoutineSet(exercise.sets, setIndex, direction) });
+    patchExercise(exerciseIndex, { sets: moveRoutineSetPreservingTransition(exercise.sets, setIndex, direction) });
   }
 
   function removeSet(exerciseIndex: number, setIndex: number) {
@@ -390,7 +386,7 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
     const exercise = draft?.exercises[exerciseIndex];
     const draftId = exercise?.sets[setIndex]?.draftId;
     if (!exercise) return;
-    patchExercise(exerciseIndex, { sets: removeRoutineSet(exercise.sets, setIndex) });
+    patchExercise(exerciseIndex, { sets: removeRoutineSetPreservingTransition(exercise.sets, setIndex) });
     if (draftId) setExpandedSetIds((current) => withoutId(current, draftId));
   }
 
@@ -399,7 +395,7 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
     const exercise = draft?.exercises[exerciseIndex];
     if (!exercise) return;
     patchExercise(exerciseIndex, {
-      sets: duplicateRoutineSet(exercise.sets, afterIndex ?? exercise.sets.length - 1),
+      sets: duplicateRoutineSetPreservingTransition(exercise.sets, afterIndex ?? exercise.sets.length - 1),
     });
   }
 
@@ -425,22 +421,31 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
   }
 
   function openExerciseLibrary() {
-    setLibraryQuery("");
     setLibraryError("");
     setShowExerciseLibrary(true);
     void loadExerciseLibrary();
   }
 
-  function addExercise(exercise: Exercise) {
+  function addExercises(exercises: Exercise[]) {
     if (saving) return;
-    const placement = createRoutineExerciseFromLibrary(exercise, (draft?.exercises.length ?? 0) + 1);
+    const startPosition = (draft?.exercises.length ?? 0) + 1;
+    const placements = exercises.map((exercise, index) => (
+      createRoutineExerciseFromLibrary(exercise, startPosition + index)
+    ));
     setDraft((current) => current
-      ? { ...current, exercises: [...current.exercises, placement] }
+      ? { ...current, exercises: [...current.exercises, ...placements] }
       : current);
-    setExpandedExerciseIds((current) => new Set(current).add(placement.draftId));
-    setExpandedSetIds((current) => new Set(current).add(placement.sets[0]!.draftId));
+    setExpandedExerciseIds((current) => {
+      const next = new Set(current);
+      for (const placement of placements) next.add(placement.draftId);
+      return next;
+    });
+    setExpandedSetIds((current) => {
+      const next = new Set(current);
+      for (const placement of placements) if (placement.sets[0]) next.add(placement.sets[0].draftId);
+      return next;
+    });
     setShowExerciseLibrary(false);
-    setLibraryQuery("");
   }
 
   if (loading) return <LoadingView label={`Loading Routine ${routineId}…`} />;
@@ -675,18 +680,16 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
         started workouts keep their original snapshot.
       </Body>
 
-      <ExerciseLibraryModal
+      <ExerciseLibraryPicker
         visible={showExerciseLibrary}
-        routineCode={routine.code}
-        exercises={availableExercises}
-        selected={draft.exercises}
-        query={libraryQuery}
+        title={`Add to Routine ${routine.code}`}
+        exercises={exerciseLibrary}
+        existingExerciseIds={draft.exercises.map((exercise) => exercise.exerciseId)}
         loading={libraryLoading}
         error={libraryError}
-        onQuery={setLibraryQuery}
         onClose={() => setShowExerciseLibrary(false)}
         onRetry={() => void loadExerciseLibrary()}
-        onAdd={addExercise}
+        onAdd={addExercises}
       />
 
       <Modal
@@ -972,106 +975,6 @@ function ReadOnlySet({ set }: { set: RoutineVersion["exercises"][number]["sets"]
   );
 }
 
-function ExerciseLibraryModal({
-  visible,
-  routineCode,
-  exercises,
-  selected,
-  query,
-  loading,
-  error,
-  onQuery,
-  onClose,
-  onRetry,
-  onAdd,
-}: {
-  visible: boolean;
-  routineCode: string;
-  exercises: Exercise[];
-  selected: EditableRoutineExercise[];
-  query: string;
-  loading: boolean;
-  error: string;
-  onQuery: (value: string) => void;
-  onClose: () => void;
-  onRetry: () => void;
-  onAdd: (exercise: Exercise) => void;
-}) {
-  const [focusedExerciseId, setFocusedExerciseId] = useState<string | null>(null);
-  return (
-    <Modal
-      transparent
-      animationType="slide"
-      visible={visible}
-      accessibilityLabel={`Add exercise to Routine ${routineCode}`}
-      accessibilityViewIsModal
-      onRequestClose={onClose}
-    >
-      <View style={styles.modalBackdrop}>
-        <Card style={[styles.dialog, styles.libraryDialog]}>
-          <View style={styles.libraryHeader}>
-            <View style={styles.addExerciseCopy}>
-              <Eyebrow>Exercise library</Eyebrow>
-              <Heading size="medium">Add to Routine {routineCode}</Heading>
-            </View>
-            <Button title="Close" compact variant="ghost" onPress={onClose} />
-          </View>
-          <TextInput
-            accessibilityLabel="Search exercise library"
-            value={query}
-            onChangeText={onQuery}
-            placeholder="Search by exercise, equipment, or muscle"
-            placeholderTextColor={colors.textDim}
-            autoCapitalize="none"
-            autoCorrect={false}
-            clearButtonMode="while-editing"
-            style={styles.librarySearch}
-          />
-          {error ? (
-            <><Message>{error}</Message><Button title="Try again" compact variant="secondary" onPress={onRetry} /></>
-          ) : loading ? (
-            <LoadingView label="Loading exercise library…" />
-          ) : (
-            <>
-              <Body muted style={styles.libraryCount}>{exercises.length} available · repeated placements are allowed</Body>
-              <ScrollView style={styles.libraryList} contentContainerStyle={styles.libraryListContent} keyboardShouldPersistTaps="handled">
-                {exercises.length ? exercises.map((exercise) => {
-                  const occurrences = selected.filter((placement) => placement.exerciseId === exercise.id).length;
-                  return (
-                    <Pressable
-                      key={exercise.id}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Add ${exercise.name} to Routine ${routineCode}`}
-                      onBlur={() => setFocusedExerciseId(null)}
-                      onFocus={() => setFocusedExerciseId(exercise.id)}
-                      onPress={() => onAdd(exercise)}
-                      style={({ pressed }) => [
-                        styles.libraryRow,
-                        pressed && styles.libraryRowPressed,
-                        focusedExerciseId === exercise.id && Platform.OS === "web" && styles.webFocusRing,
-                      ]}
-                    >
-                      <View style={styles.libraryRowCopy}>
-                        <Text style={styles.libraryName}>{exercise.isFavorite ? "★ " : ""}{exercise.name}</Text>
-                        <Text style={styles.libraryMeta}>
-                          {exercise.equipment} · {exercise.movementPattern}{occurrences ? ` · already used ${occurrences}×` : ""}
-                        </Text>
-                      </View>
-                      <Text style={styles.libraryAdd}>{occurrences ? "Add again +" : "Add +"}</Text>
-                    </Pressable>
-                  );
-                }) : (
-                  <View style={styles.libraryEmpty}><Body>{query ? `No exercises match “${query}”.` : "Your exercise library is empty."}</Body></View>
-                )}
-              </ScrollView>
-            </>
-          )}
-        </Card>
-      </View>
-    </Modal>
-  );
-}
-
 function Fact({ label, value }: { label: string; value: string }) {
   return <View style={styles.fact}><Text style={styles.factLabel}>{label}</Text><Text style={styles.factValue}>{value}</Text></View>;
 }
@@ -1113,12 +1016,6 @@ function withoutId(current: Set<string>, id: string) {
   const next = new Set(current);
   next.delete(id);
   return next;
-}
-
-function exerciseSearchText(exercise: Exercise) {
-  return [exercise.name, exercise.equipment, exercise.movementPattern, ...exercise.muscles.map((muscle) => muscle.muscleGroup)]
-    .join(" ")
-    .toLowerCase();
 }
 
 const styles = StyleSheet.create({

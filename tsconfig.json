@@ -7,16 +7,21 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": [
+        "./src/*"
+      ]
     },
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
   "include": [
     "src/**/*.ts",
     "src/**/*.tsx",
     "tests/**/*.ts",
     "expo-env.d.ts",
-    "cloudflare.d.ts"
+    "cloudflare.d.ts",
+    ".expo/types/**/*.ts"
   ],
   "exclude": [
     "node_modules",

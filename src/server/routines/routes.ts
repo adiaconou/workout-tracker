@@ -127,8 +127,12 @@ export async function handleRoutines({ request, user, segments }: RouteContext) 
     );
   }
   if (operation.kind === "versions_list") {
+    const routine = await service.get(user.email, operation.routineId);
+    if (!routine) {
+      return apiError(request, 404, "routine_not_found", "Routine not found.");
+    }
     return apiResponse(request, {
-      versions: await service.listVersions(user.email, operation.routineId),
+      versions: await service.listVersions(user.email, routine.id),
     });
   }
   if (operation.kind === "version_create") {
