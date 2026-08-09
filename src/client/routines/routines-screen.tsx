@@ -61,32 +61,32 @@ type AvailabilityKeyPosition = {
   maxHeight: number;
 };
 
-const AVAILABILITY_KEY: Array<{
-  kind: RoutineAvailabilityKind;
+type AvailabilityKeyCopy = {
   label: string;
   description: string;
-}> = [
-  {
-    kind: "recommended",
+};
+
+const AVAILABILITY_KEY = {
+  recommended: {
     label: "Recommended",
     description: "Best available option for today’s rolling plan.",
   },
-  {
-    kind: "available",
+  available: {
     label: "Available",
     description: "Equipment is available with lower recent muscle overlap.",
   },
-  {
-    kind: "caution",
+  caution: {
     label: "Use caution",
     description: "Recent muscle overlap or missing guidance; you can still start.",
   },
-  {
-    kind: "unavailable",
+  unavailable: {
     label: "Unavailable",
     description: "Required equipment is not in your Training setup.",
   },
-];
+} satisfies Record<RoutineAvailabilityKind, AvailabilityKeyCopy>;
+
+const AVAILABILITY_KEY_ENTRIES = (Object.keys(AVAILABILITY_KEY) as RoutineAvailabilityKind[])
+  .map((kind) => ({ kind, ...AVAILABILITY_KEY[kind] }));
 
 export function RoutinesScreen() {
   const { height, width } = useWindowDimensions();
@@ -272,7 +272,7 @@ export function RoutinesScreen() {
   };
 
   return (
-    <Screen safeTop={false} contentStyle={styles.screenContent}>
+    <Screen scroll={false} safeTop={false} contentStyle={styles.screenContent}>
       <View style={styles.header}>
         <Heading>Routines</Heading>
         <View style={styles.headerActions}>
@@ -300,7 +300,7 @@ export function RoutinesScreen() {
       ) : null}
 
       {data ? (
-        <>
+        <View style={styles.dataContent}>
           {error ? (
             <View style={styles.refreshError}>
               <View style={styles.refreshErrorCopy}>
@@ -439,53 +439,58 @@ export function RoutinesScreen() {
               {compactLayout ? (
                 <Text style={styles.sortLabel}>Last done · newest first</Text>
               ) : null}
-              <View role={compactLayout ? "list" : "table"} style={styles.table}>
-                {!compactLayout ? (
-                  <View role="row" style={styles.tableHeader}>
-                    <Text role="columnheader" style={[styles.headerCell, styles.routineSummaryCell]}>Routine</Text>
-                    <Text role="columnheader" style={[styles.headerCell, styles.lastDoneColumn]}>Last done ↓</Text>
-                    <View role="columnheader" style={styles.availabilityColumn}>
-                      <AvailabilityKeyTrigger
-                        open={availabilityKeyOpen}
-                        onPress={toggleAvailabilityKey}
-                      />
+              <View style={styles.table}>
+                <ScrollView
+                  role={compactLayout ? "list" : "table"}
+                  style={styles.routineListScroll}
+                  keyboardShouldPersistTaps="handled"
+                  stickyHeaderIndices={compactLayout ? undefined : [0]}
+                >
+                  {!compactLayout ? (
+                    <View role="row" style={styles.tableHeader}>
+                      <Text role="columnheader" style={[styles.headerCell, styles.routineSummaryCell]}>Routine</Text>
+                      <Text role="columnheader" style={[styles.headerCell, styles.lastDoneColumn]}>Last done ↓</Text>
+                      <View role="columnheader" style={styles.availabilityColumn}>
+                        <AvailabilityKeyTrigger
+                          open={availabilityKeyOpen}
+                          onPress={toggleAvailabilityKey}
+                        />
+                      </View>
+                      <Text role="columnheader" style={[styles.headerCell, styles.actionsColumn]}>Actions</Text>
                     </View>
-                    <Text role="columnheader" style={[styles.headerCell, styles.actionsColumn]}>Actions</Text>
-                  </View>
-                ) : null}
-                {sortedRoutines.map((routine) => {
-                  const guidance = recommendation?.routines.find(
-                    (item) => item.code === routine.code,
-                  );
-                  const availabilityKind = routineAvailabilityKind(guidance);
-                  const defaultAvailability = AVAILABILITY_KEY.find(
-                    (item) => item.kind === availabilityKind,
-                  )!;
-                  const availabilityDescription = guidance?.availabilityReason
-                    ?? defaultAvailability.description;
-                  const active = data.activeWorkout?.routineCode === routine.code;
-                  return (
-                    <RoutineListRow
-                      key={routine.code}
-                      active={active}
-                      availabilityDescription={availabilityDescription}
-                      availabilityKind={availabilityKind}
-                      compact={compactLayout}
-                      expanded={expandedRoutineCode === routine.code}
-                      now={renderedAt}
-                      routine={routine}
-                      startDisabled={
-                        Boolean(startingRoutineCode) ||
-                        (availabilityKind === "unavailable" && !active)
-                      }
-                      starting={startingRoutineCode === routine.code}
-                      onOpen={() => router.push(`/routines/${encodeURIComponent(routine.code)}`)}
-                      onStart={() => void startWorkout(routine.code)}
-                      onToggle={() => setExpandedRoutineCode((current) =>
-                        current === routine.code ? null : routine.code)}
-                    />
-                  );
-                })}
+                  ) : null}
+                  {sortedRoutines.map((routine) => {
+                    const guidance = recommendation?.routines.find(
+                      (item) => item.code === routine.code,
+                    );
+                    const availabilityKind = routineAvailabilityKind(guidance);
+                    const defaultAvailability = AVAILABILITY_KEY[availabilityKind];
+                    const availabilityDescription = guidance?.availabilityReason
+                      ?? defaultAvailability.description;
+                    const active = data.activeWorkout?.routineCode === routine.code;
+                    return (
+                      <RoutineListRow
+                        key={routine.code}
+                        active={active}
+                        availabilityDescription={availabilityDescription}
+                        availabilityKind={availabilityKind}
+                        compact={compactLayout}
+                        expanded={expandedRoutineCode === routine.code}
+                        now={renderedAt}
+                        routine={routine}
+                        startDisabled={
+                          Boolean(startingRoutineCode) ||
+                          (availabilityKind === "unavailable" && !active)
+                        }
+                        starting={startingRoutineCode === routine.code}
+                        onOpen={() => router.push(`/routines/${encodeURIComponent(routine.code)}`)}
+                        onStart={() => void startWorkout(routine.code)}
+                        onToggle={() => setExpandedRoutineCode((current) =>
+                          current === routine.code ? null : routine.code)}
+                      />
+                    );
+                  })}
+                </ScrollView>
               </View>
             </>
           ) : (
@@ -564,7 +569,7 @@ export function RoutinesScreen() {
               />
             </View>
           </Modal>
-        </>
+        </View>
       ) : null}
     </Screen>
   );
@@ -608,9 +613,7 @@ function RoutineListRow({
   const lastDoneLabel = routineLastDoneLabel(routine.lastWorkoutAt, { now });
   const description = routine.summary.trim() || "No description has been added.";
   const descriptionLabelId = `routine-${routine.code.replace(/[^a-z0-9_-]/gi, "-")}-description-label`;
-  const availabilityLabel = AVAILABILITY_KEY.find(
-    (item) => item.kind === availabilityKind,
-  )!.label;
+  const availabilityLabel = AVAILABILITY_KEY[availabilityKind].label;
 
   const actions = (
     <View
@@ -755,7 +758,7 @@ function AvailabilityIcon({
   kind: RoutineAvailabilityKind;
   decorative?: boolean;
 }) {
-  const entry = AVAILABILITY_KEY.find((item) => item.kind === kind)!;
+  const entry = AVAILABILITY_KEY[kind];
   const glyph = kind === "recommended"
     ? "★"
     : kind === "available"
@@ -880,7 +883,7 @@ function AvailabilityKeyPanel({
         style={styles.availabilityKeyScroll}
         contentContainerStyle={styles.availabilityKeyItems}
       >
-        {AVAILABILITY_KEY.map((entry) => (
+        {AVAILABILITY_KEY_ENTRIES.map((entry) => (
           <View
             key={entry.kind}
             style={[styles.availabilityKeyItem, compact && styles.availabilityKeyItemCompact]}
@@ -898,7 +901,15 @@ function AvailabilityKeyPanel({
 }
 
 const styles = StyleSheet.create({
-  screenContent: { paddingTop: spacing.lg, gap: spacing.md },
+  screenContent: {
+    flex: 1,
+    minHeight: 0,
+    overflow: "hidden",
+    paddingTop: spacing.lg,
+    paddingBottom: spacing.md,
+    gap: spacing.md,
+  },
+  dataContent: { flex: 1, minHeight: 0, gap: spacing.md },
   header: {
     flexDirection: "row",
     alignItems: "flex-end",
@@ -1022,13 +1033,17 @@ const styles = StyleSheet.create({
     marginTop: spacing.xs,
   },
   table: {
+    flex: 1,
+    minHeight: 0,
     overflow: "hidden",
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
     borderRadius: radii.md,
     backgroundColor: colors.surface,
   },
+  routineListScroll: { flex: 1, minHeight: 0 },
   tableHeader: {
+    zIndex: 1,
     minHeight: 44,
     flexDirection: "row",
     alignItems: "center",

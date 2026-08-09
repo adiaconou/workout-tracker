@@ -1,4 +1,7 @@
-import type { RoutineRecommendation } from "../../domain/recommendations";
+import type {
+  AvailabilityStatus,
+  RoutineRecommendation,
+} from "../../domain/recommendations";
 
 type RoutineLastDoneOptions = {
   now?: Date;
@@ -9,11 +12,7 @@ type RoutineWithLastWorkout = {
   lastWorkoutAt: string | null;
 };
 
-export type RoutineAvailabilityKind =
-  | "recommended"
-  | "available"
-  | "caution"
-  | "unavailable";
+export type RoutineAvailabilityKind = AvailabilityStatus;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_ROUTINE_TITLE_LENGTH = 30;
