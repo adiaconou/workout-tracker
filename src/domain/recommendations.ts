@@ -43,7 +43,7 @@ export const EXERCISE_MUSCLES: Record<RoutineCode, Record<number, MuscleWeights>
   A: {
     1: { back: 1, biceps: 0.45, grip: 0.25 },
     2: { chest: 1, triceps: 0.6, shoulders: 0.45 },
-    3: { back: 1, biceps: 0.5 },
+    3: { back: 1, biceps: 0.5, grip: 0.25 },
     4: { chest: 1, triceps: 0.5, shoulders: 0.35 },
     5: { core: 1 },
     6: { triceps: 1 },
@@ -52,24 +52,24 @@ export const EXERCISE_MUSCLES: Record<RoutineCode, Record<number, MuscleWeights>
     1: { back: 1, biceps: 0.5, grip: 0.25 },
     2: { shoulders: 1, triceps: 0.55 },
     3: { chest: 1, shoulders: 0.6, triceps: 0.4 },
-    4: { back: 1, biceps: 0.5 },
+    4: { back: 1, biceps: 0.5, grip: 0.25 },
     5: { shoulders: 1 },
     6: { biceps: 1 },
     7: { core: 1, grip: 0.3 },
   },
   C: {
-    1: { glutes: 1, hamstrings: 0.7, core: 0.3 },
+    1: { glutes: 1, hamstrings: 0.7, core: 0.3, grip: 0.3 },
     2: { quads: 1, glutes: 0.7, core: 0.3 },
-    3: { hamstrings: 1, glutes: 0.8 },
+    3: { hamstrings: 1, glutes: 0.8, grip: 0.35 },
     4: { quads: 0.8, glutes: 1, hamstrings: 0.3 },
     5: { core: 1 },
-    6: { core: 1 },
+    6: { core: 1, shoulders: 0.25 },
   },
   D: {
     1: { back: 1, biceps: 0.5, grip: 0.3 },
     2: { chest: 1, triceps: 0.8, shoulders: 0.5 },
-    3: { back: 1, biceps: 0.4 },
-    4: { back: 1, biceps: 0.4 },
+    3: { back: 1, biceps: 0.4, grip: 0.2 },
+    4: { back: 1, biceps: 0.4, grip: 0.2 },
     5: { shoulders: 1, back: 0.35 },
     6: { biceps: 1 },
     7: { triceps: 1 },
@@ -78,10 +78,10 @@ export const EXERCISE_MUSCLES: Record<RoutineCode, Record<number, MuscleWeights>
 };
 
 const ROUTINE_PROFILES: Record<RoutineCode, MuscleWeights> = {
-  A: { back: 8, chest: 7, shoulders: 3, biceps: 3, triceps: 5, core: 3, grip: 1 },
-  B: { back: 7, chest: 3, shoulders: 7, biceps: 5, triceps: 3, core: 3, grip: 1 },
-  C: { quads: 6, hamstrings: 6, glutes: 10, core: 6 },
-  D: { back: 16, chest: 3, shoulders: 5, biceps: 8, triceps: 5, core: 3, grip: 3 },
+  A: { back: 8, chest: 7, shoulders: 3, biceps: 3, triceps: 5, core: 3, grip: 2 },
+  B: { back: 7, chest: 3, shoulders: 7, biceps: 5, triceps: 3, core: 3, grip: 2 },
+  C: { quads: 6, hamstrings: 6, glutes: 10, shoulders: 1, core: 6, grip: 2 },
+  D: { back: 16, chest: 3, shoulders: 5, biceps: 8, triceps: 5, core: 3, grip: 4 },
 };
 
 const MUSCLE_LABELS: Record<MuscleGroup, string> = {

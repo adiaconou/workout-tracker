@@ -5,8 +5,13 @@ import {
 } from "../../domain/workout";
 import { EXERCISE_MUSCLES, type RoutineCode } from "../../domain/recommendations";
 import { homeGymExercises } from "../../domain/home-gym-exercises";
-import { normalizeExerciseName, type MuscleGroup } from "../../domain/entities/exercise";
+import {
+  normalizeExerciseName,
+  type ExerciseMuscle,
+  type MuscleGroup,
+} from "../../domain/entities/exercise";
 import { expandLegacyPrescription } from "../../domain/prescription";
+import { legacyRoutineExerciseMuscleTemplates } from "../../domain/routines";
 import {
   currentOnboardingVersion,
   legacyAllEquipmentJson,
@@ -352,6 +357,10 @@ function defaultExerciseTemplateKey(normalizedName: string) {
   return `home-gym:${encodeURIComponent(normalizedName)}`;
 }
 
+function legacyRoutineExerciseTemplateKey(normalizedName: string) {
+  return `legacy-routine:${encodeURIComponent(normalizedName)}`;
+}
+
 const defaultExerciseTemplateByName = new Map(
   homeGymExercises.map((exercise) => {
     const normalizedName = normalizeExerciseName(exercise.name);
@@ -477,6 +486,140 @@ async function ensureDefaultExerciseCatalog(d1: D1Database, ownerEmail: string) 
         .bind(exerciseId, muscle.muscleGroup, muscle.role, muscle.weight));
     }
     await d1.batch(statements);
+  }
+}
+
+type StoredExerciseMuscle = {
+  muscleGroup: MuscleGroup;
+  role: ExerciseMuscle["role"];
+  weight: number;
+};
+
+type StoredExerciseCatalog = {
+  id: string;
+  origin: string;
+  templateKey: string | null;
+  updatedAt: string;
+  muscles: StoredExerciseMuscle[];
+};
+
+function orderedExerciseMuscles(muscles: readonly ExerciseMuscle[]) {
+  return [...muscles].sort((left, right) => left.muscleGroup.localeCompare(right.muscleGroup));
+}
+
+function exerciseMusclesMatch(stored: StoredExerciseMuscle[], expected: readonly ExerciseMuscle[]) {
+  if (stored.length !== expected.length) return false;
+  const orderedStored = [...stored].sort((left, right) => left.muscleGroup.localeCompare(right.muscleGroup));
+  const orderedExpected = orderedExerciseMuscles(expected);
+  return orderedStored.every((muscle, index) => {
+    const expectedMuscle = orderedExpected[index];
+    return expectedMuscle !== undefined
+      && muscle.muscleGroup === expectedMuscle.muscleGroup
+      && muscle.role === expectedMuscle.role
+      && Number(muscle.weight) === expectedMuscle.weight;
+  });
+}
+
+function advancedTimestamp(current: string) {
+  const currentTime = Date.parse(current);
+  const now = Date.now();
+  return new Date(Number.isFinite(currentTime) ? Math.max(now, currentTime + 1) : now).toISOString();
+}
+
+async function synchronizeExerciseMuscles(
+  d1: D1Database,
+  ownerEmail: string,
+  stored: StoredExerciseCatalog,
+  expected: readonly ExerciseMuscle[],
+) {
+  if (exerciseMusclesMatch(stored.muscles, expected)) return;
+
+  const statements: D1PreparedStatement[] = [
+    d1.prepare("UPDATE exercise_catalog SET updated_at = ? WHERE id = ? AND owner_email = ?")
+      .bind(advancedTimestamp(stored.updatedAt), stored.id, ownerEmail),
+    d1.prepare("DELETE FROM exercise_muscles WHERE exercise_id = ?").bind(stored.id),
+  ];
+  for (const muscle of orderedExerciseMuscles(expected)) {
+    statements.push(d1.prepare(`INSERT INTO exercise_muscles
+      (exercise_id, muscle_group, role, weight) VALUES (?, ?, ?, ?)`)
+      .bind(stored.id, muscle.muscleGroup, muscle.role, muscle.weight));
+  }
+  await d1.batch(statements);
+}
+
+async function synchronizeCanonicalExerciseMuscles(d1: D1Database, ownerEmail: string) {
+  const rows = await d1.prepare(`SELECT catalog.id, catalog.origin,
+    catalog.template_key AS templateKey, catalog.updated_at AS updatedAt,
+    muscles.muscle_group AS muscleGroup, muscles.role, muscles.weight
+    FROM exercise_catalog catalog
+    LEFT JOIN exercise_muscles muscles ON muscles.exercise_id = catalog.id
+    WHERE catalog.owner_email = ? ORDER BY catalog.id, muscles.muscle_group`)
+    .bind(ownerEmail)
+    .all<{
+      id: string;
+      origin: string;
+      templateKey: string | null;
+      updatedAt: string;
+      muscleGroup: MuscleGroup | null;
+      role: ExerciseMuscle["role"] | null;
+      weight: number | null;
+    }>();
+  const catalogById = new Map<string, StoredExerciseCatalog>();
+  const catalogByTemplateKey = new Map<string, StoredExerciseCatalog>();
+  for (const row of rows.results) {
+    let stored = catalogById.get(row.id);
+    if (!stored) {
+      stored = {
+        id: row.id,
+        origin: row.origin,
+        templateKey: row.templateKey,
+        updatedAt: row.updatedAt,
+        muscles: [],
+      };
+      catalogById.set(stored.id, stored);
+      if (stored.templateKey) catalogByTemplateKey.set(stored.templateKey, stored);
+    }
+    if (row.muscleGroup !== null && row.role !== null && row.weight !== null) {
+      stored.muscles.push({
+        muscleGroup: row.muscleGroup,
+        role: row.role,
+        weight: Number(row.weight),
+      });
+    }
+  }
+
+  for (const exercise of homeGymExercises) {
+    const normalizedName = normalizeExerciseName(exercise.name);
+    const encodedName = encodeURIComponent(normalizedName);
+    const templateKey = defaultExerciseTemplateKey(normalizedName);
+    const provenDefaults = new Map(
+      [
+        catalogByTemplateKey.get(templateKey),
+        catalogById.get(`${ownerEmail}::home-gym::${encodedName}`),
+        catalogById.get(`${ownerEmail}::catalog::${encodedName}`),
+      ]
+        .filter((stored): stored is StoredExerciseCatalog => stored !== undefined)
+        .map((stored) => [stored.id, stored]),
+    );
+    for (const stored of provenDefaults.values()) {
+      await synchronizeExerciseMuscles(d1, ownerEmail, stored, exercise.muscles ?? []);
+    }
+  }
+
+  for (const template of legacyRoutineExerciseMuscleTemplates) {
+    const normalizedName = normalizeExerciseName(template.name);
+    const exerciseId = `${ownerEmail}::catalog::${encodeURIComponent(normalizedName)}`;
+    const templateKey = legacyRoutineExerciseTemplateKey(normalizedName);
+    const stored = catalogById.get(exerciseId);
+    if (!stored) continue;
+
+    if (stored.origin !== "default" || stored.templateKey !== templateKey) {
+      await d1.prepare(`UPDATE exercise_catalog SET origin = 'default', template_key = ?
+        WHERE id = ? AND owner_email = ?`)
+        .bind(templateKey, stored.id, ownerEmail)
+        .run();
+    }
+    await synchronizeExerciseMuscles(d1, ownerEmail, stored, template.muscles);
   }
 }
 
@@ -685,6 +828,7 @@ export async function materializeWorkoutFromSnapshot(d1: D1Database, ownerEmail:
 export async function ensureEntityData(d1: D1Database, ownerEmail: string) {
   await ensureDefaultExerciseCatalog(d1, ownerEmail);
   await normalizeExistingRoutineData(d1, ownerEmail);
+  await synchronizeCanonicalExerciseMuscles(d1, ownerEmail);
   await materializeExistingWorkoutData(d1, ownerEmail);
 }
 

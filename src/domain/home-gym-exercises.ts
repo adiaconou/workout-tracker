@@ -120,7 +120,7 @@ export const homeGymExercises: ExerciseInput[] = [
     "low_cable",
     "horizontal_pull",
     "Use a single handle on the low pulley. Keep your torso square and pull the elbow toward the hip without rotating.",
-    [primary("back"), secondary("biceps", 0.4)],
+    [primary("back"), secondary("biceps", 0.4), secondary("grip", 0.2)],
     { sideMode: "per_side" },
   ),
   exercise(
@@ -212,7 +212,7 @@ export const homeGymExercises: ExerciseInput[] = [
     "dumbbell_and_bench",
     "shoulder_extension",
     "Lie lengthwise on the bench and hold one dumbbell over the chest. Lower it behind the head with ribs controlled, then pull it back over the chest.",
-    [primary("back"), secondary("chest", 0.45), secondary("triceps", 0.2)],
+    [primary("chest"), secondary("back", 0.4), secondary("triceps", 0.4)],
   ),
   exercise(
     "Seated dumbbell shoulder press",
@@ -261,7 +261,7 @@ export const homeGymExercises: ExerciseInput[] = [
     "dumbbell_and_bench",
     "elbow_extension",
     "Sit against the upright bench and hold one dumbbell overhead. Keep the elbows pointing forward as you lower behind the head and extend.",
-    [primary("triceps"), secondary("core", 0.15)],
+    [primary("triceps")],
   ),
   exercise(
     "Goblet squat",
@@ -297,7 +297,7 @@ export const homeGymExercises: ExerciseInput[] = [
     "dumbbell",
     "carry",
     "Hold a dumbbell in each hand, stand tall, and walk or march in place without leaning. Record the working time.",
-    [primary("grip"), secondary("core", 0.7), secondary("shoulders", 0.3)],
+    [primary("grip"), secondary("core", 0.7), secondary("back", 0.45)],
     { trackingType: "duration" },
   ),
   exercise(
@@ -305,7 +305,7 @@ export const homeGymExercises: ExerciseInput[] = [
     "dumbbell",
     "carry",
     "Hold one dumbbell at your side and walk or march in place while keeping the torso upright. Record equal time on each side.",
-    [primary("core"), secondary("grip", 0.8), secondary("shoulders", 0.2)],
+    [primary("core"), secondary("grip", 0.8), secondary("back", 0.3)],
     { trackingType: "duration", sideMode: "per_side" },
   ),
   exercise(
@@ -321,14 +321,14 @@ export const homeGymExercises: ExerciseInput[] = [
     "kettlebell",
     "hinge",
     "Stand over the kettlebell, push the hips back, brace, and stand by driving through the floor. Return it between the feet with the same hinge.",
-    [primary("glutes"), secondary("hamstrings", 0.8), secondary("back", 0.25), secondary("grip", 0.3)],
+    [primary("glutes"), secondary("hamstrings", 0.8), secondary("quads", 0.45), secondary("back", 0.25), secondary("grip", 0.3)],
   ),
   exercise(
     "Single-arm kettlebell clean",
     "kettlebell",
     "hinge",
     "Drive the bell from the hinge into the rack position and guide it around the forearm rather than letting it crash. Practice each side separately.",
-    [primary("glutes"), secondary("hamstrings", 0.5), secondary("shoulders", 0.4), secondary("grip", 0.4)],
+    [primary("glutes"), secondary("hamstrings", 0.5), secondary("shoulders", 0.4), secondary("grip", 0.4), secondary("quads", 0.35), secondary("core", 0.3)],
     { sideMode: "per_side" },
   ),
   exercise(
@@ -344,7 +344,7 @@ export const homeGymExercises: ExerciseInput[] = [
     "kettlebell",
     "ground_to_stand",
     "Use a light bell and move through each position slowly while keeping the loaded arm vertical. Reverse the sequence to return to the floor.",
-    [primary("core"), secondary("shoulders", 0.65), secondary("glutes", 0.4), secondary("grip", 0.25)],
+    [primary("core"), secondary("shoulders", 0.65), secondary("glutes", 0.4), secondary("quads", 0.35), secondary("grip", 0.25)],
     { sideMode: "per_side" },
   ),
   exercise(
@@ -359,7 +359,7 @@ export const homeGymExercises: ExerciseInput[] = [
     "kettlebell",
     "lunge",
     "Hold the kettlebell in the rack position, step the opposite leg back, and keep the torso stacked as you return through the front foot.",
-    [primary("glutes"), secondary("quads", 0.8), secondary("core", 0.4)],
+    [primary("glutes"), secondary("quads", 0.8), secondary("core", 0.4), secondary("hamstrings", 0.3)],
     { sideMode: "per_leg" },
   ),
 

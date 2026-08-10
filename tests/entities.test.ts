@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { EntityRepository } from "../src/domain/repositories/entity-repository";
-import type { Exercise, RoutineVersionInput } from "../src/domain/entities";
+import {
+  muscleGroups,
+  type Exercise,
+  type ExerciseMuscle,
+  type MuscleGroup,
+  type RoutineVersionInput,
+} from "../src/domain/entities";
 import { expandLegacyPrescription, parseRestPrescription } from "../src/domain/prescription";
 import { homeGymExercises } from "../src/domain/home-gym-exercises";
+import { legacyRoutineExerciseMuscleTemplates } from "../src/domain/routines";
 import {
   validateExerciseInput,
 } from "../src/domain/exercises/validation";
@@ -14,11 +21,109 @@ import { ExerciseService } from "../src/server/exercises/service";
 import { RoutineService } from "../src/server/routines/service";
 import { WorkoutService } from "../src/server/workouts/service";
 
-test("home-gym exercise catalog is valid and has no duplicate names", () => {
-  assert.ok(homeGymExercises.length >= 50);
-  const names = homeGymExercises.map((exercise) => exercise.name.trim().toLowerCase());
+type MuscleCatalogEntry = {
+  name: string;
+  muscles?: readonly ExerciseMuscle[];
+};
+
+const primary = (muscleGroup: MuscleGroup, weight = 1): ExerciseMuscle => ({
+  muscleGroup,
+  role: "primary",
+  weight,
+});
+
+const secondary = (muscleGroup: MuscleGroup, weight: number): ExerciseMuscle => ({
+  muscleGroup,
+  role: "secondary",
+  weight,
+});
+
+function assertMuscleCatalog(entries: readonly MuscleCatalogEntry[], expectedCount: number) {
+  assert.equal(entries.length, expectedCount);
+  const names = entries.map((exercise) => exercise.name.trim().toLowerCase());
   assert.equal(new Set(names).size, names.length);
+  for (const exercise of entries) {
+    const muscles = exercise.muscles ?? [];
+    assert.ok(muscles.some((muscle) => muscle.role === "primary"), `${exercise.name} needs a primary muscle`);
+    assert.equal(
+      new Set(muscles.map((muscle) => muscle.muscleGroup)).size,
+      muscles.length,
+      `${exercise.name} has a duplicate muscle tag`,
+    );
+    for (const muscle of muscles) {
+      assert.ok(muscleGroups.includes(muscle.muscleGroup), `${exercise.name} has an invalid muscle group`);
+      assert.ok(["primary", "secondary"].includes(muscle.role), `${exercise.name} has an invalid muscle role`);
+      assert.ok(muscle.weight > 0 && muscle.weight <= 1, `${exercise.name} has an invalid muscle weight`);
+    }
+  }
+}
+
+function musclesFor(entries: readonly MuscleCatalogEntry[], name: string) {
+  const exercise = entries.find((candidate) => candidate.name === name);
+  assert.ok(exercise, `Missing exercise ${name}`);
+  return exercise.muscles ?? [];
+}
+
+test("exercise muscle catalogs are exhaustive, valid, and uniquely named", () => {
+  assertMuscleCatalog(homeGymExercises, 56);
+  assertMuscleCatalog(legacyRoutineExerciseMuscleTemplates, 28);
   for (const exercise of homeGymExercises) assert.doesNotThrow(() => validateExerciseInput(exercise));
+
+  const allNames = [...homeGymExercises, ...legacyRoutineExerciseMuscleTemplates]
+    .map((exercise) => exercise.name.trim().toLowerCase());
+  assert.equal(new Set(allNames).size, allNames.length);
+});
+
+test("home-gym defaults contain the audited muscle corrections", () => {
+  assert.deepEqual(musclesFor(homeGymExercises, "Single-arm cable row"), [
+    primary("back"), secondary("biceps", 0.4), secondary("grip", 0.2),
+  ]);
+  assert.deepEqual(musclesFor(homeGymExercises, "Dumbbell pullover"), [
+    primary("chest"), secondary("back", 0.4), secondary("triceps", 0.4),
+  ]);
+  assert.deepEqual(musclesFor(homeGymExercises, "Seated dumbbell overhead triceps extension"), [
+    primary("triceps"),
+  ]);
+  assert.deepEqual(musclesFor(homeGymExercises, "Dumbbell farmer carry"), [
+    primary("grip"), secondary("core", 0.7), secondary("back", 0.45),
+  ]);
+  assert.deepEqual(musclesFor(homeGymExercises, "Dumbbell suitcase carry"), [
+    primary("core"), secondary("grip", 0.8), secondary("back", 0.3),
+  ]);
+  assert.deepEqual(musclesFor(homeGymExercises, "Kettlebell deadlift"), [
+    primary("glutes"), secondary("hamstrings", 0.8), secondary("quads", 0.45),
+    secondary("back", 0.25), secondary("grip", 0.3),
+  ]);
+  assert.deepEqual(musclesFor(homeGymExercises, "Single-arm kettlebell clean"), [
+    primary("glutes"), secondary("hamstrings", 0.5), secondary("shoulders", 0.4),
+    secondary("grip", 0.4), secondary("quads", 0.35), secondary("core", 0.3),
+  ]);
+  assert.deepEqual(musclesFor(homeGymExercises, "Kettlebell Turkish get-up"), [
+    primary("core"), secondary("shoulders", 0.65), secondary("glutes", 0.4),
+    secondary("quads", 0.35), secondary("grip", 0.25),
+  ]);
+  assert.deepEqual(musclesFor(homeGymExercises, "Kettlebell front-rack reverse lunge"), [
+    primary("glutes"), secondary("quads", 0.8), secondary("core", 0.4),
+    secondary("hamstrings", 0.3),
+  ]);
+});
+
+test("legacy routine templates contain the audited muscle corrections", () => {
+  const expected = new Map<string, ExerciseMuscle[]>([
+    ["Chest-supported dumbbell row", [primary("back"), secondary("biceps", 0.5), secondary("grip", 0.25)]],
+    ["Dumbbell Romanian deadlift", [primary("hamstrings"), primary("glutes", 0.8), secondary("grip", 0.35)]],
+    ["Kettlebell swing", [primary("glutes"), secondary("hamstrings", 0.7), secondary("core", 0.3), secondary("grip", 0.3)]],
+    ["Lat pulldown", [primary("back"), secondary("biceps", 0.4), secondary("grip", 0.2)]],
+    ["One-arm dumbbell row", [primary("back"), secondary("biceps", 0.5), secondary("grip", 0.25)]],
+    ["Seated cable row", [primary("back"), secondary("biceps", 0.4), secondary("grip", 0.2)]],
+    ["Side plank", [primary("core"), secondary("shoulders", 0.25)]],
+    ["Dumbbell curl", [primary("biceps")]],
+    ["Seated cable crunch", [primary("core")]],
+  ]);
+
+  for (const [name, muscles] of expected) {
+    assert.deepEqual(musclesFor(legacyRoutineExerciseMuscleTemplates, name), muscles);
+  }
 });
 
 test("expands an exercise prescription into individually addressable sets", () => {

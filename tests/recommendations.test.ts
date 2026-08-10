@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildRoutineRecommendations,
+  EXERCISE_MUSCLES,
   type RecommendationResult,
   type RecentCompletedSession,
   type RecentCompletedSet,
   type RoutineCode,
 } from "../src/domain/recommendations";
-import { canonicalRoutines } from "../src/domain/routines";
+import { canonicalRoutines, legacyRoutineExerciseMuscleTemplates } from "../src/domain/routines";
 
 const NOW = new Date("2026-07-15T12:00:00.000Z");
 
@@ -78,6 +79,63 @@ test("recommendation fixtures follow the canonical set prescriptions", () => {
   assert.equal(routineD.filter((set) => set.setType === "emom").length, 10);
   assert.equal(routineB.filter((set) => set.setType === "failure").length, 1);
   assert.equal(routineB.filter((set) => set.setType === "drop").length, 1);
+});
+
+test("canonical fallback muscle metadata contains the audited corrections", () => {
+  assert.deepEqual(EXERCISE_MUSCLES.A[3], { back: 1, biceps: 0.5, grip: 0.25 });
+  assert.deepEqual(EXERCISE_MUSCLES.B[4], { back: 1, biceps: 0.5, grip: 0.25 });
+  assert.deepEqual(EXERCISE_MUSCLES.C[1], { glutes: 1, hamstrings: 0.7, core: 0.3, grip: 0.3 });
+  assert.deepEqual(EXERCISE_MUSCLES.C[3], { hamstrings: 1, glutes: 0.8, grip: 0.35 });
+  assert.deepEqual(EXERCISE_MUSCLES.C[6], { core: 1, shoulders: 0.25 });
+  assert.deepEqual(EXERCISE_MUSCLES.D[3], { back: 1, biceps: 0.4, grip: 0.2 });
+  assert.deepEqual(EXERCISE_MUSCLES.D[4], { back: 1, biceps: 0.4, grip: 0.2 });
+});
+
+test("legacy templates and canonical fallback weights stay aligned", () => {
+  for (const routine of canonicalRoutines) {
+    routine.exercises.forEach((exercise, index) => {
+      const template = legacyRoutineExerciseMuscleTemplates.find((candidate) =>
+        candidate.name === exercise.name);
+      assert.ok(template, `Missing legacy muscle template for ${exercise.name}`);
+      assert.deepEqual(
+        Object.fromEntries(template.muscles.map((muscle) => [muscle.muscleGroup, muscle.weight])),
+        EXERCISE_MUSCLES[routine.code][index + 1],
+      );
+    });
+  }
+});
+
+test("assesses Routine C with its corrected grip and shoulder coverage", () => {
+  const result = buildRoutineRecommendations(
+    [],
+    [completedMuscleSet("Carry and brace", 1, { core: 4.5, grip: 6, shoulders: 6 })],
+    NOW,
+  );
+
+  assert.equal(recommendationRow(result, "C").availability, "caution");
+  assert.match(recommendationRow(result, "C").availabilityReason, /core, grip, and shoulders/i);
+});
+
+test("canonical recovery profiles account for corrected grip set volume", () => {
+  const cases: Array<{
+    code: RoutineCode;
+    muscles: NonNullable<RecentCompletedSet["muscles"]>;
+  }> = [
+    { code: "A", muscles: { core: 6, shoulders: 3, grip: 6 } },
+    { code: "B", muscles: { chest: 6, core: 3, grip: 6 } },
+    { code: "D", muscles: { core: 6, shoulders: 2.4, grip: 6 } },
+  ];
+
+  for (const { code, muscles } of cases) {
+    const result = buildRoutineRecommendations(
+      [],
+      [completedMuscleSet("Recent work", 1, muscles)],
+      NOW,
+      undefined,
+      [code],
+    );
+    assert.equal(recommendationRow(result, code).availability, "caution");
+  }
 });
 
 test("starts canonical history with exactly one recommended routine", () => {

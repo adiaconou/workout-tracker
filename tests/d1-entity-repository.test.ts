@@ -727,6 +727,279 @@ test("default exercise provisioning adopts only generated legacy rows and preser
   }
 });
 
+test("entity provisioning synchronizes only proven system exercise muscle tags", async () => {
+  const sqlite = new DatabaseSync(":memory:");
+  const d1 = new SqliteD1(sqlite) as unknown as D1Database;
+  const owner = "tag-sync@example.com";
+  const otherOwner = "other-tag-sync@example.com";
+  const oldUpdatedAt = "2026-08-01T12:00:00.000Z";
+  const pulloverName = "Dumbbell pullover";
+  const pulloverNormalizedName = normalizeExerciseName(pulloverName);
+  const pulloverId = `${owner}::catalog::${encodeURIComponent(pulloverNormalizedName)}`;
+  const farmerName = "Dumbbell farmer carry";
+  const farmerNormalizedName = normalizeExerciseName(farmerName);
+  const farmerId = "existing-home-template-row";
+  const strictPullUpName = "Strict pull-up";
+  const strictPullUpNormalizedName = normalizeExerciseName(strictPullUpName);
+  const strictPullUpId = `${owner}::catalog::${encodeURIComponent(strictPullUpNormalizedName)}`;
+  const otherStrictPullUpId = `${otherOwner}::catalog::${encodeURIComponent(strictPullUpNormalizedName)}`;
+  const weightedPlankNormalizedName = normalizeExerciseName("Weighted plank");
+  const weightedPlankId = `${owner}::catalog::${encodeURIComponent(weightedPlankNormalizedName)}`;
+  const customPulloverId = "3f816c85-a7de-4385-b160-c068f22172ac";
+
+  type TestMuscle = { muscleGroup: string; role: string; weight: number };
+  const insertCatalog = async (input: {
+    id: string;
+    ownerEmail: string;
+    name: string;
+    normalizedName?: string;
+    origin?: string;
+    templateKey?: string | null;
+    isActive?: number;
+    equipment?: string;
+  }) => {
+    await d1.prepare(`INSERT INTO exercise_catalog (
+      id, owner_email, name, normalized_name, equipment, movement_pattern,
+      tracking_type, default_load_type, side_mode, instructions, origin,
+      template_key, is_active, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'test_pattern', 'reps', 'external', 'bilateral',
+      'preserve these instructions', ?, ?, ?, ?, ?)`).bind(
+      input.id,
+      input.ownerEmail,
+      input.name,
+      input.normalizedName ?? normalizeExerciseName(input.name),
+      input.equipment ?? "test_equipment",
+      input.origin ?? "custom",
+      input.templateKey ?? null,
+      input.isActive ?? 1,
+      oldUpdatedAt,
+      oldUpdatedAt,
+    ).run();
+  };
+  const insertMuscles = async (exerciseId: string, muscles: TestMuscle[]) => {
+    for (const muscle of muscles) {
+      await d1.prepare(`INSERT INTO exercise_muscles
+        (exercise_id, muscle_group, role, weight) VALUES (?, ?, ?, ?)`)
+        .bind(exerciseId, muscle.muscleGroup, muscle.role, muscle.weight)
+        .run();
+    }
+  };
+  const readMuscles = async (exerciseId: string) => {
+    const muscles = await d1.prepare(`SELECT muscle_group AS muscleGroup, role, weight
+      FROM exercise_muscles WHERE exercise_id = ? ORDER BY muscle_group`)
+      .bind(exerciseId)
+      .all<TestMuscle>();
+    return muscles.results.map((muscle) => ({ ...muscle, weight: Number(muscle.weight) }));
+  };
+  const readCatalogProof = async (exerciseId: string, ownerEmail = owner) => {
+    const record = await d1.prepare(`SELECT name, equipment, instructions, origin,
+      template_key AS templateKey, is_active AS isActive, updated_at AS updatedAt
+      FROM exercise_catalog WHERE id = ? AND owner_email = ?`)
+      .bind(exerciseId, ownerEmail)
+      .first();
+    return record ? { ...record } : null;
+  };
+
+  try {
+    await ensureEntitySchema(d1);
+    await insertCatalog({
+      id: pulloverId,
+      ownerEmail: owner,
+      name: "My archived pullover",
+      normalizedName: "my archived pullover",
+      isActive: 0,
+    });
+    await insertMuscles(pulloverId, [
+      { muscleGroup: "calves", role: "primary", weight: 1 },
+      { muscleGroup: "chest", role: "secondary", weight: 0.2 },
+    ]);
+    await d1.prepare(`INSERT INTO exercise_favorites
+      (owner_email, exercise_id, created_at) VALUES (?, ?, ?)`)
+      .bind(owner, pulloverId, oldUpdatedAt)
+      .run();
+
+    await insertCatalog({
+      id: farmerId,
+      ownerEmail: owner,
+      name: "My farmer carry",
+      normalizedName: "my farmer carry",
+      origin: "default",
+      templateKey: `home-gym:${encodeURIComponent(farmerNormalizedName)}`,
+    });
+    await insertMuscles(farmerId, [
+      { muscleGroup: "grip", role: "secondary", weight: 0.5 },
+      { muscleGroup: "shoulders", role: "primary", weight: 1 },
+    ]);
+
+    await insertCatalog({
+      id: customPulloverId,
+      ownerEmail: owner,
+      name: pulloverName,
+    });
+    await insertMuscles(customPulloverId, [
+      { muscleGroup: "shoulders", role: "primary", weight: 0.75 },
+    ]);
+
+    await insertCatalog({
+      id: strictPullUpId,
+      ownerEmail: owner,
+      name: "My archived strict pull-up",
+      normalizedName: "my archived strict pull-up",
+      isActive: 0,
+    });
+    await insertMuscles(strictPullUpId, [
+      { muscleGroup: "back", role: "secondary", weight: 0.5 },
+      { muscleGroup: "calves", role: "primary", weight: 1 },
+    ]);
+    await d1.prepare(`INSERT INTO exercise_favorites
+      (owner_email, exercise_id, created_at) VALUES (?, ?, ?)`)
+      .bind(owner, strictPullUpId, oldUpdatedAt)
+      .run();
+
+    await insertCatalog({
+      id: weightedPlankId,
+      ownerEmail: owner,
+      name: "Weighted plank",
+    });
+    await insertMuscles(weightedPlankId, [
+      { muscleGroup: "core", role: "primary", weight: 1 },
+    ]);
+
+    await insertCatalog({
+      id: otherStrictPullUpId,
+      ownerEmail: otherOwner,
+      name: strictPullUpName,
+    });
+    await insertMuscles(otherStrictPullUpId, [
+      { muscleGroup: "calves", role: "primary", weight: 1 },
+    ]);
+
+    await d1.prepare(`INSERT INTO routines (
+      id, owner_email, code, version, focus, summary, duration_min, updated_at
+    ) VALUES ('historical-variant-routine', ?, 'HIST', 1, 'Historical',
+      'Materializes historical name variants', 30, ?)`)
+      .bind(owner, oldUpdatedAt)
+      .run();
+    for (const [index, name] of ["Dumbbell curl", "Seated cable crunch"].entries()) {
+      await d1.prepare(`INSERT INTO exercises (
+        id, owner_email, routine_code, exercise_order, name, warmup, warmup_sets,
+        regular_sets, failure_sets, drop_sets, target, rest, effort, purpose,
+        load_type, weight_unit, updated_at
+      ) VALUES (?, ?, 'HIST', ?, ?, 'None', 0, 1, 0, 0, '8-10 reps',
+        '60 sec', '2 RIR', 'Historical variant', 'external', 'lb', ?)`)
+        .bind(`historical-exercise-${index + 1}`, owner, index + 1, name, oldUpdatedAt)
+        .run();
+    }
+
+    await ensureEntityData(d1, owner);
+
+    assert.deepEqual(await readMuscles(pulloverId), [
+      { muscleGroup: "back", role: "secondary", weight: 0.4 },
+      { muscleGroup: "chest", role: "primary", weight: 1 },
+      { muscleGroup: "triceps", role: "secondary", weight: 0.4 },
+    ]);
+    assert.deepEqual(await readMuscles(farmerId), [
+      { muscleGroup: "back", role: "secondary", weight: 0.45 },
+      { muscleGroup: "core", role: "secondary", weight: 0.7 },
+      { muscleGroup: "grip", role: "primary", weight: 1 },
+    ]);
+    assert.deepEqual(await readMuscles(strictPullUpId), [
+      { muscleGroup: "back", role: "primary", weight: 1 },
+      { muscleGroup: "biceps", role: "secondary", weight: 0.45 },
+      { muscleGroup: "grip", role: "secondary", weight: 0.25 },
+    ]);
+    assert.deepEqual(await readCatalogProof(pulloverId), {
+      name: "My archived pullover",
+      equipment: "test_equipment",
+      instructions: "preserve these instructions",
+      origin: "default",
+      templateKey: `home-gym:${encodeURIComponent(pulloverNormalizedName)}`,
+      isActive: 0,
+      updatedAt: (await readCatalogProof(pulloverId))?.updatedAt,
+    });
+    assert.notEqual((await readCatalogProof(pulloverId))?.updatedAt, oldUpdatedAt);
+    assert.deepEqual(await readCatalogProof(strictPullUpId), {
+      name: "My archived strict pull-up",
+      equipment: "test_equipment",
+      instructions: "preserve these instructions",
+      origin: "default",
+      templateKey: `legacy-routine:${encodeURIComponent(strictPullUpNormalizedName)}`,
+      isActive: 0,
+      updatedAt: (await readCatalogProof(strictPullUpId))?.updatedAt,
+    });
+    assert.notEqual((await readCatalogProof(strictPullUpId))?.updatedAt, oldUpdatedAt);
+    assert.deepEqual(await readCatalogProof(weightedPlankId), {
+      name: "Weighted plank",
+      equipment: "test_equipment",
+      instructions: "preserve these instructions",
+      origin: "default",
+      templateKey: `legacy-routine:${encodeURIComponent(weightedPlankNormalizedName)}`,
+      isActive: 1,
+      updatedAt: oldUpdatedAt,
+    }, "provenance adoption alone does not churn an already-current exercise timestamp");
+    assert.equal(Number((await d1.prepare(`SELECT COUNT(*) AS count FROM exercise_favorites
+      WHERE owner_email = ? AND exercise_id IN (?, ?)`).bind(owner, pulloverId, strictPullUpId)
+      .first<{ count: number }>())?.count), 2);
+
+    const dumbbellCurlId = `${owner}::catalog::${encodeURIComponent(normalizeExerciseName("Dumbbell curl"))}`;
+    const seatedCableCrunchId = `${owner}::catalog::${encodeURIComponent(normalizeExerciseName("Seated cable crunch"))}`;
+    assert.deepEqual(await readMuscles(dumbbellCurlId), [
+      { muscleGroup: "biceps", role: "primary", weight: 1 },
+    ]);
+    assert.deepEqual(await readMuscles(seatedCableCrunchId), [
+      { muscleGroup: "core", role: "primary", weight: 1 },
+    ]);
+    assert.equal((await readCatalogProof(dumbbellCurlId))?.templateKey,
+      `legacy-routine:${encodeURIComponent(normalizeExerciseName("Dumbbell curl"))}`);
+    assert.equal((await readCatalogProof(seatedCableCrunchId))?.templateKey,
+      `legacy-routine:${encodeURIComponent(normalizeExerciseName("Seated cable crunch"))}`);
+
+    const customBeforeRepeat = await readCatalogProof(customPulloverId);
+    assert.deepEqual(await readMuscles(customPulloverId), [
+      { muscleGroup: "shoulders", role: "primary", weight: 0.75 },
+    ]);
+    assert.equal(customBeforeRepeat?.origin, "custom");
+    assert.equal(customBeforeRepeat?.templateKey, null);
+    assert.equal(customBeforeRepeat?.updatedAt, oldUpdatedAt);
+    assert.deepEqual(await readMuscles(otherStrictPullUpId), [
+      { muscleGroup: "calves", role: "primary", weight: 1 },
+    ]);
+    assert.deepEqual(await readCatalogProof(otherStrictPullUpId, otherOwner), {
+      name: strictPullUpName,
+      equipment: "test_equipment",
+      instructions: "preserve these instructions",
+      origin: "custom",
+      templateKey: null,
+      isActive: 1,
+      updatedAt: oldUpdatedAt,
+    });
+    const missingLegacyId = `${owner}::catalog::${encodeURIComponent(normalizeExerciseName("Barbell bench press"))}`;
+    assert.equal(await readCatalogProof(missingLegacyId), null);
+
+    const changedTimestamps = new Map([
+      [pulloverId, (await readCatalogProof(pulloverId))?.updatedAt],
+      [farmerId, (await readCatalogProof(farmerId))?.updatedAt],
+      [strictPullUpId, (await readCatalogProof(strictPullUpId))?.updatedAt],
+      [weightedPlankId, (await readCatalogProof(weightedPlankId))?.updatedAt],
+      [dumbbellCurlId, (await readCatalogProof(dumbbellCurlId))?.updatedAt],
+      [seatedCableCrunchId, (await readCatalogProof(seatedCableCrunchId))?.updatedAt],
+    ]);
+    await ensureEntityData(d1, owner);
+    for (const [exerciseId, updatedAt] of changedTimestamps) {
+      assert.equal((await readCatalogProof(exerciseId))?.updatedAt, updatedAt);
+      const count = await d1.prepare(`SELECT COUNT(*) AS count,
+        COUNT(DISTINCT muscle_group) AS distinctCount FROM exercise_muscles WHERE exercise_id = ?`)
+        .bind(exerciseId)
+        .first<{ count: number; distinctCount: number }>();
+      assert.equal(Number(count?.count), Number(count?.distinctCount));
+    }
+    assert.equal(await readCatalogProof(missingLegacyId), null);
+    assert.deepEqual(await readCatalogProof(customPulloverId), customBeforeRepeat);
+  } finally {
+    sqlite.close();
+  }
+});
+
 test("D1 entity repository provisions exercises, versions, publishes, materializes, discards, and archives normalized entities", async () => {
   const directory = await mkdtemp(join(tmpdir(), "workout-d1-repository-"));
   const database = join(directory, "repository.sqlite");

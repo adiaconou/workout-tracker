@@ -1,3 +1,5 @@
+import type { ExerciseMuscle, MuscleGroup } from "./entities";
+
 export type CanonicalExercise = {
   name: string;
   warmup: string;
@@ -19,6 +21,57 @@ export type CanonicalRoutine = {
   durationMin: number;
   exercises: CanonicalExercise[];
 };
+
+export type LegacyRoutineExerciseMuscleTemplate = {
+  name: string;
+  muscles: ExerciseMuscle[];
+};
+
+const primary = (muscleGroup: MuscleGroup, weight = 1): ExerciseMuscle => ({
+  muscleGroup,
+  role: "primary",
+  weight,
+});
+
+const secondary = (muscleGroup: MuscleGroup, weight: number): ExerciseMuscle => ({
+  muscleGroup,
+  role: "secondary",
+  weight,
+});
+
+// Exact-name templates for exercises seeded by the historical A-D routines.
+// They remain separate from the home-gym catalog because these rows have no
+// stable default template key in older databases.
+export const legacyRoutineExerciseMuscleTemplates: LegacyRoutineExerciseMuscleTemplate[] = [
+  { name: "Strict pull-up", muscles: [primary("back"), secondary("biceps", 0.45), secondary("grip", 0.25)] },
+  { name: "Barbell bench press", muscles: [primary("chest"), secondary("triceps", 0.6), secondary("shoulders", 0.45)] },
+  { name: "Chest-supported dumbbell row", muscles: [primary("back"), secondary("biceps", 0.5), secondary("grip", 0.25)] },
+  { name: "Neutral-grip dumbbell chest press", muscles: [primary("chest"), secondary("triceps", 0.5), secondary("shoulders", 0.35)] },
+  { name: "Weighted plank", muscles: [primary("core")] },
+  { name: "Cable triceps pressdown", muscles: [primary("triceps")] },
+  { name: "Assisted pull-up", muscles: [primary("back"), secondary("biceps", 0.5), secondary("grip", 0.25)] },
+  { name: "Barbell overhead press", muscles: [primary("shoulders"), secondary("triceps", 0.55)] },
+  { name: "Incline dumbbell press", muscles: [primary("chest"), secondary("shoulders", 0.6), secondary("triceps", 0.4)] },
+  { name: "One-arm dumbbell row", muscles: [primary("back"), secondary("biceps", 0.5), secondary("grip", 0.25)] },
+  { name: "Dumbbell lateral raise", muscles: [primary("shoulders")] },
+  { name: "Barbell or dumbbell curl", muscles: [primary("biceps")] },
+  { name: "Hanging knee raise", muscles: [primary("core"), secondary("grip", 0.3)] },
+  { name: "Kettlebell swing", muscles: [primary("glutes"), secondary("hamstrings", 0.7), secondary("core", 0.3), secondary("grip", 0.3)] },
+  { name: "Double-dumbbell front squat", muscles: [primary("quads"), secondary("glutes", 0.7), secondary("core", 0.3)] },
+  { name: "Dumbbell Romanian deadlift", muscles: [primary("hamstrings"), primary("glutes", 0.8), secondary("grip", 0.35)] },
+  { name: "Rear-foot-elevated dumbbell split squat", muscles: [primary("quads", 0.8), primary("glutes"), secondary("hamstrings", 0.3)] },
+  { name: "Reverse crunch", muscles: [primary("core")] },
+  { name: "Side plank", muscles: [primary("core"), secondary("shoulders", 0.25)] },
+  { name: "Strict pull-up EMOM", muscles: [primary("back"), secondary("biceps", 0.5), secondary("grip", 0.3)] },
+  { name: "Bodyweight or weighted dip", muscles: [primary("chest"), primary("triceps", 0.8), secondary("shoulders", 0.5)] },
+  { name: "Lat pulldown", muscles: [primary("back"), secondary("biceps", 0.4), secondary("grip", 0.2)] },
+  { name: "Seated cable row", muscles: [primary("back"), secondary("biceps", 0.4), secondary("grip", 0.2)] },
+  { name: "Cable rear-delt fly", muscles: [primary("shoulders"), secondary("back", 0.35)] },
+  { name: "Barbell curl", muscles: [primary("biceps")] },
+  { name: "Kneeling cable crunch", muscles: [primary("core")] },
+  { name: "Dumbbell curl", muscles: [primary("biceps")] },
+  { name: "Seated cable crunch", muscles: [primary("core")] },
+];
 
 export const canonicalRoutines: CanonicalRoutine[] = [
   {
