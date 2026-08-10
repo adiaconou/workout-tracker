@@ -74,6 +74,7 @@ test("program API enforces idempotency, owner isolation, and explicit activation
     d1Databases: { DB: "program-api-test" },
   });
   context.after(() => miniflare.dispose());
+  const database = await miniflare.getD1Database("DB");
 
   async function request(email, path, { method = "GET", body, idempotencyKey } = {}) {
     const headers = new Headers();
@@ -114,10 +115,26 @@ test("program API enforces idempotency, owner isolation, and explicit activation
       muscles: [{ muscleGroup: "back", role: "primary", weight: 1 }],
     },
   }), 201).exercise;
-  const routine = expectStatus(await request(firstEmail, "/api/v1/routines", {
+  async function createRoutine(code) {
+    return expectStatus(await request(firstEmail, "/api/v1/routines", {
+      method: "POST",
+      body: { code, version: routineVersion(exercise.id) },
+    }), 201).routine;
+  }
+
+  const routine = await createRoutine("PROGRAM-API");
+  const secondRoutine = await createRoutine("PROGRAM-SECOND");
+  const fallbackRoutine = await createRoutine("FALLBACK");
+  const fallbackWorkout = expectStatus(await request(firstEmail, "/api/v1/workouts", {
     method: "POST",
-    body: { code: "PROGRAM-API", version: routineVersion(exercise.id) },
-  }), 201).routine;
+    body: { routineId: fallbackRoutine.id },
+  }), 201).session;
+  const completedAt = new Date().toISOString();
+  await database.prepare(`UPDATE workout_sessions
+    SET status = 'Completed', completed_at = ?, updated_at = ?
+    WHERE id = ? AND owner_email = ?`)
+    .bind(completedAt, completedAt, fallbackWorkout.id, firstEmail)
+    .run();
   const programInput = {
     name: "Program API plan",
     goal: "Verify program lifecycle behavior",
@@ -125,7 +142,7 @@ test("program API enforces idempotency, owner isolation, and explicit activation
     trainingDaysPerWeek: 2,
     targetDurationMin: 40,
     activate: false,
-    routines: [{ routineId: routine.id }],
+    routines: [{ routineId: secondRoutine.id }, { routineId: routine.id }],
   };
 
   const missingKey = await request(firstEmail, "/api/v1/programs", {
@@ -153,7 +170,10 @@ test("program API enforces idempotency, owner isolation, and explicit activation
   assert.equal(created.ownerEmail, firstEmail);
   assert.equal(created.name, programInput.name);
   assert.equal(created.isActive, false);
-  assert.deepEqual(created.routines.map((membership) => membership.routineId), [routine.id]);
+  assert.deepEqual(
+    created.routines.map((membership) => membership.routineId),
+    [secondRoutine.id, routine.id],
+  );
 
   const replayed = expectStatus(await request(firstEmail, "/api/v1/programs", {
     method: "POST",
@@ -201,4 +221,66 @@ test("program API enforces idempotency, owner isolation, and explicit activation
   const ownerPrograms = expectStatus(await request(firstEmail, "/api/v1/programs"), 200).programs;
   assert.equal(ownerPrograms.filter((program) => program.isActive).length, 1);
   assert.equal(ownerPrograms.find((program) => program.isActive)?.id, created.id);
+
+  const initialRecommendation = expectStatus(
+    await request(firstEmail, "/api/v1/bootstrap"),
+    200,
+  ).recommendations;
+  assert.deepEqual(
+    initialRecommendation.routines.map((item) => item.code),
+    [secondRoutine.code, routine.code],
+    "an active program keeps its configured order and excludes nonmembers",
+  );
+  assert.match(
+    initialRecommendation.summary,
+    /no recent completed sets are logged/i,
+    "completed sessions from nonmembers must not affect a program with active members",
+  );
+
+  expectStatus(await request(
+    firstEmail,
+    `/api/v1/routines/${encodeURIComponent(secondRoutine.id)}`,
+    { method: "DELETE" },
+  ), 200);
+  const afterFirstArchive = expectStatus(
+    await request(firstEmail, "/api/v1/bootstrap"),
+    200,
+  ).recommendations;
+  assert.deepEqual(
+    afterFirstArchive.routines.map((item) => item.code),
+    [routine.code],
+    "an archived member is excluded without losing the surviving program order",
+  );
+
+  expectStatus(await request(
+    firstEmail,
+    `/api/v1/routines/${encodeURIComponent(routine.id)}`,
+    { method: "DELETE" },
+  ), 200);
+  const afterLastMemberArchive = expectStatus(
+    await request(firstEmail, "/api/v1/bootstrap"),
+    200,
+  ).recommendations;
+  assert.deepEqual(
+    afterLastMemberArchive.routines.map((item) => item.code),
+    [fallbackRoutine.code],
+    "active nonmembers become the fallback when an active program has no active members",
+  );
+  assert.match(
+    afterLastMemberArchive.summary,
+    /no completed sets are logged in the past 48 hours/i,
+    "fallback recommendation history must include the fallback routine's completed session",
+  );
+
+  expectStatus(await request(
+    firstEmail,
+    `/api/v1/routines/${encodeURIComponent(fallbackRoutine.id)}`,
+    { method: "DELETE" },
+  ), 200);
+  const afterEveryArchive = expectStatus(
+    await request(firstEmail, "/api/v1/bootstrap"),
+    200,
+  ).recommendations;
+  assert.equal(afterEveryArchive.recommendationKind, "no_plan");
+  assert.deepEqual(afterEveryArchive.routines, []);
 });

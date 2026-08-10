@@ -93,6 +93,9 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
   const [editing, setEditing] = useState(false);
   const [stale, setStale] = useState(false);
   const [discardIntent, setDiscardIntent] = useState<DiscardIntent>(null);
+  const [showRemoveRoutine, setShowRemoveRoutine] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState("");
   const [showExerciseLibrary, setShowExerciseLibrary] = useState(false);
   const [exerciseLibrary, setExerciseLibrary] = useState<Exercise[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
@@ -127,6 +130,13 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
         `/api/v1/routines/${encodeURIComponent(routineId)}/editor`,
       );
       if (requestId !== latestRequest.current) return;
+      if (!payload.routine.isActive) {
+        applyPayload(payload);
+        setEditing(false);
+        setDiscardIntent(null);
+        setShowRemoveRoutine(false);
+        return;
+      }
       const state = editorState.current;
       const refreshDecision = routineEditorRefreshDecision({
         force,
@@ -297,6 +307,35 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
     }
   }
 
+  function openRemoveRoutine() {
+    if (saving || removing) return;
+    setRemoveError("");
+    setShowRemoveRoutine(true);
+  }
+
+  function closeRemoveRoutine() {
+    if (removing) return;
+    setShowRemoveRoutine(false);
+    setRemoveError("");
+  }
+
+  async function removeRoutine() {
+    if (!routine || removing) return;
+    const immutableRoutineId = routine.id;
+    setRemoving(true);
+    setRemoveError("");
+    latestRequest.current += 1;
+    try {
+      await apiRequest(`/api/v1/routines/${encodeURIComponent(immutableRoutineId)}`, {
+        method: "DELETE",
+      });
+      router.replace("/routines");
+    } catch (caught) {
+      setRemoveError(caught instanceof Error ? caught.message : "The routine could not be removed.");
+      setRemoving(false);
+    }
+  }
+
   function beginEditing() {
     if (!currentVersion) return;
     setDraft(editableRoutineFromVersion(currentVersion));
@@ -454,6 +493,25 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
       <Screen safeTop={false}>
         <Message>{error || "Routine not found."}</Message>
         <Button title="Back to routines" variant="secondary" onPress={() => router.back()} />
+      </Screen>
+    );
+  }
+
+  if (!routine.isActive) {
+    return (
+      <Screen safeTop={false}>
+        <Card style={styles.removedState}>
+          <Eyebrow>Routine {routine.code}</Eyebrow>
+          <Heading>Routine removed</Heading>
+          <Body muted>
+            This routine no longer appears in your routines or recommendations. Past workouts remain in
+            History, but the routine cannot currently be restored in the app.
+          </Body>
+          {activeWorkout?.routineCode === routine.code ? (
+            <Body muted>Your workout in progress remains available from the Routines page.</Body>
+          ) : null}
+          <Button title="Back to routines" onPress={() => router.replace("/routines")} />
+        </Card>
       </Screen>
     );
   }
@@ -664,15 +722,31 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
       })}
 
       {editing ? (
-        <EditorActions
-          dirty={dirty}
-          saving={saving}
-          stale={stale}
-          validationError={validationError}
-          canSave={canSave}
-          onCancel={() => requestCancel("cancel")}
-          onSave={() => void save()}
-        />
+        <>
+          <EditorActions
+            dirty={dirty}
+            saving={saving}
+            stale={stale}
+            validationError={validationError}
+            canSave={canSave}
+            onCancel={() => requestCancel("cancel")}
+            onSave={() => void save()}
+          />
+          <Card style={styles.dangerZone}>
+            <View style={styles.dangerZoneCopy}>
+              <Heading size="small">Remove routine</Heading>
+              <Body muted>
+                Remove this routine from your routine list and recommendations. Workout history is kept.
+              </Body>
+            </View>
+            <Button
+              title="Remove routine"
+              variant="danger"
+              disabled={saving || removing}
+              onPress={openRemoveRoutine}
+            />
+          </Card>
+        </>
       ) : null}
 
       <Body muted style={styles.safety}>
@@ -691,6 +765,48 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
         onRetry={() => void loadExerciseLibrary()}
         onAdd={addExercises}
       />
+
+      <Modal
+        transparent
+        animationType="fade"
+        visible={showRemoveRoutine}
+        accessibilityLabel="Remove routine confirmation"
+        accessibilityViewIsModal
+        onRequestClose={closeRemoveRoutine}
+      >
+        <View style={styles.modalBackdrop}>
+          <Pressable
+            accessible={false}
+            disabled={removing}
+            tabIndex={-1}
+            onPress={closeRemoveRoutine}
+            style={styles.modalDismissArea}
+          />
+          <Card style={styles.dialog}>
+            <Eyebrow>Routine {routine.code}</Eyebrow>
+            <Heading size="medium">Remove this routine?</Heading>
+            <Body muted>
+              {currentVersion.focus} will be removed from your routines and recommendations. Past workouts
+              will stay in History. This cannot currently be undone in the app.
+            </Body>
+            {dirty ? <Body muted>Your unsaved edits will also be discarded.</Body> : null}
+            {sameRoutineActive ? (
+              <Body muted>
+                Your workout in progress will remain available to finish, but you will not be able to start
+                another workout from this routine.
+              </Body>
+            ) : null}
+            {removeError ? <Message>{removeError}</Message> : null}
+            <Button title="Keep routine" variant="secondary" disabled={removing} onPress={closeRemoveRoutine} />
+            <Button
+              title={removing ? "Removing…" : "Remove routine"}
+              variant="danger"
+              loading={removing}
+              onPress={() => void removeRoutine()}
+            />
+          </Card>
+        </View>
+      </Modal>
 
       <Modal
         transparent
@@ -1037,6 +1153,9 @@ const styles = StyleSheet.create({
   editorState: { flex: 1, minWidth: 190, gap: spacing.xs },
   editorStateTitle: { color: colors.text, fontSize: 14, fontWeight: "800" },
   editorStateDetail: { color: colors.textMuted, fontSize: 12, lineHeight: 17 },
+  removedState: { marginTop: spacing.xl, borderColor: colors.borderStrong },
+  dangerZone: { borderColor: colors.danger, backgroundColor: colors.dangerSurface },
+  dangerZoneCopy: { gap: spacing.xs },
   addExerciseCard: { borderStyle: "dashed", borderColor: colors.borderStrong, alignItems: "stretch" },
   addExerciseCopy: { flex: 1, gap: spacing.xs },
   exerciseHeader: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: spacing.md },
@@ -1078,6 +1197,7 @@ const styles = StyleSheet.create({
   readSetNote: { color: colors.textMuted, fontSize: 12, lineHeight: 17 },
   safety: { fontSize: 12, lineHeight: 18 },
   modalBackdrop: { flex: 1, backgroundColor: colors.overlay, alignItems: "center", justifyContent: "center", padding: spacing.lg },
+  modalDismissArea: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0 },
   dialog: { width: "100%", maxWidth: 480, borderColor: colors.borderStrong, padding: spacing.xl },
   libraryDialog: { maxWidth: 620, maxHeight: "88%", minHeight: 0, flexShrink: 1 },
   libraryHeader: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: spacing.md },

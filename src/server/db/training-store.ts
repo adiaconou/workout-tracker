@@ -281,8 +281,15 @@ export async function getRoutineRecommendations(ownerEmail: string): Promise<Rec
             )
             OR (
               NOT EXISTS (
-                SELECT 1 FROM routine_programs rp
-                WHERE rp.owner_email = ws.owner_email AND rp.is_active = 1
+                SELECT 1 FROM routine_programs active_program
+                INNER JOIN routine_program_routines active_membership
+                  ON active_membership.program_id = active_program.id
+                INNER JOIN routines active_member
+                  ON active_member.id = active_membership.routine_id
+                  AND active_member.owner_email = active_program.owner_email
+                  AND active_member.is_active = 1
+                WHERE active_program.owner_email = ws.owner_email
+                  AND active_program.is_active = 1
               )
               AND (
                 r.code IN ('A', 'B', 'C', 'D')
@@ -348,8 +355,15 @@ export async function getRoutineRecommendations(ownerEmail: string): Promise<Rec
         FROM routines r
         WHERE r.owner_email = ? AND r.is_active = 1
           AND NOT EXISTS (
-            SELECT 1 FROM routine_programs rp
-            WHERE rp.owner_email = r.owner_email AND rp.is_active = 1
+            SELECT 1 FROM routine_programs active_program
+            INNER JOIN routine_program_routines active_membership
+              ON active_membership.program_id = active_program.id
+            INNER JOIN routines active_member
+              ON active_member.id = active_membership.routine_id
+              AND active_member.owner_email = active_program.owner_email
+              AND active_member.is_active = 1
+            WHERE active_program.owner_email = r.owner_email
+              AND active_program.is_active = 1
           )
           AND (
             r.code IN ('A', 'B', 'C', 'D')

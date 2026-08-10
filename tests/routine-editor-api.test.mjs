@@ -6,6 +6,7 @@ import { Miniflare } from "miniflare";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const ownerEmail = "routine-editor@example.com";
+const otherOwnerEmail = "different-owner@example.com";
 const allEquipment = [
   "bodyweight", "dumbbells", "bench", "kettlebells", "pull_up_station",
   "dip_station", "cable_machine", "ez_bar", "resistance_bands", "barbell",
@@ -138,6 +139,7 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
     script: bundle.outputFiles[0].text,
     compatibilityDate: "2026-05-22",
     bindings: {
+      ALLOWED_USER_EMAILS: `${ownerEmail},${otherOwnerEmail}`,
       OWNER_EMAIL: ownerEmail,
       AUTH_SESSION_SECRET: "routine-editor-integration-secret-2026",
     },
@@ -145,10 +147,8 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
   });
   context.after(() => miniflare.dispose());
   const database = await miniflare.getD1Database("DB");
-  const ownerHeaders = { "oai-authenticated-user-email": ownerEmail };
-
-  async function request(path, { method = "GET", body } = {}) {
-    const headers = new Headers(ownerHeaders);
+  async function request(path, { method = "GET", body, email = ownerEmail } = {}) {
+    const headers = new Headers({ "oai-authenticated-user-email": email });
     if (body !== undefined) headers.set("content-type", "application/json");
     const response = await miniflare.dispatchFetch(`https://workout.test${path}`, {
       method,
@@ -622,4 +622,114 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
   assert.equal(laterWorkout.bodyWeightSource, "profile_snapshot");
   assert.equal(laterWorkout.weightUnit, "kg");
   assert.ok(laterWorkout.sets.every((set) => set.weightUnit === "kg"));
+
+  const activeAtArchive = expectStatus(await request("/api/v1/workouts", {
+    method: "POST",
+    body: {
+      routineId: "Q",
+      expectedRoutineVersionId: nextVersion.id,
+      abandonActive: true,
+    },
+  }), 201);
+  assert.equal(activeAtArchive.session.routineCode, "Q");
+
+  const beforeArchive = expectStatus(await request("/api/v1/routines/Q/editor"), 200);
+  const beforeArchiveVersionIds = beforeArchive.versions.map((version) => version.id);
+  assert.equal(beforeArchive.routine.currentVersionId, nextVersion.id);
+
+  expectStatus(await request("/api/v1/onboarding", {
+    method: "PUT",
+    body: { equipment: allEquipment, sessionDurationMin: 60 },
+    email: otherOwnerEmail,
+  }), 200);
+  const isolatedArchive = await request(`/api/v1/routines/${createdRoutine.id}`, {
+    method: "DELETE",
+    email: otherOwnerEmail,
+  });
+  expectStatus(isolatedArchive, 404);
+  assert.equal(isolatedArchive.body.error.code, "routine_not_found");
+
+  const archived = expectStatus(await request(`/api/v1/routines/${createdRoutine.id}`, {
+    method: "DELETE",
+  }), 200);
+  assert.equal(archived.archived, true);
+  assert.equal(archived.routine.isActive, false);
+  assert.equal(archived.routine.currentVersionId, nextVersion.id);
+  assert.deepEqual(versionInput(archived.routine.currentVersion), nextVersionInput);
+
+  const activeRoutines = expectStatus(await request("/api/v1/routines"), 200).routines;
+  assert.equal(activeRoutines.some((routine) => routine.code === "Q"), false);
+  assert.equal(activeRoutines.some((routine) => routine.code === "UNUSED"), true);
+
+  const allRoutines = expectStatus(
+    await request("/api/v1/routines?includeArchived=true"),
+    200,
+  ).routines;
+  const retainedRoutine = allRoutines.find((routine) => routine.code === "Q");
+  assert.ok(retainedRoutine);
+  assert.equal(retainedRoutine.isActive, false);
+  assert.equal(retainedRoutine.currentVersionId, nextVersion.id);
+  assert.deepEqual(versionInput(retainedRoutine.currentVersion), nextVersionInput);
+
+  const afterArchive = expectStatus(await request("/api/v1/routines/Q/editor"), 200);
+  assert.deepEqual(
+    afterArchive.versions.map((version) => version.id),
+    beforeArchiveVersionIds,
+    "archiving must retain the full routine version history",
+  );
+  assert.equal(afterArchive.routine.currentVersionId, nextVersion.id);
+
+  const resumableArchivedWorkout = expectStatus(
+    await request(`/api/v1/workouts/${activeAtArchive.session.id}`),
+    200,
+  ).workout;
+  assert.equal(resumableArchivedWorkout.status, "In Progress");
+  assert.equal(resumableArchivedWorkout.routineCode, "Q");
+
+  const archivedStart = await request("/api/v1/workouts", {
+    method: "POST",
+    body: { routineId: "Q", abandonActive: true },
+  });
+  expectStatus(archivedStart, 404);
+  assert.equal(archivedStart.body.error.code, "routine_not_found");
+  const stillActiveAfterRejectedStart = expectStatus(
+    await request(`/api/v1/workouts/${activeAtArchive.session.id}`),
+    200,
+  ).workout;
+  assert.equal(
+    stillActiveAfterRejectedStart.status,
+    "In Progress",
+    "starting an archived routine must not abandon its existing workout",
+  );
+
+  const completedAfterArchive = expectStatus(await request(
+    `/api/v1/workouts/${activeAtArchive.session.id}/complete`,
+    { method: "POST", body: {} },
+  ), 200);
+  assert.equal(completedAfterArchive.workoutCompleted, true);
+  const completedArchivedWorkout = expectStatus(
+    await request(`/api/v1/workouts/${activeAtArchive.session.id}`),
+    200,
+  ).workout;
+  assert.equal(completedArchivedWorkout.status, "Partial");
+
+  const workoutHistory = expectStatus(
+    await request("/api/v1/workouts?view=history&routineCode=Q"),
+    200,
+  ).history;
+  assert.ok(
+    workoutHistory.workouts.some((workout) => workout.id === started.session.id),
+    "archiving a routine must retain its completed or partial workout history",
+  );
+  assert.ok(
+    workoutHistory.workouts.some((workout) => workout.id === activeAtArchive.session.id),
+    "a workout completed after routine removal must remain in History",
+  );
+
+  const archivedAgain = expectStatus(await request("/api/v1/routines/Q", {
+    method: "DELETE",
+  }), 200);
+  assert.equal(archivedAgain.archived, true);
+  assert.equal(archivedAgain.routine.isActive, false);
+  assert.equal(archivedAgain.routine.currentVersionId, nextVersion.id);
 });
