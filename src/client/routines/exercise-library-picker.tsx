@@ -346,19 +346,18 @@ function FilterChip({
       accessibilityLabel={chipLabel}
       accessibilityState={{ checked: selected, disabled }}
       disabled={disabled}
-      hitSlop={4}
       onPress={onPress}
       style={({ pressed }) => [
-        styles.chip,
-        selected && styles.chipSelected,
+        styles.chipHitTarget,
         disabled && styles.chipDisabled,
         pressed && styles.pressed,
       ]}
     >
-      <Text numberOfLines={1} style={[styles.chipText, selected && styles.chipTextSelected]}>
-        <Text style={[styles.chipIndicator, !selected && styles.chipIndicatorHidden]}>✓ </Text>
-        {chipLabel}
-      </Text>
+      <View style={[styles.chip, selected && styles.chipSelected]}>
+        <Text numberOfLines={1} style={[styles.chipText, selected && styles.chipTextSelected]}>
+          {chipLabel}
+        </Text>
+      </View>
     </Pressable>
   );
 }
@@ -414,14 +413,13 @@ const styles = StyleSheet.create({
   filterSection: { gap: spacing.sm },
   filterTitle: { color: colors.text, fontSize: 13, fontWeight: "800" },
   filterHint: { color: colors.textDim, fontSize: 11, lineHeight: 16 },
-  filterChips: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
-  chip: { minHeight: 44, alignSelf: "center", flexShrink: 0, justifyContent: "center", borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radii.pill, backgroundColor: colors.surfaceRaised, paddingHorizontal: spacing.md, paddingVertical: spacing.xs },
+  filterChips: { flexDirection: "row", flexWrap: "wrap", columnGap: spacing.sm, rowGap: 0 },
+  chipHitTarget: { minHeight: 44, alignSelf: "center", flexShrink: 0, justifyContent: "center" },
+  chip: { height: 32, flexDirection: "row", alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radii.pill, backgroundColor: colors.surfaceRaised, paddingHorizontal: 10 },
   chipSelected: { borderColor: colors.accent, backgroundColor: colors.accentDark },
   chipDisabled: { opacity: 0.45 },
-  chipText: { color: colors.textMuted, fontSize: 12, lineHeight: 16, fontWeight: "700" },
-  chipTextSelected: { color: colors.accent },
-  chipIndicator: { color: colors.accent },
-  chipIndicatorHidden: { opacity: 0 },
+  chipText: { color: colors.textMuted, fontSize: 12, lineHeight: 16, fontWeight: "700", textAlign: "center", textAlignVertical: "center", includeFontPadding: false },
+  chipTextSelected: { color: colors.accent, fontWeight: "900" },
   state: { gap: spacing.md },
   resultSummary: { minHeight: 38, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md },
   resultCount: { color: colors.textMuted, fontSize: 12, fontWeight: "700" },
