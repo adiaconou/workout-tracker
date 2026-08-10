@@ -65,6 +65,10 @@ export function ExerciseLibraryPicker({
     if (visible) setSelectedIds([]);
   }, [visible]);
 
+  useEffect(() => {
+    if (!selectedMuscles.length) setMuscleRole("any");
+  }, [selectedMuscles.length]);
+
   const equipmentOptions = useMemo(
     () => unique(exercises.map((exercise) => exercise.equipment)),
     [exercises],
@@ -73,13 +77,13 @@ export function ExerciseLibraryPicker({
     () => unique(exercises.map((exercise) => exercise.movementPattern)),
     [exercises],
   );
-  const activeFilterCount = selectedMuscles.length
-    + equipment.length
-    + movementPatterns.length
-    + selectedTrackingTypes.length
-    + selectedSideModes.length
+  const activeFilterCount = Number(selectedMuscles.length > 0)
+    + Number(equipment.length > 0)
+    + Number(movementPatterns.length > 0)
+    + Number(selectedTrackingTypes.length > 0)
+    + Number(selectedSideModes.length > 0)
     + Number(favoritesOnly)
-    + Number(muscleRole !== "any");
+    + Number(selectedMuscles.length > 0 && muscleRole !== "any");
   const filters: ExerciseLibraryFilters = {
     query,
     muscles: selectedMuscles,
@@ -170,7 +174,13 @@ export function ExerciseLibraryPicker({
             </Pressable>
           </View>
 
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.quickFilters}>
+          <ScrollView
+            horizontal
+            alwaysBounceHorizontal={false}
+            showsHorizontalScrollIndicator={false}
+            style={styles.quickFiltersScroller}
+            contentContainerStyle={styles.quickFilters}
+          >
             <FilterChip label="Favorites" selected={favoritesOnly} onPress={() => setFavoritesOnly((current) => !current)} />
             {(Object.entries(exerciseBodyAreaAliases) as Array<[keyof typeof exerciseBodyAreaAliases, readonly MuscleGroup[]]>).map(([area, groups]) => (
               <FilterChip
@@ -190,10 +200,10 @@ export function ExerciseLibraryPicker({
                   <FilterChip key={muscle} label={label(muscle)} selected={selectedMuscles.includes(muscle)} onPress={() => setSelectedMuscles((current) => toggleValue(current, muscle))} />
                 ))}
               </FilterSection>
-              <FilterSection title="Muscle role">
-                <FilterChip label="Primary + secondary" selected={muscleRole === "any"} onPress={() => setMuscleRole("any")} />
-                <FilterChip label="Primary only" selected={muscleRole === "primary"} onPress={() => setMuscleRole("primary")} />
-                <FilterChip label="Secondary only" selected={muscleRole === "secondary"} onPress={() => setMuscleRole("secondary")} />
+              <FilterSection title="Muscle role" hint="Applies to selected muscles." selectionMode="single">
+                <FilterChip label="Primary + secondary" selectionMode="single" disabled={!selectedMuscles.length} selected={muscleRole === "any"} onPress={() => setMuscleRole("any")} />
+                <FilterChip label="Primary only" selectionMode="single" disabled={!selectedMuscles.length} selected={muscleRole === "primary"} onPress={() => setMuscleRole("primary")} />
+                <FilterChip label="Secondary only" selectionMode="single" disabled={!selectedMuscles.length} selected={muscleRole === "secondary"} onPress={() => setMuscleRole("secondary")} />
               </FilterSection>
               <FilterSection title="Equipment">
                 {equipmentOptions.map((value) => <FilterChip key={value} label={label(value)} selected={equipment.includes(value)} onPress={() => setEquipment((current) => toggleValue(current, value))} />)}
@@ -295,26 +305,60 @@ export function ExerciseLibraryPicker({
   );
 }
 
-function FilterSection({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
+function FilterSection({
+  title,
+  hint,
+  selectionMode = "multiple",
+  children,
+}: {
+  title: string;
+  hint?: string;
+  selectionMode?: "multiple" | "single";
+  children: ReactNode;
+}) {
   return (
     <View style={styles.filterSection}>
       <Text style={styles.filterTitle}>{title}</Text>
       {hint ? <Text style={styles.filterHint}>{hint}</Text> : null}
-      <View style={styles.filterChips}>{children}</View>
+      <View accessibilityRole={selectionMode === "single" ? "radiogroup" : undefined} style={styles.filterChips}>
+        {children}
+      </View>
     </View>
   );
 }
 
-function FilterChip({ label: chipLabel, selected, onPress }: { label: string; selected: boolean; onPress: () => void }) {
+function FilterChip({
+  label: chipLabel,
+  selected,
+  disabled = false,
+  selectionMode = "multiple",
+  onPress,
+}: {
+  label: string;
+  selected: boolean;
+  disabled?: boolean;
+  selectionMode?: "multiple" | "single";
+  onPress: () => void;
+}) {
   return (
     <Pressable
-      accessibilityRole="checkbox"
+      accessibilityRole={selectionMode === "single" ? "radio" : "checkbox"}
       accessibilityLabel={chipLabel}
-      accessibilityState={{ checked: selected }}
+      accessibilityState={{ checked: selected, disabled }}
+      disabled={disabled}
+      hitSlop={4}
       onPress={onPress}
-      style={({ pressed }) => [styles.chip, selected && styles.chipSelected, pressed && styles.pressed]}
+      style={({ pressed }) => [
+        styles.chip,
+        selected && styles.chipSelected,
+        disabled && styles.chipDisabled,
+        pressed && styles.pressed,
+      ]}
     >
-      <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{chipLabel}</Text>
+      <Text numberOfLines={1} style={[styles.chipText, selected && styles.chipTextSelected]}>
+        <Text style={[styles.chipIndicator, !selected && styles.chipIndicatorHidden]}>✓ </Text>
+        {chipLabel}
+      </Text>
     </Pressable>
   );
 }
@@ -363,17 +407,21 @@ const styles = StyleSheet.create({
   filterButtonActive: { borderColor: colors.accent, backgroundColor: colors.accentDark },
   filterButtonText: { color: colors.text, fontSize: 13, fontWeight: "800" },
   filterButtonTextActive: { color: colors.accent },
-  quickFilters: { gap: spacing.sm, paddingRight: spacing.md },
+  quickFiltersScroller: { flexGrow: 0, flexShrink: 0, height: 44 },
+  quickFilters: { alignItems: "center", gap: spacing.sm, paddingRight: spacing.md },
   filtersPanel: { maxHeight: 260, flexShrink: 1, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, backgroundColor: colors.background },
   filtersContent: { padding: spacing.md, gap: spacing.lg },
   filterSection: { gap: spacing.sm },
   filterTitle: { color: colors.text, fontSize: 13, fontWeight: "800" },
   filterHint: { color: colors.textDim, fontSize: 11, lineHeight: 16 },
   filterChips: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
-  chip: { minHeight: 38, justifyContent: "center", borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radii.pill, backgroundColor: colors.surfaceRaised, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  chip: { minHeight: 44, alignSelf: "center", flexShrink: 0, justifyContent: "center", borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radii.pill, backgroundColor: colors.surfaceRaised, paddingHorizontal: spacing.md, paddingVertical: spacing.xs },
   chipSelected: { borderColor: colors.accent, backgroundColor: colors.accentDark },
-  chipText: { color: colors.textMuted, fontSize: 12, fontWeight: "700" },
+  chipDisabled: { opacity: 0.45 },
+  chipText: { color: colors.textMuted, fontSize: 12, lineHeight: 16, fontWeight: "700" },
   chipTextSelected: { color: colors.accent },
+  chipIndicator: { color: colors.accent },
+  chipIndicatorHidden: { opacity: 0 },
   state: { gap: spacing.md },
   resultSummary: { minHeight: 38, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md },
   resultCount: { color: colors.textMuted, fontSize: 12, fontWeight: "700" },
@@ -391,7 +439,7 @@ const styles = StyleSheet.create({
   tag: { borderRadius: radii.pill, borderWidth: 1, borderColor: colors.borderStrong, paddingHorizontal: spacing.sm, paddingVertical: 3 },
   primaryTag: { borderColor: colors.accent, backgroundColor: colors.accentDark },
   warningTag: { borderColor: colors.warning, backgroundColor: colors.warningSurface },
-  tagText: { color: colors.textMuted, fontSize: 9, lineHeight: 13, fontWeight: "700" },
+  tagText: { color: colors.textMuted, fontSize: 10, lineHeight: 14, fontWeight: "700" },
   primaryTagText: { color: colors.accent },
   warningTagText: { color: colors.warning },
   matchReason: { color: colors.textDim, fontSize: 10, lineHeight: 14 },

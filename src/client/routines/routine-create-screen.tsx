@@ -84,6 +84,11 @@ export function RoutineCreateScreen({ initialMode }: { initialMode: CreateMode |
   const [creatingProgram, setCreatingProgram] = useState(false);
   const [programError, setProgramError] = useState("");
   const programIdempotencyKey = useRef<string | null>(null);
+  const manualValidationError = validateRoutineCreationDraft(manualCode, manualDraft);
+  const manualCodeInUse = existingCodes.some(
+    (code) => code.toUpperCase() === manualCode.trim().toUpperCase(),
+  );
+  const manualCanCreate = !manualValidationError && !manualCodeInUse;
 
   useEffect(() => {
     void loadFoundation();
@@ -334,7 +339,17 @@ export function RoutineCreateScreen({ initialMode }: { initialMode: CreateMode |
               }}
             />
             {manualError ? <Message>{manualError}</Message> : null}
-            <Button title="Create routine" loading={creatingManual} onPress={() => void createManualRoutine()} />
+            {!manualCanCreate && !manualError ? (
+              <Body muted>
+                {manualCodeInUse ? "Choose a unique routine code to continue." : manualValidationError}
+              </Body>
+            ) : null}
+            <Button
+              title="Create routine"
+              disabled={!manualCanCreate}
+              loading={creatingManual}
+              onPress={() => void createManualRoutine()}
+            />
           </Card>
         </>
       ) : generatedProgram ? (

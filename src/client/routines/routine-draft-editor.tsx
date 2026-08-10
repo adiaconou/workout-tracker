@@ -20,6 +20,7 @@ import {
   estimateRoutineDuration,
   moveRoutineSetPreservingTransition,
   removeRoutineSetPreservingTransition,
+  routineDurationEstimateIsWithinTolerance,
   setRestBeforeNextExercise,
   setRestBetweenSets,
 } from "./routine-creation-model";
@@ -73,6 +74,10 @@ export function RoutineDraftEditor({
   const [expandedExercises, setExpandedExercises] = useState<Set<string>>(() => new Set());
   const [expandedSets, setExpandedSets] = useState<Set<string>>(() => new Set());
   const estimate = estimateRoutineDuration(draft);
+  const hasEstimatedWork = draft.exercises.some((exercise) => exercise.sets.length > 0);
+  const timingWithinTolerance = hasEstimatedWork
+    && routineDurationEstimateIsWithinTolerance(estimate);
+  const timingNeedsAttention = hasEstimatedWork && !timingWithinTolerance;
   const exerciseById = useMemo(
     () => new Map(exerciseLibrary.map((exercise) => [exercise.id, exercise])),
     [exerciseLibrary],
@@ -137,20 +142,26 @@ export function RoutineDraftEditor({
         />
         <View accessibilityLiveRegion="polite" style={styles.durationRow}>
           <View>
-            <Text style={styles.durationValue}>~{estimate.estimatedMinutes} min</Text>
+            <Text style={styles.durationValue}>
+              {hasEstimatedWork ? `~${estimate.estimatedMinutes} min` : "—"}
+            </Text>
             <Text style={styles.durationLabel}>live estimate</Text>
           </View>
           <View style={[
             styles.durationStatus,
-            estimate.status === "over_target" && styles.durationStatusWarning,
+            timingNeedsAttention && styles.durationStatusWarning,
+            !hasEstimatedWork && styles.durationStatusNeutral,
           ]}>
             <Text style={[
               styles.durationStatusText,
-              estimate.status === "over_target" && styles.durationStatusWarningText,
+              timingNeedsAttention && styles.durationStatusWarningText,
+              !hasEstimatedWork && styles.durationStatusNeutralText,
             ]}>
-              {estimate.status === "on_target"
-                ? "On target"
-                : `${Math.abs(estimate.deltaMinutes)} min ${estimate.status === "over_target" ? "over" : "under"}`}
+              {!hasEstimatedWork
+                ? "Add exercises to estimate"
+                : estimate.status === "on_target"
+                  ? "On target"
+                  : `${Math.abs(estimate.deltaMinutes)} min ${estimate.status === "over_target" ? "over" : "under"}${timingWithinTolerance ? " · in range" : ""}`}
             </Text>
           </View>
         </View>
@@ -159,16 +170,22 @@ export function RoutineDraftEditor({
       <View style={styles.sectionHeading}>
         <View style={styles.sectionCopy}>
           <Heading size="medium">Exercises</Heading>
-          <Body muted>{draft.exercises.length} selected · reorder or fine-tune any set</Body>
+          <Body muted>
+            {draft.exercises.length
+              ? `${draft.exercises.length} selected · reorder or fine-tune any set`
+              : "Choose exercises from your library"}
+          </Body>
         </View>
-        <Button title="Add exercises" compact variant="secondary" disabled={disabled} onPress={onOpenLibrary} />
+        {draft.exercises.length ? (
+          <Button title="Add exercises" compact variant="secondary" disabled={disabled} onPress={onOpenLibrary} />
+        ) : null}
       </View>
 
       {!draft.exercises.length ? (
         <Card style={styles.emptyCard}>
           <Heading size="small">Choose your first exercises</Heading>
-          <Body muted>Filter the library by muscle, equipment, movement, or any matching keyword.</Body>
-          <Button title="Open exercise library" onPress={onOpenLibrary} disabled={disabled} />
+          <Body muted>Search or filter by muscle, equipment, movement, or any matching keyword.</Body>
+          <Button title="Choose exercises" onPress={onOpenLibrary} disabled={disabled} />
         </Card>
       ) : null}
 
@@ -464,11 +481,13 @@ const styles = StyleSheet.create({
   durationLabel: { color: colors.textDim, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.8, fontWeight: "700" },
   durationStatus: { backgroundColor: colors.successSurface, borderColor: colors.success, borderWidth: 1, borderRadius: radii.pill, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   durationStatusWarning: { backgroundColor: colors.warningSurface, borderColor: colors.warning },
+  durationStatusNeutral: { backgroundColor: colors.surfaceRaised, borderColor: colors.borderStrong },
   durationStatusText: { color: colors.success, fontSize: 12, fontWeight: "800" },
   durationStatusWarningText: { color: colors.warning },
+  durationStatusNeutralText: { color: colors.textMuted },
   sectionHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md, flexWrap: "wrap" },
   sectionCopy: { flex: 1, minWidth: 220, gap: spacing.xs },
-  emptyCard: { alignItems: "flex-start" },
+  emptyCard: { alignItems: "stretch" },
   exerciseCard: { padding: spacing.md, gap: spacing.sm },
   exerciseHeader: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: spacing.sm, borderRadius: radii.md },
   exerciseHeaderCopy: { flex: 1, minWidth: 0 },
