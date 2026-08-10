@@ -1,18 +1,39 @@
-import { router } from "expo-router";
-import { useEffect, useRef, useState } from "react";
+import { router, useFocusEffect } from "expo-router";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  ActivityIndicator,
+  AppState,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from "react-native";
-import type { Exercise, RoutineAggregate, RoutineVersionInput } from "../../contracts/api";
+import type {
+  Exercise,
+  GeneratedRoutineProgram,
+  ProgramGenerationJob,
+  RoutineAggregate,
+  RoutineVersionInput,
+} from "../../contracts/api";
 import { muscleGroups, type MuscleGroup } from "../../domain/entities";
-import { apiRequest } from "../api/client";
+import { ApiError, apiRequest } from "../api/client";
 import { useAuth } from "../auth/public";
 import { Body, Button, Card, Eyebrow, Field, Heading, LoadingView, Message, Screen, StepperField } from "../ui/ui";
 import { colors, radii, spacing } from "../ui/tokens";
 import { ExerciseLibraryPicker } from "./exercise-library-picker";
+import {
+  createProgramGenerationController,
+  type ProgramGenerationController,
+} from "./program-generation-controller";
+import {
+  programGenerationAttemptKey,
+  programGenerationCanRetry,
+  programGenerationIsActive,
+  programGenerationPresentation,
+  type ProgramGenerationAttempt,
+  type ProgramGenerationConnection,
+} from "./program-generation-model";
 import {
   addExercisesToRoutineDraft,
   buildRoutineCreationPayload,
@@ -29,26 +50,19 @@ import type { EditableRoutine } from "./routine-exercise-editing";
 type CreateMode = "manual" | "ai";
 type ExperienceLevel = "beginner" | "intermediate" | "advanced";
 
-type GeneratedRoutineDraft = {
-  code: string;
-  version: RoutineVersionInput;
-  rationale: string;
-};
-
-type GeneratedProgram = {
-  name: string;
-  summary: string;
-  warnings: string[];
-  routines: GeneratedRoutineDraft[];
-};
-
 type EditableGeneratedRoutine = {
   code: string;
   draft: EditableRoutine;
   rationale: string;
 };
 
-export function RoutineCreateScreen({ initialMode }: { initialMode: CreateMode | null }) {
+export function RoutineCreateScreen({
+  initialMode,
+  initialGenerationId,
+}: {
+  initialMode: CreateMode | null;
+  initialGenerationId: string | null;
+}) {
   const { user } = useAuth();
   const defaultDuration = user?.trainingProfile.sessionDurationMin ?? 45;
   const [mode, setMode] = useState<CreateMode | null>(initialMode);
@@ -78,12 +92,21 @@ export function RoutineCreateScreen({ initialMode }: { initialMode: CreateMode |
   const [preferences, setPreferences] = useState("");
   const [generating, setGenerating] = useState(false);
   const [generationError, setGenerationError] = useState("");
-  const [generatedProgram, setGeneratedProgram] = useState<GeneratedProgram | null>(null);
+  const [generationJob, setGenerationJob] = useState<ProgramGenerationJob | null>(null);
+  const [generationConnection, setGenerationConnection] = useState<ProgramGenerationConnection>("connected");
+  const [generationTransportError, setGenerationTransportError] = useState("");
+  const [cancellingGeneration, setCancellingGeneration] = useState(false);
+  const [cancelGenerationError, setCancelGenerationError] = useState("");
+  const [generatedProgram, setGeneratedProgram] = useState<GeneratedRoutineProgram | null>(null);
   const [generatedRoutines, setGeneratedRoutines] = useState<EditableGeneratedRoutine[]>([]);
   const [editingGeneratedIndex, setEditingGeneratedIndex] = useState<number | null>(null);
   const [creatingProgram, setCreatingProgram] = useState(false);
   const [programError, setProgramError] = useState("");
+  const generationIdempotencyAttempt = useRef<ProgramGenerationAttempt | null>(null);
   const programIdempotencyKey = useRef<string | null>(null);
+  const generationController = useRef<ProgramGenerationController | null>(null);
+  const acceptedGenerationId = useRef<string | null>(null);
+  const ignoredGenerationId = useRef<string | null>(null);
   const manualValidationError = validateRoutineCreationDraft(manualCode, manualDraft);
   const manualCodeInUse = existingCodes.some(
     (code) => code.toUpperCase() === manualCode.trim().toUpperCase(),
@@ -98,6 +121,105 @@ export function RoutineCreateScreen({ initialMode }: { initialMode: CreateMode |
     if (manualCodeEdited) return;
     setManualCode(deriveRoutineCodeCandidate(manualDraft.focus, existingCodes));
   }, [existingCodes, manualCodeEdited, manualDraft.focus]);
+
+  useEffect(() => {
+    const controller = createProgramGenerationController({
+      request: apiRequest,
+      schedule: (callback, delayMs) => setTimeout(callback, delayMs),
+      cancelScheduled: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+      isRetryableError: (caught) => !(caught instanceof ApiError) || caught.retryable,
+      errorMessage: (caught) => caught instanceof Error
+        ? caught.message
+        : "Generation status could not be checked.",
+      onJob: (job) => {
+        setGenerationJob(job);
+        setGenerationTransportError("");
+      },
+      onConnection: setGenerationConnection,
+      onFatalError: setGenerationTransportError,
+    });
+    generationController.current = controller;
+    return () => {
+      controller.stop();
+      generationController.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const generationId = initialGenerationId?.trim();
+    if (!generationId) {
+      ignoredGenerationId.current = null;
+      return;
+    }
+    if (ignoredGenerationId.current === generationId) return;
+    ignoredGenerationId.current = null;
+    setMode("ai");
+    setGeneratedProgram(null);
+    setGeneratedRoutines([]);
+    setEditingGeneratedIndex(null);
+    acceptedGenerationId.current = null;
+    generationController.current?.monitor(generationId);
+  }, [initialGenerationId]);
+
+  useFocusEffect(useCallback(() => {
+    generationController.current?.resume();
+    return () => generationController.current?.pause();
+  }, []));
+
+  useEffect(() => {
+    if (Platform.OS === "web") {
+      const updatePollingForVisibility = () => {
+        if (document.visibilityState === "visible") generationController.current?.resume();
+        else generationController.current?.pause();
+      };
+      window.addEventListener("focus", updatePollingForVisibility);
+      document.addEventListener("visibilitychange", updatePollingForVisibility);
+      updatePollingForVisibility();
+      return () => {
+        window.removeEventListener("focus", updatePollingForVisibility);
+        document.removeEventListener("visibilitychange", updatePollingForVisibility);
+      };
+    }
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") generationController.current?.resume();
+      else generationController.current?.pause();
+    });
+    return () => subscription.remove();
+  }, []);
+
+  useEffect(() => {
+    if (
+      loadingFoundation
+      || !generationJob
+      || generationJob.status !== "succeeded"
+      || acceptedGenerationId.current === generationJob.id
+    ) {
+      return;
+    }
+    acceptedGenerationId.current = generationJob.id;
+    if (!generationJob.program) {
+      setGenerationTransportError("Coach finished, but the generated program could not be loaded.");
+      return;
+    }
+    let editable: EditableGeneratedRoutine[];
+    try {
+      editable = generationJob.program.routines.map((routine) => ({
+        code: routine.code,
+        draft: editableRoutineFromInput(routine.version, exerciseLibrary),
+        rationale: routine.rationale,
+      }));
+    } catch {
+      setGenerationTransportError(
+        "This draft uses an exercise that is no longer available. Edit the details and generate a fresh draft.",
+      );
+      return;
+    }
+    setGeneratedProgram(generationJob.program);
+    setProgramName(generationJob.program.name);
+    setGeneratedRoutines(editable);
+    setEditingGeneratedIndex(null);
+    programIdempotencyKey.current = null;
+  }, [exerciseLibrary, generationJob, loadingFoundation]);
 
   async function loadFoundation() {
     setLoadingFoundation(true);
@@ -168,7 +290,7 @@ export function RoutineCreateScreen({ initialMode }: { initialMode: CreateMode |
     }
   }
 
-  async function generateProgram() {
+  async function generateProgram(newAttempt = false) {
     if (generating) return;
     if (!goal.trim()) {
       setGenerationError("Describe the goal for this program.");
@@ -178,40 +300,100 @@ export function RoutineCreateScreen({ initialMode }: { initialMode: CreateMode |
       setGenerationError("Distinct routines cannot exceed training days per week.");
       return;
     }
+    if (newAttempt) {
+      generationController.current?.stop();
+      ignoredGenerationId.current = initialGenerationId?.trim() ?? generationJob?.id ?? null;
+      setGenerationJob(null);
+      setGeneratedProgram(null);
+      setGeneratedRoutines([]);
+      setEditingGeneratedIndex(null);
+      acceptedGenerationId.current = null;
+    }
+    const generationBody = JSON.stringify({
+      name: programName,
+      goal,
+      selectedMuscleGroups: selectedMuscles,
+      trainingDaysPerWeek: trainingDays,
+      routineCount,
+      targetDurationMin: targetDuration,
+      experienceLevel,
+      avoid,
+      limitations,
+      preferences,
+    });
+    const idempotencyKey = programGenerationAttemptKey(
+      generationIdempotencyAttempt.current,
+      generationBody,
+      newAttempt,
+      createGenerationIdempotencyKey,
+    );
+    generationIdempotencyAttempt.current = {
+      key: idempotencyKey,
+      requestFingerprint: generationBody,
+    };
     setGenerating(true);
     setGenerationError("");
+    setGenerationTransportError("");
+    setCancelGenerationError("");
     setProgramError("");
     try {
-      const payload = await apiRequest<{ program: GeneratedProgram }>("/api/v1/assistant/programs/generate", {
+      const payload = await apiRequest<{ generation: ProgramGenerationJob }>("/api/v1/assistant/programs/generate", {
         method: "POST",
-        body: JSON.stringify({
-          name: programName,
-          goal,
-          selectedMuscleGroups: selectedMuscles,
-          trainingDaysPerWeek: trainingDays,
-          routineCount,
-          targetDurationMin: targetDuration,
-          experienceLevel,
-          avoid,
-          limitations,
-          preferences,
-        }),
+        headers: { "x-idempotency-key": idempotencyKey },
+        body: generationBody,
       });
-      const editable = payload.program.routines.map((routine) => ({
-        code: routine.code,
-        draft: editableRoutineFromInput(routine.version, exerciseLibrary),
-        rationale: routine.rationale,
-      }));
-      setGeneratedProgram(payload.program);
-      setProgramName(payload.program.name);
-      setGeneratedRoutines(editable);
-      setEditingGeneratedIndex(null);
-      programIdempotencyKey.current = null;
+      setGenerationJob(payload.generation);
+      setGenerationConnection("connected");
+      ignoredGenerationId.current = null;
+      generationController.current?.monitor(payload.generation.id, payload.generation);
+      router.setParams({ mode: "ai", generationId: payload.generation.id });
     } catch (caught) {
       setGenerationError(caught instanceof Error ? caught.message : "Coach could not generate the program.");
     } finally {
       setGenerating(false);
     }
+  }
+
+  async function cancelGeneration() {
+    const generationId = generationJob?.id ?? initialGenerationId?.trim();
+    if (
+      !generationId
+      || cancellingGeneration
+      || (generationJob && !programGenerationIsActive(generationJob.status))
+    ) return;
+    setCancellingGeneration(true);
+    setCancelGenerationError("");
+    generationController.current?.pause();
+    try {
+      const payload = await apiRequest<{ generation: ProgramGenerationJob }>(
+        `/api/v1/assistant/program-generations/${encodeURIComponent(generationId)}/cancel`,
+        { method: "POST" },
+      );
+      setGenerationJob(payload.generation);
+      generationController.current?.monitor(payload.generation.id, payload.generation);
+      generationController.current?.resume();
+    } catch (caught) {
+      setCancelGenerationError(caught instanceof Error ? caught.message : "Generation could not be cancelled.");
+      generationController.current?.resume();
+    } finally {
+      setCancellingGeneration(false);
+    }
+  }
+
+  function editGenerationDetails() {
+    generationController.current?.stop();
+    ignoredGenerationId.current = generationJob?.id ?? initialGenerationId?.trim() ?? null;
+    setGenerationJob(null);
+    setGenerationConnection("connected");
+    setGenerationTransportError("");
+    setCancelGenerationError("");
+    setGenerationError("");
+    setGeneratedProgram(null);
+    setGeneratedRoutines([]);
+    setEditingGeneratedIndex(null);
+    generationIdempotencyAttempt.current = null;
+    acceptedGenerationId.current = null;
+    router.setParams({ mode: "ai", generationId: "" });
   }
 
   async function createGeneratedProgram() {
@@ -278,6 +460,28 @@ export function RoutineCreateScreen({ initialMode }: { initialMode: CreateMode |
   const pickerExerciseIds = editingGenerated
     ? editingGenerated.draft.exercises.map((exercise) => exercise.exerciseId)
     : manualDraft.exercises.map((exercise) => exercise.exerciseId);
+  const resumableGenerationId = initialGenerationId?.trim();
+  const resumingGeneration = Boolean(
+    resumableGenerationId
+    && ignoredGenerationId.current !== resumableGenerationId
+    && !generationJob
+    && !generationError
+    && !generating,
+  );
+  const generationStatusCard = generationJob ? (
+    <ProgramGenerationStatusCard
+      job={generationJob}
+      connection={generationConnection}
+      routineCount={routineCount}
+      transportError={generationTransportError}
+      cancelError={cancelGenerationError}
+      cancelling={cancellingGeneration}
+      onCheckNow={() => generationController.current?.checkNow()}
+      onCancel={() => void cancelGeneration()}
+      onRetry={() => void generateProgram(true)}
+      onEdit={editGenerationDetails}
+    />
+  ) : null;
 
   return (
     <Screen safeTop={false}>
@@ -297,6 +501,23 @@ export function RoutineCreateScreen({ initialMode }: { initialMode: CreateMode |
             <Heading>How would you like to start?</Heading>
             <Body muted>Both paths use the same editor before anything is created.</Body>
           </View>
+          {generatedProgram ? (
+            <Card style={styles.resumeCard}>
+              <Heading size="small">Your Coach draft is ready</Heading>
+              <Body muted>Review and edit every routine before creating the program.</Body>
+              <Button title="Review draft" variant="secondary" onPress={() => setMode("ai")} />
+            </Card>
+          ) : generationStatusCard ?? (resumingGeneration ? (
+            <ProgramGenerationResumeCard
+              connection={generationConnection}
+              transportError={generationTransportError}
+              cancelError={cancelGenerationError}
+              cancelling={cancellingGeneration}
+              onCheckNow={() => generationController.current?.checkNow()}
+              onCancel={() => void cancelGeneration()}
+              onEdit={editGenerationDetails}
+            />
+          ) : null)}
           <View style={styles.choiceGrid}>
             <Pressable accessibilityRole="button" onPress={() => setMode("manual")} style={({ pressed }) => [styles.modeCard, pressed && styles.pressed]}>
               <Text style={styles.modeMark}>＋</Text>
@@ -397,13 +618,27 @@ export function RoutineCreateScreen({ initialMode }: { initialMode: CreateMode |
             <Heading size="small">Ready to create this program?</Heading>
             <Body muted>All routines are created together and this becomes your active recommendation rotation.</Body>
             <Button title="Create program" loading={creatingProgram} disabled={editingGeneratedIndex !== null} onPress={() => void createGeneratedProgram()} />
-            <Button title="Start over" variant="ghost" disabled={creatingProgram} onPress={() => {
-              setGeneratedProgram(null);
-              setGeneratedRoutines([]);
-              setEditingGeneratedIndex(null);
-              programIdempotencyKey.current = null;
-            }} />
+            <Button title="Edit program details" variant="ghost" disabled={creatingProgram} onPress={editGenerationDetails} />
           </Card>
+        </>
+      ) : generationJob || resumingGeneration ? (
+        <>
+          <View style={styles.intro}>
+            <Eyebrow>Create with Coach</Eyebrow>
+            <Heading>Your program draft</Heading>
+            <Body muted>You can leave this screen while Coach works. Return to this link to resume progress.</Body>
+          </View>
+          {generationStatusCard ?? (
+            <ProgramGenerationResumeCard
+              connection={generationConnection}
+              transportError={generationTransportError}
+              cancelError={cancelGenerationError}
+              cancelling={cancellingGeneration}
+              onCheckNow={() => generationController.current?.checkNow()}
+              onCancel={() => void cancelGeneration()}
+              onEdit={editGenerationDetails}
+            />
+          )}
         </>
       ) : (
         <>
@@ -502,6 +737,135 @@ function GeneratedRoutineOverviewCard({
   );
 }
 
+function ProgramGenerationStatusCard({
+  job,
+  connection,
+  routineCount,
+  transportError,
+  cancelError,
+  cancelling,
+  onCheckNow,
+  onCancel,
+  onRetry,
+  onEdit,
+}: {
+  job: ProgramGenerationJob;
+  connection: ProgramGenerationConnection;
+  routineCount: number;
+  transportError: string;
+  cancelError: string;
+  cancelling: boolean;
+  onCheckNow: () => void;
+  onCancel: () => void;
+  onRetry: () => void;
+  onEdit: () => void;
+}) {
+  const presentation = programGenerationPresentation(job, connection, routineCount);
+  const reviewLoadFailed = job.status === "succeeded" && Boolean(transportError);
+  const displayedPresentation = reviewLoadFailed
+    ? {
+        title: "This draft can no longer be opened",
+        detail: "No routines were created. Generate a fresh draft from your saved program details.",
+        active: false,
+      }
+    : presentation;
+  const canCheckNow = programGenerationIsActive(job.status)
+    && (connection === "reconnecting" || connection === "failed");
+  const canCancel = programGenerationIsActive(job.status) && job.status !== "cancelling";
+  const canStartAgain = programGenerationCanRetry(job)
+    || job.status === "cancelled"
+    || (job.status === "succeeded" && (!job.program || reviewLoadFailed));
+
+  return (
+    <Card style={styles.generationStatusCard}>
+      <View
+        role="status"
+        accessibilityLiveRegion="polite"
+        style={styles.generationStatusHeader}
+      >
+        {displayedPresentation.active ? (
+          <ActivityIndicator
+            accessibilityLabel="Program generation is active"
+            color={colors.accent}
+          />
+        ) : null}
+        <View style={styles.generationStatusCopy}>
+          <Heading size="small">{displayedPresentation.title}</Heading>
+          <Body muted>{displayedPresentation.detail}</Body>
+        </View>
+      </View>
+      {job.error?.message ? <Message>{job.error.message}</Message> : null}
+      {transportError ? <Message>{transportError}</Message> : null}
+      {cancelError ? <Message>{cancelError}</Message> : null}
+      <View style={styles.generationActions}>
+        {canCheckNow ? (
+          <Button title="Check now" variant="secondary" onPress={onCheckNow} />
+        ) : null}
+        {canCancel ? (
+          <Button
+            title="Cancel generation"
+            variant="ghost"
+            loading={cancelling}
+            onPress={onCancel}
+          />
+        ) : null}
+        {canStartAgain ? <Button title="Try again" onPress={onRetry} /> : null}
+        {!displayedPresentation.active ? (
+          <Button title="Edit details" variant="secondary" onPress={onEdit} />
+        ) : null}
+      </View>
+    </Card>
+  );
+}
+
+function ProgramGenerationResumeCard({
+  connection,
+  transportError,
+  cancelError,
+  cancelling,
+  onCheckNow,
+  onCancel,
+  onEdit,
+}: {
+  connection: ProgramGenerationConnection;
+  transportError: string;
+  cancelError: string;
+  cancelling: boolean;
+  onCheckNow: () => void;
+  onCancel: () => void;
+  onEdit: () => void;
+}) {
+  const failed = connection === "failed";
+  const reconnecting = connection === "reconnecting";
+  const title = failed
+    ? "We could not resume this generation"
+    : reconnecting
+      ? "Reconnecting to your generation"
+      : "Checking your generation";
+  const detail = failed
+    ? "The request may still be running. Check again, cancel it, or return to your program details."
+    : "Coach keeps working on the server while we load the latest progress.";
+
+  return (
+    <Card style={styles.generationStatusCard}>
+      <View role="status" accessibilityLiveRegion="polite" style={styles.generationStatusHeader}>
+        {!failed ? <ActivityIndicator accessibilityLabel="Checking program generation" color={colors.accent} /> : null}
+        <View style={styles.generationStatusCopy}>
+          <Heading size="small">{title}</Heading>
+          <Body muted>{detail}</Body>
+        </View>
+      </View>
+      {transportError ? <Message>{transportError}</Message> : null}
+      {cancelError ? <Message>{cancelError}</Message> : null}
+      <View style={styles.generationActions}>
+        {failed || reconnecting ? <Button title="Check now" variant="secondary" onPress={onCheckNow} /> : null}
+        <Button title="Cancel generation" variant="ghost" loading={cancelling} onPress={onCancel} />
+        {failed ? <Button title="Edit details" variant="secondary" onPress={onEdit} /> : null}
+      </View>
+    </Card>
+  );
+}
+
 function SelectionChip({ label: chipLabel, selected, onPress }: { label: string; selected: boolean; onPress: () => void }) {
   return (
     <Pressable
@@ -539,8 +903,12 @@ function createIdempotencyKey() {
   return `program-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function createGenerationIdempotencyKey() {
+  return `program-generation-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 const styles = StyleSheet.create({
-  backAction: { alignSelf: "flex-start", minHeight: 40, justifyContent: "center", borderRadius: radii.sm, paddingHorizontal: spacing.sm, marginLeft: -spacing.sm },
+  backAction: { alignSelf: "flex-start", minHeight: 44, justifyContent: "center", borderRadius: radii.sm, paddingHorizontal: spacing.sm, marginLeft: -spacing.sm },
   backText: { color: colors.textMuted, fontSize: 13, fontWeight: "700" },
   intro: { gap: spacing.sm },
   choiceGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.lg },
@@ -548,11 +916,12 @@ const styles = StyleSheet.create({
   modeMark: { width: 44, height: 44, textAlign: "center", textAlignVertical: "center", color: colors.background, backgroundColor: colors.accent, borderRadius: radii.md, fontSize: 24, lineHeight: 44, fontWeight: "900" },
   modeAction: { color: colors.accent, fontSize: 14, fontWeight: "800" },
   publishCard: { gap: spacing.lg },
+  resumeCard: { gap: spacing.md },
   aiForm: { gap: spacing.xl },
   formSection: { gap: spacing.sm },
   formLabel: { color: colors.textMuted, fontSize: 12, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.7 },
   chips: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
-  chip: { minHeight: 40, justifyContent: "center", borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radii.pill, backgroundColor: colors.background, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  chip: { minHeight: 44, justifyContent: "center", borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radii.pill, backgroundColor: colors.background, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   chipSelected: { borderColor: colors.accent, backgroundColor: colors.accentDark },
   chipText: { color: colors.textMuted, fontSize: 12, fontWeight: "700" },
   chipTextSelected: { color: colors.accent },
@@ -571,5 +940,9 @@ const styles = StyleSheet.create({
   generatedTimingStatusWarning: { color: colors.warning },
   rationale: { color: colors.textDim, fontSize: 12, lineHeight: 18 },
   editingHeader: { gap: spacing.md },
+  generationStatusCard: { gap: spacing.lg },
+  generationStatusHeader: { flexDirection: "row", alignItems: "flex-start", gap: spacing.md },
+  generationStatusCopy: { flex: 1, gap: spacing.xs },
+  generationActions: { gap: spacing.sm },
   pressed: { opacity: 0.72 },
 });

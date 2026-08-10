@@ -21,6 +21,7 @@ const entityMigrationFilenames = [
   "drizzle/0011_repair_workout_set_metrics.sql",
   "drizzle/0012_sturdy_harpoon.sql",
   "drizzle/0013_outstanding_jean_grey.sql",
+  "drizzle/0014_program_generation_jobs.sql",
 ];
 
 test("applies the complete migration chain and creates the normalized entity model", async () => {
@@ -38,6 +39,8 @@ test("applies the complete migration chain and creates the normalized entity mod
     const programIndexes = sqlite.prepare("PRAGMA index_list(routine_programs)").all();
     const exerciseCatalogColumns = sqlite.prepare("PRAGMA table_info(exercise_catalog)").all();
     const exerciseCatalogIndexes = sqlite.prepare("PRAGMA index_list(exercise_catalog)").all();
+    const programGenerationJobColumns = sqlite.prepare("PRAGMA table_info(assistant_program_generation_jobs)").all();
+    const programGenerationJobIndexes = sqlite.prepare("PRAGMA index_list(assistant_program_generation_jobs)").all();
     const inspected = JSON.stringify({
       tables,
       appUsers: appUserColumns,
@@ -50,10 +53,12 @@ test("applies the complete migration chain and creates the normalized entity mod
       exercisePlans: sqlite.prepare("PRAGMA table_info(assistant_exercise_change_plans)").all(),
       exercisePlanIndexes: sqlite.prepare("PRAGMA index_list(assistant_exercise_change_plans)").all(),
       exercisePlanForeignKeys: sqlite.prepare("PRAGMA foreign_key_list(assistant_exercise_change_plans)").all(),
+      programGenerationJobs: programGenerationJobColumns,
+      programGenerationJobIndexes,
       workoutSetForeignKeys: sqlite.prepare("PRAGMA foreign_key_list(workout_sets)").all(),
     });
     sqlite.close();
-    for (const table of ["app_users", "auth_identities", "auth_sessions", "exercise_catalog", "exercise_favorites", "exercise_muscles", "routine_programs", "routine_program_routines", "routine_versions", "routine_version_exercises", "routine_set_templates", "workout_exercises", "workout_sets", "coach_profiles", "assistant_threads", "assistant_messages", "coach_check_ins", "assistant_change_plans", "assistant_exercise_change_plans", "assistant_tool_calls"]) {
+    for (const table of ["app_users", "auth_identities", "auth_sessions", "exercise_catalog", "exercise_favorites", "exercise_muscles", "routine_programs", "routine_program_routines", "routine_versions", "routine_version_exercises", "routine_set_templates", "workout_exercises", "workout_sets", "coach_profiles", "assistant_program_generation_jobs", "assistant_threads", "assistant_messages", "coach_check_ins", "assistant_change_plans", "assistant_exercise_change_plans", "assistant_tool_calls"]) {
       assert.match(inspected, new RegExp(`\\b${table}\\b`));
     }
     assert.match(inspected, /current_version_id/);
@@ -95,6 +100,28 @@ test("applies the complete migration chain and creates the normalized entity mod
       (index) => index.name === "exercise_catalog_owner_template_idx" && index.unique === 1,
     ));
     assert.deepEqual(
+      programGenerationJobColumns.map((column) => column.name),
+      [
+        "id", "owner_email", "idempotency_key", "request_fingerprint", "openai_response_id",
+        "status", "request_json", "result_json", "error_code", "error_message",
+        "error_retryable", "created_at", "updated_at", "expires_at",
+      ],
+    );
+    assert.equal(programGenerationJobColumns.find((column) => column.name === "openai_response_id")?.notnull, 0);
+    assert.equal(programGenerationJobColumns.find((column) => column.name === "error_retryable")?.dflt_value, "false");
+    assert.ok(programGenerationJobIndexes.some(
+      (index) => index.name === "assistant_program_generation_jobs_owner_idempotency_idx" && index.unique === 1,
+    ));
+    assert.ok(programGenerationJobIndexes.some(
+      (index) => index.name === "assistant_program_generation_jobs_openai_response_idx" && index.unique === 1,
+    ));
+    assert.ok(programGenerationJobIndexes.some(
+      (index) => index.name === "assistant_program_generation_jobs_owner_updated_idx" && index.unique === 0,
+    ));
+    assert.ok(programGenerationJobIndexes.some(
+      (index) => index.name === "assistant_program_generation_jobs_expires_idx" && index.unique === 0,
+    ));
+    assert.deepEqual(
       workoutSetColumns.filter((column) => ["started_at", "elapsed_seconds"].includes(column.name)).map((column) => column.name),
       ["started_at", "elapsed_seconds"],
     );
@@ -112,7 +139,9 @@ test("exercise provenance migration adopts generated defaults without changing o
   const database = join(directory, "exercise-provenance.sqlite");
   try {
     const sqlite = new DatabaseSync(database);
-    const priorSql = (await Promise.all(entityMigrationFilenames.slice(0, -1).map(
+    const provenanceMigration = "drizzle/0013_outstanding_jean_grey.sql";
+    const priorSql = (await Promise.all(entityMigrationFilenames
+      .slice(0, entityMigrationFilenames.indexOf(provenanceMigration)).map(
       (filename) => readFile(new URL(filename, root), "utf8"),
     ))).join("\n").replaceAll("--> statement-breakpoint", "\n");
     sqlite.exec(priorSql);
@@ -144,7 +173,7 @@ test("exercise provenance migration adopts generated defaults without changing o
     );
 
     sqlite.exec((await readFile(
-      new URL("drizzle/0013_outstanding_jean_grey.sql", root),
+      new URL(provenanceMigration, root),
       "utf8",
     )).replaceAll("--> statement-breakpoint", "\n"));
 

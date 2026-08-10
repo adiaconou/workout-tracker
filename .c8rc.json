@@ -39,6 +39,7 @@
     "src/server/db/entity-schema.ts",
     "src/server/db/index.ts",
     "src/server/db/previous-performance.ts",
+    "src/server/db/program-generation-job-repository.ts",
     "src/server/db/program-repository.ts",
     "src/server/db/training-store.ts",
     "src/server/exercises/routes.ts",

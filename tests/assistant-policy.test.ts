@@ -28,6 +28,14 @@ test("assistant request policy resolves every supported route and rejects incomp
     ["POST", ["assistant", "messages"], { kind: "message-create" }],
     ["POST", ["assistant", "check-ins"], { kind: "check-in-create" }],
     ["POST", ["assistant", "programs", "generate"], { kind: "program-generate" }],
+    ["GET", ["assistant", "program-generations", "job-1"], {
+      kind: "program-generation-read",
+      jobId: "job-1",
+    }],
+    ["POST", ["assistant", "program-generations", "job-2", "cancel"], {
+      kind: "program-generation-cancel",
+      jobId: "job-2",
+    }],
     ["POST", ["assistant", "plans", "plan-1", "apply"], { kind: "plan-apply", planId: "plan-1" }],
     ["POST", ["assistant", "plans", "plan-2", "reject"], { kind: "plan-reject", planId: "plan-2" }],
   ] as const;
@@ -45,6 +53,13 @@ test("assistant request policy resolves every supported route and rejects incomp
     ["GET", ["assistant", "programs", "generate"]],
     ["POST", ["assistant", "programs"]],
     ["POST", ["assistant", "programs", "unexpected"]],
+    ["POST", ["assistant", "programs", "generate", "unexpected"]],
+    ["GET", ["assistant", "program-generations"]],
+    ["POST", ["assistant", "program-generations", "job-1"]],
+    ["PATCH", ["assistant", "program-generations", "job-1"]],
+    ["GET", ["assistant", "program-generations", "job-1", "cancel"]],
+    ["POST", ["assistant", "program-generations", "job-1", "unexpected"]],
+    ["POST", ["assistant", "program-generations", "job-1", "cancel", "unexpected"]],
     ["POST", ["assistant", "plans"]],
     ["POST", ["assistant", "plans", "plan-1"]],
     ["GET", ["assistant", "plans", "plan-1", "apply"]],

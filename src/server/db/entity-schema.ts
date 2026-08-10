@@ -194,6 +194,19 @@ const createStatements = [
     reasoning_effort TEXT NOT NULL DEFAULT 'medium',
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS assistant_program_generation_jobs (
+    id TEXT PRIMARY KEY, owner_email TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL, request_fingerprint TEXT NOT NULL,
+    openai_response_id TEXT, status TEXT NOT NULL DEFAULT 'starting',
+    request_json TEXT NOT NULL, result_json TEXT,
+    error_code TEXT, error_message TEXT,
+    error_retryable INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT NOT NULL
+  )`,
+  "CREATE UNIQUE INDEX IF NOT EXISTS assistant_program_generation_jobs_owner_idempotency_idx ON assistant_program_generation_jobs(owner_email, idempotency_key)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS assistant_program_generation_jobs_openai_response_idx ON assistant_program_generation_jobs(openai_response_id)",
+  "CREATE INDEX IF NOT EXISTS assistant_program_generation_jobs_owner_updated_idx ON assistant_program_generation_jobs(owner_email, updated_at)",
+  "CREATE INDEX IF NOT EXISTS assistant_program_generation_jobs_expires_idx ON assistant_program_generation_jobs(expires_at)",
   `CREATE TABLE IF NOT EXISTS assistant_threads (
     id TEXT PRIMARY KEY, owner_email TEXT NOT NULL,
     title TEXT NOT NULL DEFAULT 'New coaching conversation',

@@ -1,11 +1,17 @@
 import { validateRoutineVersionInput } from "../../domain/routines/validation";
 import { isRoutineVersionSemanticallyEqual } from "../../domain/routines/comparison";
+import type {
+  GeneratedRoutineProgram as GeneratedRoutineProgramPayload,
+  ProgramGenerationJob,
+} from "../../contracts/api";
 import {
   ROUTINE_DURATION_ESTIMATE_ASSUMPTIONS,
   ROUTINE_DURATION_ESTIMATE_TOLERANCE,
   routineDurationToleranceMinutes,
 } from "../../domain/routines/duration";
 import { getEntityServices } from "../services";
+import { getProgramGenerationJobRepository } from "../db";
+import type { StoredProgramGenerationJob } from "../db/program-generation-job-repository";
 import {
   muscleGroups,
   normalizeExerciseName,
@@ -49,6 +55,7 @@ import {
   generatedProgramFromResponse,
   normalizeProgramGenerationRequest,
   unavailableSelectedMuscleGroups,
+  type ProgramGenerationRequest,
 } from "./program-generation";
 import {
   boundedInteger,
@@ -66,6 +73,18 @@ import {
   rating,
   resolveAssistantRequest,
 } from "./policy";
+import {
+  fingerprintProgramGenerationRequest,
+  mapProgramGenerationRemoteResponse,
+  normalizeProgramGenerationIdempotencyKey,
+  PROGRAM_GENERATION_POLL_AFTER_MS,
+  programGenerationAwaitsResponseAttachment,
+  programGenerationExpiresAt,
+  programGenerationIsExpired,
+  programGenerationTerminalRetainedUntil,
+  programGenerationValidationLeaseStaleBefore,
+  selectProgramGenerationReasoningEffort,
+} from "./program-generation-job";
 import { apiError, apiResponse, errorMessage, readJson } from "../http";
 import type { ApiUser, WorkerEnv } from "../types";
 
@@ -88,6 +107,15 @@ type CoachProfile = {
   reasoningEffort: string;
   createdAt: string;
   updatedAt: string;
+};
+
+type StoredProgramGenerationContext = {
+  request: Pick<
+    ProgramGenerationRequest,
+    "selectedMuscleGroups" | "routineCount" | "targetDurationMin"
+  >;
+  availableExercises: Array<Pick<Exercise, "id" | "muscles">>;
+  existingRoutineCodes: string[];
 };
 
 type AssistantThread = {
@@ -153,16 +181,23 @@ type ExerciseChangePlanRow = {
 };
 
 const assistantApiTimeoutMs = 55_000;
+const assistantBackgroundRequestTimeoutMs = 15_000;
+const assistantModelDiscoveryTimeoutMs = 5_000;
 const routineCreationApplyLeaseMs = 60_000;
 let modelCache: { expiresAt: number; models: AssistantModelOption[] } | null = null;
 
 class OpenAIRequestError extends Error {
-  constructor(message: string, readonly status = 502) {
+  constructor(
+    message: string,
+    readonly status = 502,
+    readonly upstreamStatus: number | null = null,
+  ) {
     super(message);
   }
 }
 
 class StaleExercisePlanError extends Error {}
+class StaleProgramGenerationContextError extends Error {}
 
 export async function handleAssistantRequest(context: AssistantContext) {
   const { request, segments } = context;
@@ -178,6 +213,12 @@ export async function handleAssistantRequest(context: AssistantContext) {
   if (decision?.kind === "message-create") return createAssistantMessage(context);
   if (decision?.kind === "check-in-create") return createCoachCheckIn(context);
   if (decision?.kind === "program-generate") return generateRoutineProgram(context);
+  if (decision?.kind === "program-generation-read") {
+    return readRoutineProgramGeneration(context, decision.jobId);
+  }
+  if (decision?.kind === "program-generation-cancel") {
+    return cancelRoutineProgramGeneration(context, decision.jobId);
+  }
   if (decision?.kind === "plan-apply") return applyChangePlan(context, decision.planId);
   if (decision?.kind === "plan-reject") return rejectChangePlan(context, decision.planId);
 
@@ -301,7 +342,8 @@ async function createCoachCheckIn({ request, env, user }: AssistantContext) {
   }
 }
 
-async function generateRoutineProgram({ request, env, user }: AssistantContext) {
+async function generateRoutineProgram(context: AssistantContext) {
+  const { request, env, user } = context;
   if (!env.OPENAI_API_KEY) {
     return apiError(
       request,
@@ -312,8 +354,12 @@ async function generateRoutineProgram({ request, env, user }: AssistantContext) 
   }
 
   let generationRequest;
+  let idempotencyKey: string;
   try {
     generationRequest = normalizeProgramGenerationRequest(await readJson(request));
+    idempotencyKey = normalizeProgramGenerationIdempotencyKey(
+      request.headers.get("x-idempotency-key"),
+    );
   } catch (error) {
     return apiError(
       request,
@@ -323,6 +369,40 @@ async function generateRoutineProgram({ request, env, user }: AssistantContext) 
     );
   }
 
+  const repository = getProgramGenerationJobRepository();
+  let requestFingerprint: string;
+  try {
+    requestFingerprint = await fingerprintProgramGenerationRequest(generationRequest);
+    await repository.pruneExpired(new Date().toISOString());
+  } catch (error) {
+    return apiError(
+      request,
+      500,
+      "coach_program_generation_error",
+      errorMessage(error, "Program generation could not be prepared."),
+      true,
+    );
+  }
+  const existingJob = await repository.getByIdempotency(user.email, idempotencyKey);
+  if (existingJob) {
+    if (existingJob.requestFingerprint !== requestFingerprint) {
+      return apiError(
+        request,
+        409,
+        "coach_program_generation_idempotency_conflict",
+        "That generation request was already used for different program details.",
+      );
+    }
+    const replayedJob = existingJob.status === "starting"
+      && !existingJob.openAIResponseId
+      && !programGenerationAwaitsResponseAttachment(existingJob.updatedAt)
+      ? await failUnattachedProgramGeneration(user.email, existingJob)
+      : existingJob;
+    return programGenerationResponse(request, replayedJob, 202, true);
+  }
+
+  let job: StoredProgramGenerationJob | null = null;
+  let remoteResponseId: string | null = null;
   try {
     const services = getEntityServices();
     const [profile, catalog, exercises, routines] = await Promise.all([
@@ -362,8 +442,7 @@ async function generateRoutineProgram({ request, env, user }: AssistantContext) 
         "The Coach model saved in your profile is not available for this API key.",
       );
     }
-    const reasoningEffort = cleanReasoningEffort(
-      profile.reasoningEffort,
+    const reasoningEffort = selectProgramGenerationReasoningEffort(
       availableModel.reasoningEfforts,
     );
     const availableExerciseIds = exercises.map((exercise) => exercise.id);
@@ -373,6 +452,37 @@ async function generateRoutineProgram({ request, env, user }: AssistantContext) 
       generationRequest.routineCount,
       generationRequest.targetDurationMin,
     );
+    const createdAt = new Date().toISOString();
+    const storedContext: StoredProgramGenerationContext = {
+      request: {
+        selectedMuscleGroups: generationRequest.selectedMuscleGroups,
+        routineCount: generationRequest.routineCount,
+        targetDurationMin: generationRequest.targetDurationMin,
+      },
+      availableExercises: exercises.map(({ id, muscles }) => ({ id, muscles })),
+      existingRoutineCodes,
+    };
+    const created = await repository.createStarting(user.email, {
+      id: crypto.randomUUID(),
+      idempotencyKey,
+      requestFingerprint,
+      requestJson: JSON.stringify(storedContext),
+      createdAt,
+      expiresAt: programGenerationExpiresAt(createdAt),
+    });
+    if (created.kind === "conflict") {
+      return apiError(
+        request,
+        409,
+        "coach_program_generation_idempotency_conflict",
+        "That generation request was already used for different program details.",
+      );
+    }
+    job = created.job;
+    if (created.kind === "replayed") {
+      return programGenerationResponse(request, job, 202, true);
+    }
+
     const response = await createOpenAIResponse(env, {
       model,
       reasoningEffort,
@@ -398,21 +508,66 @@ Return exactly one complete program by calling return_routine_program. Do not re
       }],
       tools: [generationTool],
       toolChoice: { type: "function", name: "return_routine_program" },
+      background: true,
+      metadata: { program_generation_id: job.id },
+      textVerbosity: "low",
+      timeoutMs: assistantBackgroundRequestTimeoutMs,
+      timeoutMessage: "Coach could not start program generation in time. Try again.",
     });
-    try {
-      const program = generatedProgramFromResponse(response, {
-        request: generationRequest,
-        availableExercises: exercises,
-        existingRoutineCodes,
-      });
-      return apiResponse(request, { program });
-    } catch (error) {
-      throw new OpenAIRequestError(
-        errorMessage(error, "The model returned an invalid routine program."),
-      );
+    if (!response.id) {
+      throw new OpenAIRequestError("OpenAI did not return a program generation ID.");
     }
+    remoteResponseId = response.id;
+    const remote = mapProgramGenerationRemoteResponse(response);
+    const attached = await repository.attachResponse(
+      user.email,
+      job.id,
+      response.id,
+      remote.kind === "pending" ? remote.status : "in_progress",
+      new Date().toISOString(),
+    );
+    job = await repository.get(user.email, job.id);
+    if (!attached) {
+      if (!job || job.openAIResponseId !== response.id) {
+        await cancelOpenAIResponse(env, response.id).catch((cancelError) => {
+          console.error("Unattached program generation response could not be cancelled", cancelError);
+        });
+      }
+      if (!job) throw new Error("Program generation could not be reloaded.");
+      if (job.status === "cancelling") {
+        const cancelled = await finishRoutineProgramGenerationCancellation(context, job);
+        return programGenerationResponse(request, cancelled, 202, true);
+      }
+      return programGenerationResponse(request, job, 202, true);
+    }
+    if (!job) throw new Error("Program generation could not be reloaded.");
+    if (job.status === "cancelling") {
+      const cancelled = await finishRoutineProgramGenerationCancellation(context, job);
+      return programGenerationResponse(request, cancelled, 202, true);
+    }
+    const processed = await processRoutineProgramGenerationResponse(context, job, response);
+    return programGenerationResponse(request, processed, 202, true);
   } catch (error) {
     const status = error instanceof OpenAIRequestError ? error.status : 500;
+    if (remoteResponseId) {
+      await cancelOpenAIResponse(env, remoteResponseId).catch((cancelError) => {
+        console.error("Failed program generation response could not be cancelled", cancelError);
+      });
+    }
+    if (job) {
+      const now = new Date().toISOString();
+      await repository.fail(
+        user.email,
+        job.id,
+        {
+          code: "coach_program_generation_failed",
+          message: errorMessage(error, "The program could not be generated."),
+          retryable: status === 429 || status >= 500,
+        },
+        now,
+        programGenerationTerminalRetainedUntil(now),
+      ).catch((storageError) => console.error("Program generation failure could not be recorded", storageError));
+    }
     return apiError(
       request,
       status,
@@ -423,6 +578,428 @@ Return exactly one complete program by calling return_routine_program. Do not re
       status === 429 || status >= 500,
     );
   }
+}
+
+async function readRoutineProgramGeneration(
+  context: AssistantContext,
+  jobId: string,
+) {
+  const { request, env, user } = context;
+  const repository = getProgramGenerationJobRepository();
+  const now = new Date().toISOString();
+  const job = await repository.get(user.email, jobId);
+  if (!job) {
+    await repository.pruneExpired(now);
+    return apiError(request, 404, "coach_program_generation_not_found", "Program generation not found.");
+  }
+  if (programGenerationIsTerminal(job.status)) {
+    if (programGenerationIsExpired(job.expiresAt, Date.parse(now))) {
+      await repository.pruneExpired(now);
+      return apiError(request, 404, "coach_program_generation_not_found", "Program generation not found.");
+    }
+    await repository.pruneExpired(now);
+    return programGenerationResponse(request, job);
+  }
+  if (programGenerationIsExpired(job.expiresAt, Date.parse(now))) {
+    const expired = job.status === "cancelling"
+      ? await finishRoutineProgramGenerationCancellation(context, job, true)
+      : await expireRoutineProgramGeneration(context, job);
+    await repository.pruneExpired(now);
+    return programGenerationResponse(request, expired);
+  }
+  await repository.pruneExpired(now);
+  if (
+    job.status === "starting"
+    && !job.openAIResponseId
+    && !programGenerationAwaitsResponseAttachment(job.updatedAt, Date.parse(now))
+  ) {
+    const failed = await failUnattachedProgramGeneration(user.email, job);
+    return programGenerationResponse(request, failed);
+  }
+  if (!env.OPENAI_API_KEY) {
+    return apiError(
+      request,
+      503,
+      "openai_not_configured",
+      "Program generation needs an OpenAI API key configured in the Site environment.",
+      true,
+    );
+  }
+  try {
+    if (job.status === "cancelling") {
+      const cancelled = await finishRoutineProgramGenerationCancellation(context, job);
+      return programGenerationResponse(request, cancelled);
+    }
+    if (!job.openAIResponseId) {
+      return programGenerationResponse(request, job);
+    }
+    const response = await retrieveOpenAIResponse(env, job.openAIResponseId);
+    const processed = await processRoutineProgramGenerationResponse(context, job, response);
+    return programGenerationResponse(request, processed);
+  } catch (error) {
+    if (error instanceof OpenAIRequestError && error.upstreamStatus === 404) {
+      const expired = await expireRoutineProgramGeneration(context, job);
+      return programGenerationResponse(request, expired);
+    }
+    const status = error instanceof OpenAIRequestError ? error.status : 500;
+    return apiError(
+      request,
+      status,
+      "coach_program_generation_status_failed",
+      errorMessage(error, "Coach is still working, but its status could not be checked."),
+      status === 429 || status >= 500,
+    );
+  }
+}
+
+async function cancelRoutineProgramGeneration(
+  context: AssistantContext,
+  jobId: string,
+) {
+  const { request, user } = context;
+  const repository = getProgramGenerationJobRepository();
+  const now = new Date().toISOString();
+  let job = await repository.get(user.email, jobId);
+  if (!job) {
+    await repository.pruneExpired(now);
+    return apiError(request, 404, "coach_program_generation_not_found", "Program generation not found.");
+  }
+  if (programGenerationIsTerminal(job.status)) {
+    if (programGenerationIsExpired(job.expiresAt, Date.parse(now))) {
+      await repository.pruneExpired(now);
+      return apiError(request, 404, "coach_program_generation_not_found", "Program generation not found.");
+    }
+    await repository.pruneExpired(now);
+    return programGenerationResponse(request, job);
+  }
+  const forceSettle = programGenerationIsExpired(job.expiresAt, Date.parse(now));
+  if (job.status !== "cancelling") {
+    await repository.beginCancel(user.email, job.id, now);
+    job = await repository.get(user.email, job.id) ?? job;
+  }
+  if (!forceSettle) await repository.pruneExpired(now);
+  if (programGenerationIsTerminal(job.status)) return programGenerationResponse(request, job);
+  try {
+    const cancelled = await finishRoutineProgramGenerationCancellation(context, job, forceSettle);
+    if (forceSettle) await repository.pruneExpired(now);
+    return programGenerationResponse(request, cancelled);
+  } catch (error) {
+    const status = error instanceof OpenAIRequestError ? error.status : 500;
+    return apiError(
+      request,
+      status,
+      "coach_program_generation_cancel_failed",
+      errorMessage(error, "Program generation could not be cancelled yet."),
+      status === 429 || status >= 500,
+    );
+  }
+}
+
+async function processRoutineProgramGenerationResponse(
+  context: AssistantContext,
+  job: StoredProgramGenerationJob,
+  response: CoachResponse,
+) {
+  const repository = getProgramGenerationJobRepository();
+  let remote;
+  try {
+    remote = mapProgramGenerationRemoteResponse(response);
+  } catch (error) {
+    throw new OpenAIRequestError(
+      errorMessage(error, "OpenAI returned an unsupported program generation status."),
+    );
+  }
+  const now = new Date().toISOString();
+  if (remote.kind === "pending") {
+    if (programGenerationIsExpired(job.expiresAt)) {
+      return expireRoutineProgramGeneration(context, job);
+    }
+    await repository.setPending(context.user.email, job.id, remote.status, now);
+    return await repository.get(context.user.email, job.id) ?? job;
+  }
+  if (remote.kind === "cancelled") {
+    await repository.cancel(
+      context.user.email,
+      job.id,
+      now,
+      programGenerationTerminalRetainedUntil(now),
+    );
+    return await repository.get(context.user.email, job.id) ?? job;
+  }
+  if (remote.kind === "failed") {
+    await repository.fail(
+      context.user.email,
+      job.id,
+      {
+        code: "coach_program_generation_failed",
+        message: remote.error,
+        retryable: true,
+      },
+      now,
+      programGenerationTerminalRetainedUntil(now),
+      job.status === "validating" ? job.updatedAt : undefined,
+    );
+    return await repository.get(context.user.email, job.id) ?? job;
+  }
+  return finalizeRoutineProgramGeneration(context, job, response);
+}
+
+async function finalizeRoutineProgramGeneration(
+  { user }: AssistantContext,
+  job: StoredProgramGenerationJob,
+  response: CoachResponse,
+) {
+  const repository = getProgramGenerationJobRepository();
+  const validationClaimedAt = new Date().toISOString();
+  const claimed = await repository.claimValidation(
+    user.email,
+    job.id,
+    validationClaimedAt,
+    programGenerationValidationLeaseStaleBefore(validationClaimedAt),
+  );
+  if (!claimed) return await repository.get(user.email, job.id) ?? job;
+
+  try {
+    const services = getEntityServices();
+    const [exercises, routines] = await Promise.all([
+      services.exercises.list(user.email, { availableOnly: true }),
+      services.routines.list(user.email, true),
+    ]);
+    const storedContext = storedProgramGenerationContext(
+      job.requestJson,
+      exercises,
+      routines.map((routine) => routine.code),
+    );
+    const program = generatedProgramFromResponse(response, {
+      request: storedContext.request,
+      availableExercises: storedContext.availableExercises,
+      existingRoutineCodes: storedContext.existingRoutineCodes,
+    });
+    assertProgramGenerationContextCurrent(program, exercises, routines.map((routine) => routine.code));
+    const now = new Date().toISOString();
+    await repository.succeed(
+      user.email,
+      job.id,
+      validationClaimedAt,
+      program,
+      now,
+      programGenerationTerminalRetainedUntil(now),
+    );
+  } catch (error) {
+    const now = new Date().toISOString();
+    await repository.fail(
+      user.email,
+      job.id,
+      {
+        code: error instanceof StaleProgramGenerationContextError
+          ? "coach_program_generation_context_changed"
+          : "coach_program_generation_failed",
+        message: errorMessage(error, "The model returned an invalid routine program."),
+        retryable: true,
+      },
+      now,
+      programGenerationTerminalRetainedUntil(now),
+      validationClaimedAt,
+    );
+  }
+  return await repository.get(user.email, job.id) ?? job;
+}
+
+function storedProgramGenerationContext(
+  value: string,
+  fallbackExercises: ReadonlyArray<Pick<Exercise, "id" | "muscles">>,
+  fallbackRoutineCodes: readonly string[],
+) {
+  const parsed = JSON.parse(value) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Stored program generation context is invalid.");
+  }
+  const record = parsed as Record<string, unknown>;
+  if (!("request" in record)) {
+    return {
+      request: normalizeProgramGenerationRequest(record),
+      availableExercises: [...fallbackExercises],
+      existingRoutineCodes: [...fallbackRoutineCodes],
+    };
+  }
+  if (
+    !Array.isArray(record.availableExercises)
+    || !record.availableExercises.every((exercise) => (
+      exercise !== null
+      && typeof exercise === "object"
+      && !Array.isArray(exercise)
+      && typeof (exercise as Record<string, unknown>).id === "string"
+      && Array.isArray((exercise as Record<string, unknown>).muscles)
+    ))
+    || !Array.isArray(record.existingRoutineCodes)
+    || !record.existingRoutineCodes.every((code) => typeof code === "string")
+  ) {
+    throw new Error("Stored program generation context is invalid.");
+  }
+  return {
+    request: storedProgramGenerationValidationRequest(record.request),
+    availableExercises: record.availableExercises as Array<Pick<Exercise, "id" | "muscles">>,
+    existingRoutineCodes: record.existingRoutineCodes as string[],
+  };
+}
+
+function storedProgramGenerationValidationRequest(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Stored program generation context is invalid.");
+  }
+  const record = value as Record<string, unknown>;
+  return normalizeProgramGenerationRequest({
+    name: "",
+    goal: "Validate the generated routine program.",
+    selectedMuscleGroups: record.selectedMuscleGroups,
+    trainingDaysPerWeek: record.routineCount,
+    routineCount: record.routineCount,
+    targetDurationMin: record.targetDurationMin,
+    experienceLevel: "beginner",
+    avoid: "",
+    limitations: "",
+    preferences: "",
+  });
+}
+
+function assertProgramGenerationContextCurrent(
+  program: GeneratedRoutineProgramPayload,
+  exercises: ReadonlyArray<Pick<Exercise, "id">>,
+  routineCodes: readonly string[],
+) {
+  const currentExerciseIds = new Set(exercises.map((exercise) => exercise.id));
+  const unavailableExercise = program.routines
+    .flatMap((routine) => routine.version.exercises)
+    .find((exercise) => !currentExerciseIds.has(exercise.exerciseId));
+  if (unavailableExercise) {
+    throw new StaleProgramGenerationContextError(
+      "The exercise library or Training Setup changed while Coach was generating. Generate a fresh draft.",
+    );
+  }
+  const currentRoutineCodes = new Set(routineCodes.map((code) => code.trim().toUpperCase()));
+  const collidingRoutine = program.routines.find((routine) => currentRoutineCodes.has(routine.code));
+  if (collidingRoutine) {
+    throw new StaleProgramGenerationContextError(
+      `Routine code ${collidingRoutine.code} was added while Coach was generating. Generate a fresh draft.`,
+    );
+  }
+}
+
+async function finishRoutineProgramGenerationCancellation(
+  { env, user }: AssistantContext,
+  job: StoredProgramGenerationJob,
+  forceSettle = false,
+) {
+  const repository = getProgramGenerationJobRepository();
+  if (job.openAIResponseId) {
+    if (!env.OPENAI_API_KEY) {
+      if (!forceSettle) {
+        throw new OpenAIRequestError(
+          "Program generation cannot be cancelled until the OpenAI API key is restored.",
+          503,
+        );
+      }
+    } else {
+      try {
+        await cancelOpenAIResponse(env, job.openAIResponseId);
+      } catch (error) {
+        const responseNoLongerExists = error instanceof OpenAIRequestError
+          && error.upstreamStatus === 404;
+        // Cancels are idempotent while OpenAI retains the Response; an exact 404 means there is no
+        // remaining remote draft to preserve, so completing the user's local discard is safe.
+        if (!responseNoLongerExists && !forceSettle) throw error;
+        if (!responseNoLongerExists) {
+          console.error("Expired program generation response could not be cancelled", error);
+        }
+      }
+    }
+  } else if (!forceSettle && programGenerationAwaitsResponseAttachment(job.updatedAt)) {
+    return job;
+  }
+  const now = new Date().toISOString();
+  await repository.cancel(
+    user.email,
+    job.id,
+    now,
+    programGenerationTerminalRetainedUntil(now),
+  );
+  return await repository.get(user.email, job.id) ?? job;
+}
+
+async function expireRoutineProgramGeneration(
+  { env, user }: AssistantContext,
+  job: StoredProgramGenerationJob,
+) {
+  if (job.openAIResponseId && env.OPENAI_API_KEY) {
+    await cancelOpenAIResponse(env, job.openAIResponseId).catch(() => undefined);
+  }
+  const repository = getProgramGenerationJobRepository();
+  const now = new Date().toISOString();
+  await repository.expire(
+    user.email,
+    job.id,
+    {
+      code: "coach_program_generation_expired",
+      message: "Coach did not finish this draft in time. No routines were created.",
+      retryable: true,
+    },
+    now,
+    programGenerationTerminalRetainedUntil(now),
+    job.status === "validating" ? job.updatedAt : undefined,
+  );
+  return await repository.get(user.email, job.id) ?? job;
+}
+
+async function failUnattachedProgramGeneration(
+  ownerEmail: string,
+  job: StoredProgramGenerationJob,
+) {
+  const repository = getProgramGenerationJobRepository();
+  const now = new Date().toISOString();
+  await repository.failUnattachedStart(
+    ownerEmail,
+    job.id,
+    {
+      code: "coach_program_generation_start_lost",
+      message: "Coach could not confirm that program generation started. Try again.",
+      retryable: true,
+    },
+    now,
+    programGenerationTerminalRetainedUntil(now),
+  );
+  return await repository.get(ownerEmail, job.id) ?? job;
+}
+
+function programGenerationIsTerminal(status: StoredProgramGenerationJob["status"]) {
+  return ["succeeded", "failed", "cancelled", "expired"].includes(status);
+}
+
+function programGenerationResponse(
+  request: Request,
+  job: StoredProgramGenerationJob,
+  status = 200,
+  includeLocation = false,
+) {
+  const program = job.status === "succeeded" && job.resultJson
+    ? JSON.parse(job.resultJson) as GeneratedRoutineProgramPayload
+    : null;
+  const error = job.errorCode && job.errorMessage
+    ? { code: job.errorCode, message: job.errorMessage, retryable: job.errorRetryable }
+    : null;
+  const generation: ProgramGenerationJob = {
+    id: job.id,
+    status: job.status === "validating" ? "in_progress" : job.status,
+    pollAfterMs: PROGRAM_GENERATION_POLL_AFTER_MS,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    expiresAt: job.expiresAt,
+    program,
+    error,
+  };
+  const headers = includeLocation
+    ? { location: `/api/v1/assistant/program-generations/${encodeURIComponent(job.id)}` }
+    : undefined;
+  return apiResponse(request, { generation }, { status, headers });
 }
 
 async function createAssistantMessage({ request, env, user }: AssistantContext) {
@@ -868,15 +1445,19 @@ async function createOpenAIResponse(
     input: unknown[];
     tools: unknown[];
     toolChoice: CoachToolChoice | { type: "function"; name: string };
+    background?: boolean;
+    metadata?: Record<string, string>;
+    textVerbosity?: "low" | "medium" | "high";
+    timeoutMs?: number;
+    timeoutMessage?: string;
   },
 ) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), assistantApiTimeoutMs);
-  try {
-    const reasoning = input.reasoningEffort === "auto" ? undefined : { effort: input.reasoningEffort };
-    const response = await fetch(`${openAIBaseUrl(env)}/responses`, {
+  const reasoning = input.reasoningEffort === "auto" ? undefined : { effort: input.reasoningEffort };
+  return requestOpenAIResponse(
+    env,
+    "/responses",
+    {
       method: "POST",
-      headers: { authorization: `Bearer ${env.OPENAI_API_KEY}`, "content-type": "application/json" },
       body: JSON.stringify({
         model: input.model,
         instructions: input.instructions,
@@ -885,23 +1466,71 @@ async function createOpenAIResponse(
         tool_choice: input.toolChoice,
         parallel_tool_calls: false,
         reasoning,
-        text: { verbosity: "medium" },
+        text: { verbosity: input.textVerbosity ?? "medium" },
         max_output_tokens: outputTokenBudget(input.model),
         safety_identifier: input.safetyIdentifier,
+        background: input.background || undefined,
+        metadata: input.metadata,
         store: false,
       }),
+    },
+    input.timeoutMs ?? assistantApiTimeoutMs,
+    input.timeoutMessage ?? "The coach took too long to respond. Try again or select a lower reasoning effort.",
+  );
+}
+
+async function retrieveOpenAIResponse(env: WorkerEnv, responseId: string) {
+  return requestOpenAIResponse(
+    env,
+    `/responses/${encodeURIComponent(responseId)}`,
+    { method: "GET" },
+    assistantBackgroundRequestTimeoutMs,
+    "Coach is still working, but the status check timed out. We will try again.",
+  );
+}
+
+async function cancelOpenAIResponse(env: WorkerEnv, responseId: string) {
+  return requestOpenAIResponse(
+    env,
+    `/responses/${encodeURIComponent(responseId)}/cancel`,
+    { method: "POST" },
+    assistantBackgroundRequestTimeoutMs,
+    "Coach is still working, but the cancellation request timed out. Try again.",
+  );
+}
+
+async function requestOpenAIResponse(
+  env: WorkerEnv,
+  path: string,
+  init: RequestInit,
+  timeoutMs: number,
+  timeoutMessage: string,
+) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const headers = new Headers(init.headers);
+    headers.set("authorization", `Bearer ${env.OPENAI_API_KEY}`);
+    headers.set("content-type", "application/json");
+    const response = await fetch(`${openAIBaseUrl(env)}${path}`, {
+      ...init,
+      headers,
       signal: controller.signal,
     });
     const payload = await response.json().catch(() => ({})) as CoachResponse;
     if (!response.ok) {
       const status = response.status === 429 ? 429 : response.status >= 500 ? 502 : 400;
-      throw new OpenAIRequestError(payload.error?.message ?? `OpenAI returned status ${response.status}.`, status);
+      throw new OpenAIRequestError(
+        payload.error?.message ?? `OpenAI returned status ${response.status}.`,
+        status,
+        response.status,
+      );
     }
     return payload;
   } catch (error) {
     if (error instanceof OpenAIRequestError) throw error;
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new OpenAIRequestError("The coach took too long to respond. Try again or select a lower reasoning effort.", 504);
+      throw new OpenAIRequestError(timeoutMessage, 504);
     }
     throw new OpenAIRequestError(errorMessage(error, "The model request failed."));
   } finally {
@@ -1384,8 +2013,13 @@ function objectSchema(properties: Record<string, unknown>, required: string[]) {
 async function listModelCatalog(env: WorkerEnv, refresh = false) {
   if (!env.OPENAI_API_KEY) return { models: fallbackAssistantModels(), source: "fallback" as const };
   if (!refresh && modelCache && modelCache.expiresAt > Date.now()) return { models: modelCache.models, source: "live" as const };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), assistantModelDiscoveryTimeoutMs);
   try {
-    const response = await fetch(`${openAIBaseUrl(env)}/models`, { headers: { authorization: `Bearer ${env.OPENAI_API_KEY}` } });
+    const response = await fetch(`${openAIBaseUrl(env)}/models`, {
+      headers: { authorization: `Bearer ${env.OPENAI_API_KEY}` },
+      signal: controller.signal,
+    });
     if (!response.ok) throw new Error(`Model discovery returned ${response.status}.`);
     const payload = await response.json() as { data?: Array<{ id?: string; created?: number }> };
     const models = (payload.data ?? [])
@@ -1398,6 +2032,8 @@ async function listModelCatalog(env: WorkerEnv, refresh = false) {
     return { models: unique, source: "live" as const };
   } catch {
     return { models: fallbackAssistantModels(), source: "fallback" as const };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 

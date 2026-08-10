@@ -13,6 +13,8 @@ export type AssistantRequestDecision =
   | { kind: "message-create" }
   | { kind: "check-in-create" }
   | { kind: "program-generate" }
+  | { kind: "program-generation-read"; jobId: string }
+  | { kind: "program-generation-cancel"; jobId: string }
   | { kind: "plan-apply"; planId: string }
   | { kind: "plan-reject"; planId: string };
 
@@ -23,6 +25,7 @@ export function resolveAssistantRequest(
   const action = segments[1];
   const resourceId = segments[2];
   const childAction = segments[3];
+  const descendantAction = segments[4];
 
   if (!action && method === "GET") return { kind: "bootstrap" };
   if (action === "models" && method === "GET") return { kind: "models" };
@@ -31,8 +34,20 @@ export function resolveAssistantRequest(
   if (action === "threads" && method === "POST") return { kind: "thread-create" };
   if (action === "messages" && method === "POST") return { kind: "message-create" };
   if (action === "check-ins" && method === "POST") return { kind: "check-in-create" };
-  if (action === "programs" && resourceId === "generate" && method === "POST") {
+  if (action === "programs" && resourceId === "generate" && !childAction && method === "POST") {
     return { kind: "program-generate" };
+  }
+  if (action === "program-generations" && resourceId && !childAction && method === "GET") {
+    return { kind: "program-generation-read", jobId: resourceId };
+  }
+  if (
+    action === "program-generations"
+    && resourceId
+    && childAction === "cancel"
+    && !descendantAction
+    && method === "POST"
+  ) {
+    return { kind: "program-generation-cancel", jobId: resourceId };
   }
   if (action === "plans" && resourceId && childAction === "apply" && method === "POST") {
     return { kind: "plan-apply", planId: resourceId };

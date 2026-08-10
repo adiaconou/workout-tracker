@@ -436,6 +436,35 @@ export const coachProfiles = sqliteTable(
   },
 );
 
+export const assistantProgramGenerationJobs = sqliteTable(
+  "assistant_program_generation_jobs",
+  {
+    id: text("id").primaryKey(),
+    ownerEmail: text("owner_email").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    requestFingerprint: text("request_fingerprint").notNull(),
+    openAIResponseId: text("openai_response_id"),
+    status: text("status").notNull().default("starting"),
+    requestJson: text("request_json").notNull(),
+    resultJson: text("result_json"),
+    errorCode: text("error_code"),
+    errorMessage: text("error_message"),
+    errorRetryable: integer("error_retryable", { mode: "boolean" }).notNull().default(false),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("assistant_program_generation_jobs_owner_idempotency_idx").on(
+      table.ownerEmail,
+      table.idempotencyKey,
+    ),
+    uniqueIndex("assistant_program_generation_jobs_openai_response_idx").on(table.openAIResponseId),
+    index("assistant_program_generation_jobs_owner_updated_idx").on(table.ownerEmail, table.updatedAt),
+    index("assistant_program_generation_jobs_expires_idx").on(table.expiresAt),
+  ],
+);
+
 export const assistantThreads = sqliteTable(
   "assistant_threads",
   {

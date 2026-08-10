@@ -149,3 +149,41 @@ export type ApiErrorPayload = {
     retryable?: boolean;
   } | string;
 };
+
+export type GeneratedRoutineProgram = {
+  name: string;
+  summary: string;
+  warnings: string[];
+  routines: Array<{
+    code: string;
+    rationale: string;
+    version: RoutineVersionInput;
+  }>;
+};
+
+export type ProgramGenerationStatus =
+  | "starting"
+  | "queued"
+  | "in_progress"
+  | "succeeded"
+  | "failed"
+  | "cancelling"
+  | "cancelled"
+  | "expired";
+
+export type ProgramGenerationError = {
+  code: string;
+  message: string;
+  retryable: boolean;
+};
+
+export type ProgramGenerationJob = {
+  id: string;
+  status: ProgramGenerationStatus;
+  pollAfterMs: number;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+  program: GeneratedRoutineProgram | null;
+  error: ProgramGenerationError | null;
+};
