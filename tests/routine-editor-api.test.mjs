@@ -403,6 +403,27 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
       actualDurationSec: 99,
     },
   }), 200);
+  assert.equal(
+    firstMemberResult.workoutSetId,
+    `${started.session.id}::set::1`,
+    "recording a set must return its editable materialized set ID",
+  );
+  const firstMemberReplay = expectStatus(await request(`/api/v1/workouts/${started.session.id}/sets`, {
+    method: "POST",
+    body: {
+      prescribedSetId: activeWorkout.sets[0].id,
+      status: "Completed",
+      actualWeight: 80,
+      actualReps: 5,
+      actualDurationSec: 99,
+    },
+  }), 200);
+  assert.equal(
+    firstMemberReplay.workoutSetId,
+    firstMemberResult.workoutSetId,
+    "an idempotent record retry must preserve the editable materialized set ID",
+  );
+  assert.equal(firstMemberReplay.nextSetIndex, 1);
   assert.equal(firstMemberResult.restSeconds, 0, "rest must not interrupt members of the same superset round");
   assert.equal(firstMemberResult.restEndsAt, null);
   const recordedFirstMember = await database.prepare(`SELECT weight_unit AS weightUnit,
@@ -427,11 +448,123 @@ test("normalized routine editor preserves exact fields and rejects no-op and sta
       actualDurationSec: 40,
     },
   }), 200);
+  assert.equal(
+    finalMemberResult.workoutSetId,
+    `${started.session.id}::set::2`,
+    "every recorded superset member must return its materialized set ID",
+  );
   assert.equal(finalMemberResult.restSeconds, 180, "the deferred superset rest must begin after the final member");
   assert.ok(finalMemberResult.restEndsAt);
   const restingSet = await database.prepare(`SELECT started_at AS startedAt FROM workout_sets
     WHERE workout_id = ? AND position = 3`).bind(started.session.id).first();
   assert.equal(restingSet.startedAt, null, "the next set does not start while prescribed rest is active");
+
+  const beforeActiveCorrection = expectStatus(
+    await request(`/api/v1/workouts/${started.session.id}`),
+    200,
+  ).workout;
+  const firstRecordedPerformance = beforeActiveCorrection.recordedPerformanceBySetId[activeWorkout.sets[0].id];
+  assert.equal(firstRecordedPerformance.workoutSetId, firstMemberResult.workoutSetId);
+  const activeProgressionBeforeCorrection = {
+    currentExercise: beforeActiveCorrection.currentExercise,
+    currentSet: beforeActiveCorrection.currentSet,
+    currentSetIndex: beforeActiveCorrection.currentSetIndex,
+    completedSets: beforeActiveCorrection.completedSets,
+    skippedSets: beforeActiveCorrection.skippedSets,
+    restEndsAt: beforeActiveCorrection.restEndsAt,
+    currentRestSeconds: beforeActiveCorrection.currentRestSeconds,
+    lastPerformanceId: beforeActiveCorrection.lastPerformanceId,
+  };
+  expectStatus(await request(
+    `/api/v1/workouts/${started.session.id}/sets/${encodeURIComponent(firstRecordedPerformance.workoutSetId)}`,
+    {
+      method: "PATCH",
+      body: { actualWeight: 85, actualReps: 4 },
+    },
+  ), 200);
+  const afterActiveCorrection = expectStatus(
+    await request(`/api/v1/workouts/${started.session.id}`),
+    200,
+  ).workout;
+  assert.deepEqual({
+    currentExercise: afterActiveCorrection.currentExercise,
+    currentSet: afterActiveCorrection.currentSet,
+    currentSetIndex: afterActiveCorrection.currentSetIndex,
+    completedSets: afterActiveCorrection.completedSets,
+    skippedSets: afterActiveCorrection.skippedSets,
+    restEndsAt: afterActiveCorrection.restEndsAt,
+    currentRestSeconds: afterActiveCorrection.currentRestSeconds,
+    lastPerformanceId: afterActiveCorrection.lastPerformanceId,
+  }, activeProgressionBeforeCorrection, "editing a logged set must not move active workout progression or rest");
+  assert.deepEqual(
+    afterActiveCorrection.recordedPerformanceBySetId[activeWorkout.sets[0].id],
+    {
+      ...firstRecordedPerformance,
+      actualWeight: 85,
+      actualReps: 4,
+    },
+    "the active workout view must expose the corrected logged result under the same editable ID",
+  );
+  const correctedExercise = await database.prepare(`SELECT status FROM workout_exercises
+    WHERE workout_id = ? AND position = 1`).bind(started.session.id).first();
+  assert.equal(
+    correctedExercise.status,
+    "started",
+    "editing a prior set must not mark an exercise complete while it has remaining sets",
+  );
+  expectStatus(await request(
+    `/api/v1/workouts/${started.session.id}/sets/${encodeURIComponent(firstRecordedPerformance.workoutSetId)}`,
+    {
+      method: "PATCH",
+      body: { status: "skipped", actualWeight: null, actualReps: null },
+    },
+  ), 200);
+  const skippedCorrection = expectStatus(
+    await request(`/api/v1/workouts/${started.session.id}`),
+    200,
+  ).workout;
+  assert.deepEqual(
+    {
+      completedSets: skippedCorrection.completedSets,
+      skippedSets: skippedCorrection.skippedSets,
+      currentSetIndex: skippedCorrection.currentSetIndex,
+      restEndsAt: skippedCorrection.restEndsAt,
+    },
+    {
+      completedSets: 1,
+      skippedSets: 1,
+      currentSetIndex: activeProgressionBeforeCorrection.currentSetIndex,
+      restEndsAt: activeProgressionBeforeCorrection.restEndsAt,
+    },
+    "changing a prior set to skipped must recount without rewinding the workout",
+  );
+  expectStatus(await request(
+    `/api/v1/workouts/${started.session.id}/sets/${encodeURIComponent(firstRecordedPerformance.workoutSetId)}`,
+    {
+      method: "PATCH",
+      body: { status: "completed", actualWeight: 85, actualReps: 4 },
+    },
+  ), 200);
+  const completedCorrection = expectStatus(
+    await request(`/api/v1/workouts/${started.session.id}`),
+    200,
+  ).workout;
+  assert.deepEqual(
+    {
+      completedSets: completedCorrection.completedSets,
+      skippedSets: completedCorrection.skippedSets,
+      currentSetIndex: completedCorrection.currentSetIndex,
+      restEndsAt: completedCorrection.restEndsAt,
+    },
+    {
+      completedSets: 2,
+      skippedSets: 0,
+      currentSetIndex: activeProgressionBeforeCorrection.currentSetIndex,
+      restEndsAt: activeProgressionBeforeCorrection.restEndsAt,
+    },
+    "completing a previously skipped set must recount without rewinding the workout",
+  );
+
   const missingRounds = await request(`/api/v1/workouts/${started.session.id}/sets`, {
     method: "POST",
     body: { prescribedSetId: activeWorkout.sets[2].id, status: "Completed", actualWeight: 80, actualReps: null },

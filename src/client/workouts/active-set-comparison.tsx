@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { WorkoutView } from "../../contracts/api";
 import { colors, radii, spacing } from "../ui/tokens";
 import {
@@ -15,19 +15,25 @@ export function ActiveSetComparison({
   sets,
   previousSets,
   recordedPerformanceBySetId,
-  currentSetId,
+  selectedSetId,
+  activeSetIndex,
+  navigationDisabled,
+  onSelectSet,
   weight,
   result,
 }: {
   sets: WorkoutView["sets"];
   previousSets: NonNullable<WorkoutView["previousPerformanceByExercise"][number]>["sets"];
   recordedPerformanceBySetId: WorkoutView["recordedPerformanceBySetId"];
-  currentSetId: string;
+  selectedSetId: string;
+  activeSetIndex: number;
+  navigationDisabled: boolean;
+  onSelectSet: (globalIndex: number) => void;
   weight: string;
   result: string;
 }) {
   const scrollRef = useRef<ScrollView>(null);
-  const currentOccurrenceIndex = sets.findIndex((set) => set.id === currentSetId);
+  const currentOccurrenceIndex = sets.findIndex((set) => set.id === selectedSetId);
   const scrollTarget = Math.max(0, currentOccurrenceIndex * CELL_WIDTH - CELL_WIDTH / 2);
 
   useEffect(() => {
@@ -35,17 +41,17 @@ export function ActiveSetComparison({
       scrollRef.current?.scrollTo({ x: scrollTarget, animated: true });
     }, 0);
     return () => clearTimeout(timer);
-  }, [currentSetId, scrollTarget]);
+  }, [scrollTarget, selectedSetId]);
 
   const currentValues = useMemo(() => sets.map((set) => {
     const recorded = recordedPerformanceBySetId[set.id];
     if (recorded) return formatSetComparisonPerformance(set, recorded);
-    if (set.id !== currentSetId) return "—";
+    if (set.id !== selectedSetId) return "—";
     return formatSetComparisonPerformance(
       set,
       liveSetComparisonPerformance(set, weight, result),
     );
-  }), [currentSetId, recordedPerformanceBySetId, result, sets, weight]);
+  }), [recordedPerformanceBySetId, result, selectedSetId, sets, weight]);
 
   const previousValues = useMemo(() => {
     const alignedPreviousSets = alignPreviousExerciseSets(
@@ -93,7 +99,8 @@ export function ActiveSetComparison({
         style={styles.scroll}
       >
         {sets.map((set, index) => {
-          const active = set.id === currentSetId;
+          const active = set.id === selectedSetId;
+          const selectable = set.globalIndex <= activeSetIndex;
           const recorded = recordedPerformanceBySetId[set.id];
           const skipped = recorded?.status === "Skipped";
           const completed = recorded?.status === "Completed";
@@ -102,15 +109,19 @@ export function ActiveSetComparison({
               <Text style={[styles.columnLabel, active && styles.columnLabelActive]}>
                 {index + 1}
               </Text>
-              <View
-                accessible
-                accessibilityLabel={`This workout, set ${index + 1}${active ? ", active" : ""}, ${currentValues[index]}`}
-                accessibilityState={{ selected: active }}
-                style={[
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`View this workout, set ${index + 1}${active ? ", selected" : ""}, ${currentValues[index]}`}
+                accessibilityState={{ disabled: !selectable || navigationDisabled, selected: active }}
+                disabled={!selectable || navigationDisabled}
+                onPress={() => onSelectSet(set.globalIndex)}
+                style={({ pressed }) => [
                   styles.cell,
                   active && styles.cellActive,
                   completed && styles.cellCompleted,
                   skipped && styles.cellSkipped,
+                  pressed && styles.cellPressed,
+                  !selectable && styles.cellUnavailable,
                 ]}
               >
                 <Text
@@ -123,7 +134,7 @@ export function ActiveSetComparison({
                 >
                   {currentValues[index]}
                 </Text>
-              </View>
+              </Pressable>
               <View
                 accessible
                 accessibilityLabel={`Last time, set ${index + 1}, ${previousValues[index]}`}
@@ -198,6 +209,8 @@ const styles = StyleSheet.create({
   },
   cellCompleted: { backgroundColor: colors.successSurface },
   cellSkipped: { backgroundColor: colors.surfaceRaised },
+  cellPressed: { opacity: 0.72 },
+  cellUnavailable: { opacity: 0.45 },
   cellText: {
     color: colors.textMuted,
     fontSize: 10,

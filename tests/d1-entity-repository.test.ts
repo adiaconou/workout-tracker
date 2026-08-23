@@ -727,6 +727,37 @@ test("default exercise provisioning adopts only generated legacy rows and preser
   }
 });
 
+test("entity provisioning shares an in-flight failure and allows a retry", async () => {
+  const sqlite = new DatabaseSync(":memory:");
+  const sqliteD1 = new SqliteD1(sqlite);
+  const d1 = sqliteD1 as unknown as D1Database;
+  const owner = "shared-provisioning@example.com";
+
+  try {
+    await ensureEntitySchema(d1);
+    sqliteD1.beforeNextBatch(() => {
+      throw new Error("Transient provisioning failure");
+    });
+
+    const attempts = await Promise.allSettled([
+      ensureEntityData(d1, owner),
+      ensureEntityData(d1, owner),
+    ]);
+    assert.deepEqual(attempts.map((attempt) => attempt.status), ["rejected", "rejected"]);
+    for (const attempt of attempts) {
+      assert.equal(attempt.status, "rejected");
+      assert.match(String(attempt.reason), /transient provisioning failure/i);
+    }
+
+    await ensureEntityData(d1, owner);
+    const count = await d1.prepare(`SELECT COUNT(*) AS count FROM exercise_catalog
+      WHERE owner_email = ?`).bind(owner).first<{ count: number }>();
+    assert.equal(Number(count?.count), homeGymExercises.length);
+  } finally {
+    sqlite.close();
+  }
+});
+
 test("entity provisioning synchronizes only proven system exercise muscle tags", async () => {
   const sqlite = new DatabaseSync(":memory:");
   const d1 = new SqliteD1(sqlite) as unknown as D1Database;

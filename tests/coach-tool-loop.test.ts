@@ -4,6 +4,22 @@ import { runCoachToolLoop, type CoachResponse } from "../src/server/coach/tool-l
 
 const formatError = (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback;
 
+test("returns an empty activity list when the coach does not use tools", async () => {
+  const result = await runCoachToolLoop({
+    conversation: [],
+    createResponse: async () => ({
+      id: "response-final",
+      status: "completed",
+      output: [{ type: "message", content: [{ type: "output_text", text: "No tools needed" }] }],
+    }),
+    executeTool: async () => assert.fail("No tool should be executed."),
+    recordToolCall: async () => assert.fail("No tool should be recorded."),
+    formatError,
+  });
+
+  assert.deepEqual(result, { text: "No tools needed", responseId: "response-final", activities: [] });
+});
+
 test("continues through more than six sequential tool calls before returning the final answer", async () => {
   const responses: CoachResponse[] = Array.from({ length: 12 }, (_, index) => ({
     id: `response-${index + 1}`,
@@ -45,7 +61,11 @@ test("continues through more than six sequential tool calls before returning the
     formatError,
   });
 
-  assert.deepEqual(result, { text: "Done", responseId: "response-final" });
+  assert.deepEqual(result, {
+    text: "Done",
+    responseId: "response-final",
+    activities: Array.from({ length: 12 }, () => ({ name: "lookup", status: "succeeded" })),
+  });
   assert.equal(requests.length, 13);
   assert.equal(executions.length, 12);
   assert.equal(records.length, 12);
@@ -58,7 +78,7 @@ test("continues through more than six sequential tool calls before returning the
   }
 });
 
-test("returns tool failures to the model and keeps the loop running", async () => {
+test("returns malformed calls to the model without exposing an internal activity failure", async () => {
   const responses: CoachResponse[] = [
     {
       id: "response-tool",
@@ -93,6 +113,7 @@ test("returns tool failures to the model and keeps the loop running", async () =
   });
 
   assert.equal(result.text, "Recovered");
+  assert.deepEqual(result.activities, []);
   assert.equal(executions, 0);
   assert.equal(records.length, 1);
   assert.deepEqual(records[0]?.argumentsValue, {});
@@ -100,6 +121,58 @@ test("returns tool failures to the model and keeps the loop running", async () =
   const failureOutput = (finalConversation as Array<Record<string, unknown>>)
     .find((item) => item.type === "function_call_output")?.output;
   assert.match(String(failureOutput), /JSON|position|property name/i);
+});
+
+test("returns ordered safe activity without tool arguments, outputs, or audit details", async () => {
+  const responses: CoachResponse[] = [
+    {
+      id: "response-tools",
+      status: "completed",
+      output: [
+        {
+          type: "function_call",
+          call_id: "call-success",
+          name: "unlisted_lookup",
+          arguments: '{"privateArgument":"argument-secret"}',
+        },
+        {
+          type: "function_call",
+          call_id: "call-failure",
+          name: "unlisted_failure",
+          arguments: '{"privateArgument":"other-secret"}',
+        },
+      ],
+    },
+    {
+      id: "response-final",
+      status: "completed",
+      output: [{ type: "message", content: [{ type: "output_text", text: "Finished safely" }] }],
+    },
+  ];
+  const result = await runCoachToolLoop({
+    conversation: [],
+    createResponse: async () => {
+      const response = responses.shift();
+      assert.ok(response);
+      return response;
+    },
+    executeTool: async ({ name }) => {
+      if (name === "unlisted_failure") throw new Error("output-secret");
+      return { privateOutput: "result-secret" };
+    },
+    recordToolCall: async () => undefined,
+    formatError,
+  });
+
+  assert.deepEqual(result, {
+    text: "Finished safely",
+    responseId: "response-final",
+    activities: [
+      { name: "unlisted_lookup", status: "succeeded" },
+      { name: "unlisted_failure", status: "failed" },
+    ],
+  });
+  assert.doesNotMatch(JSON.stringify(result), /argument-secret|other-secret|result-secret|output-secret/);
 });
 
 test("forces a final response when the same tool call repeats without progress", async () => {
@@ -145,6 +218,10 @@ test("forces a final response when the same tool call repeats without progress",
 
   assert.equal(result.text, "Using the existing result.");
   assert.equal(executions, 2);
+  assert.deepEqual(result.activities, [
+    { name: "lookup", status: "succeeded" },
+    { name: "lookup", status: "succeeded" },
+  ]);
   assert.deepEqual(statuses, ["succeeded", "succeeded", "failed"]);
   assert.deepEqual(choices, ["auto", "auto", "auto", "none"]);
   assert.ok((finalSynthesisConversation as Array<Record<string, unknown>>)
@@ -195,6 +272,7 @@ test("a successful proposal ends tool use and forces final synthesis", async (co
       });
 
       assert.equal(result.text, "The plan is ready.");
+      assert.deepEqual(result.activities, [{ name: toolName, status: "succeeded" }]);
       assert.equal(executions, 1);
       assert.deepEqual(statuses, ["succeeded"]);
       assert.deepEqual(choices, ["auto", "none"]);
@@ -239,6 +317,7 @@ test("does not execute another tool after staging a proposal in the same respons
   });
 
   assert.equal(result.text, "Review the card.");
+  assert.deepEqual(result.activities, [{ name: "propose_routine_change", status: "succeeded" }]);
   assert.deepEqual(executed, ["propose_routine_change"]);
   assert.deepEqual(records.map((record) => record.status), ["succeeded", "failed"]);
   assert.match(JSON.stringify(records[1]?.output), /already been staged/i);
@@ -286,6 +365,7 @@ test("allows a failed proposal to be repaired before final synthesis", async () 
   });
 
   assert.equal(result.text, "Review the corrected card.");
+  assert.deepEqual(result.activities, [{ name: "propose_routine_change", status: "succeeded" }]);
   assert.equal(executions, 2);
   assert.deepEqual(statuses, ["failed", "succeeded"]);
   assert.deepEqual(choices, ["auto", "auto", "none"]);
@@ -361,6 +441,7 @@ test("counts repeated malformed calls toward the no-progress safeguard", async (
 
   assert.equal(result.text, "I could not complete that lookup.");
   assert.equal(executions, 0);
+  assert.deepEqual(result.activities, []);
   assert.deepEqual(choices, ["auto", "auto", "auto", "none"]);
 });
 
@@ -425,5 +506,6 @@ test("does not discard a successful tool result when audit logging fails", async
   });
 
   assert.equal(result.text, "Finished");
+  assert.deepEqual(result.activities, [{ name: "lookup", status: "succeeded" }]);
   assert.equal(auditErrors.length, 1);
 });

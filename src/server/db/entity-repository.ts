@@ -1149,6 +1149,25 @@ export class D1EntityRepository implements EntityRepository {
         WHEN EXISTS (
           SELECT 1 FROM workout_sets ws
           WHERE ws.workout_exercise_id = workout_exercises.id
+            AND ws.status = 'started'
+        ) THEN 'started'
+        WHEN EXISTS (
+          SELECT 1 FROM workout_sets ws
+          WHERE ws.workout_exercise_id = workout_exercises.id
+            AND ws.status = 'planned'
+        ) AND EXISTS (
+          SELECT 1 FROM workout_sets ws
+          WHERE ws.workout_exercise_id = workout_exercises.id
+            AND ws.status IN ('completed', 'skipped')
+        ) THEN 'started'
+        WHEN EXISTS (
+          SELECT 1 FROM workout_sets ws
+          WHERE ws.workout_exercise_id = workout_exercises.id
+            AND ws.status = 'planned'
+        ) THEN 'planned'
+        WHEN EXISTS (
+          SELECT 1 FROM workout_sets ws
+          WHERE ws.workout_exercise_id = workout_exercises.id
             AND ws.status = 'completed'
         ) THEN 'completed'
         WHEN EXISTS (

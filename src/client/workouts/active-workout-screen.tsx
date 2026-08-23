@@ -17,7 +17,7 @@ import {
   removePendingSetWrite,
   removePendingSetWritesForWorkout,
 } from "../api/pending-writes";
-import type { Workout, WorkoutView } from "../../contracts/api";
+import type { RecordSetResponse, Workout, WorkoutView } from "../../contracts/api";
 import {
   Body,
   Button,
@@ -43,7 +43,9 @@ import {
 } from "./stopwatch";
 import {
   getAdvancedSetInputDefaults,
+  getRecordedSetInputValues,
   getSetInputDefaults,
+  type SetInputValues,
 } from "./set-input-defaults";
 import { DiscardWorkoutModal } from "./discard-workout-modal";
 import {
@@ -52,23 +54,33 @@ import {
   type WorkoutExerciseTimingSummary,
 } from "./workout-timing";
 import {
+  createSetCorrectionBody,
   createSetRecordBody,
   discardWorkoutSuccessState,
   elapsedFromAnchor,
   finishEarlySuccessState,
+  initialSetNavigation,
+  moveViewedSet,
   pendingFinishError,
   prepareSetRecord,
+  reconcileSetNavigation,
   recordedSetPerformance,
   recordSetSuccessState,
   resultUnitName,
+  supersetContext,
+  viewedSetPosition,
+  viewSetAtIndex,
   type CompleteWorkoutResponse,
   type ElapsedAnchor,
-  type RecordSetResponse,
+  type SupersetContext,
+  type WorkoutSetNavigation,
 } from "./active-workout-model";
 
 export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   const [workout, setWorkout] = useState<WorkoutView | null>(null);
-  const [currentIndex, setCurrentIndex] = useState(0);
+  const [setNavigation, setSetNavigation] = useState<WorkoutSetNavigation>(() =>
+    initialSetNavigation(0, 0)
+  );
   const [completedSets, setCompletedSets] = useState(0);
   const [skippedSets, setSkippedSets] = useState(0);
   const [restEndsAt, setRestEndsAt] = useState<string | null>(null);
@@ -78,7 +90,8 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   const [result, setResult] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [saveState, setSaveState] = useState<"Saved" | "Save failed" | "">("");
+  const [saveState, setSaveState] = useState<"Saved" | "Set updated" | "Save failed" | "">("");
+  const [replacingPastSet, setReplacingPastSet] = useState(false);
   const [error, setError] = useState("");
   const [pendingCount, setPendingCount] = useState(0);
   const [workoutCompleted, setWorkoutCompleted] = useState(false);
@@ -96,6 +109,12 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   const [timingNow, setTimingNow] = useState(() => Date.now());
   const workoutElapsedAnchor = useRef<ElapsedAnchor>({ seconds: 0, anchoredAt: Date.now() });
   const currentSetElapsedAnchor = useRef<ElapsedAnchor>({ seconds: 0, anchoredAt: Date.now() });
+  const navigationWorkoutId = useRef<string | null>(null);
+  const navigationSetIds = useRef<readonly string[]>([]);
+  const setInputDrafts = useRef<Record<string, SetInputValues>>({});
+
+  const currentIndex = setNavigation.activeIndex;
+  const viewedIndex = setNavigation.viewedIndex;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -107,6 +126,12 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
       );
       const next = payload.workout;
       const loadedAt = Date.now();
+      const nextSetIds = next.sets.map((set) => set.id);
+      const previousSetIds = navigationSetIds.current;
+      const replacingWorkout = navigationWorkoutId.current !== next.id;
+      navigationWorkoutId.current = next.id;
+      navigationSetIds.current = nextSetIds;
+      if (replacingWorkout) setInputDrafts.current = {};
       const restEnd = next.restEndsAt ? Date.parse(next.restEndsAt) : Number.NaN;
       workoutElapsedAnchor.current = {
         seconds: next.workoutElapsedSeconds,
@@ -118,7 +143,14 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
       };
       setTimingNow(loadedAt);
       setWorkout(next);
-      setCurrentIndex(next.currentSetIndex);
+      setSetNavigation((current) => replacingWorkout
+        ? initialSetNavigation(next.currentSetIndex, next.sets.length)
+        : reconcileSetNavigation({
+          navigation: current,
+          previousSetIds,
+          nextSetIds,
+          nextActiveIndex: next.currentSetIndex,
+        }));
       setCompletedSets(next.completedSets);
       setSkippedSets(next.skippedSets);
       setWorkoutCompleted(next.status === "Completed" || next.status === "Partial");
@@ -174,6 +206,11 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   }, [workout?.id, workoutCompleted]);
 
   const currentSet = workout?.sets[currentIndex];
+  const viewedSet = workout?.sets[viewedIndex];
+  const isViewingPast = viewedSetPosition(setNavigation) === "past";
+  const viewedRecordedPerformance = viewedSet
+    ? workout?.recordedPerformanceBySetId[viewedSet.id]
+    : undefined;
   const completedOrSkipped = completedSets + skippedSets;
   const progress = workout?.totalSets
     ? Math.min(1, completedOrSkipped / workout.totalSets)
@@ -182,17 +219,21 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
     () => Array.from(new Set(workout?.sets.map((set) => set.exerciseOrder) ?? [])),
     [workout?.sets],
   );
-  const exercisePosition = currentSet
-    ? exerciseOrders.indexOf(currentSet.exerciseOrder) + 1
+  const exercisePosition = viewedSet
+    ? exerciseOrders.indexOf(viewedSet.exerciseOrder) + 1
     : exerciseOrders.length;
-  const previousExerciseSets = currentSet
-    ? workout?.previousPerformanceByExercise[currentSet.exerciseOrder]?.sets ?? []
+  const previousExerciseSets = viewedSet
+    ? workout?.previousPerformanceByExercise[viewedSet.exerciseOrder]?.sets ?? []
     : [];
   const currentExerciseSets = useMemo(
-    () => currentSet
-      ? workout?.sets.filter((set) => set.exerciseOrder === currentSet.exerciseOrder) ?? []
+    () => viewedSet
+      ? workout?.sets.filter((set) => set.exerciseOrder === viewedSet.exerciseOrder) ?? []
       : [],
-    [currentSet?.exerciseOrder, workout?.sets],
+    [viewedSet?.exerciseOrder, workout?.sets],
+  );
+  const viewedSupersetContext = useMemo(
+    () => supersetContext(workout?.sets ?? [], viewedIndex),
+    [viewedIndex, workout?.sets],
   );
   const exerciseProgress = useMemo(
     () => buildWorkoutExerciseProgress(workout?.sets ?? [], currentIndex),
@@ -210,27 +251,54 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
     : elapsedFromAnchor(currentSetElapsedAnchor.current, timingNow);
 
   useEffect(() => {
-    if (!currentSet) return;
-    const defaults = getSetInputDefaults(currentSet);
-    setWeight(defaults.weight);
-    setResult(defaults.result);
+    if (!viewedSet) return;
+    const recordedInputs = isViewingPast && viewedRecordedPerformance
+      ? getRecordedSetInputValues(viewedSet, viewedRecordedPerformance)
+      : getSetInputDefaults(viewedSet);
+    const draft = setInputDrafts.current[viewedSet.id] ?? recordedInputs;
+    setInputDrafts.current[viewedSet.id] = draft;
+    setWeight(draft.weight);
+    setResult(draft.result);
+    setStopwatchStartedAt(null);
+    setStopwatchElapsedMs(
+      viewedSet.targetUnit === "seconds" && draft.result
+        ? Math.max(0, Number(draft.result) || 0) * 1000
+        : 0,
+    );
+  }, [
+    isViewingPast,
+    sessionId,
+    viewedIndex,
+    viewedRecordedPerformance?.actualDurationSec,
+    viewedRecordedPerformance?.actualReps,
+    viewedRecordedPerformance?.actualWeight,
+    viewedRecordedPerformance?.status,
+    viewedSet?.id,
+    viewedSet?.targetUnit,
+    workout?.id,
+  ]);
+
+  useEffect(() => {
     setError("");
     setSaveState("");
-    setStopwatchStartedAt(null);
-    setStopwatchElapsedMs(0);
-  }, [currentIndex, currentSet?.id, sessionId, workout?.id]);
+    setReplacingPastSet(false);
+  }, [sessionId, viewedIndex, viewedSet?.id, workout?.id]);
 
   useEffect(() => {
     if (stopwatchStartedAt === null) return;
     const tick = () => {
       const elapsedMs = getStopwatchElapsedMs(stopwatchStartedAt, 0);
+      const nextResult = String(getStopwatchSeconds(elapsedMs));
       setStopwatchElapsedMs(elapsedMs);
-      setResult(String(getStopwatchSeconds(elapsedMs)));
+      setResult(nextResult);
+      if (viewedSet) {
+        setInputDrafts.current[viewedSet.id] = { weight, result: nextResult };
+      }
     };
     tick();
     const timer = setInterval(tick, 100);
     return () => clearInterval(timer);
-  }, [stopwatchStartedAt]);
+  }, [stopwatchStartedAt, viewedSet?.id, weight]);
 
   useEffect(() => {
     if (!restEndsAt) return;
@@ -251,7 +319,7 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   }, [restEndsAt]);
 
   async function recordSet(status: "Completed" | "Skipped") {
-    if (!workout || !currentSet || saving) return;
+    if (!workout || !currentSet || isViewingPast || saving) return;
     setSaving(true);
     setError("");
     setSaveState("");
@@ -314,12 +382,15 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
         ...current,
         recordedPerformanceBySetId: {
           ...(current.recordedPerformanceBySetId ?? {}),
-          [currentSet.id]: recordedSetPerformance(
-            currentSet,
-            status,
-            prepared.numericWeight,
-            prepared.numericResult,
-          ),
+          [currentSet.id]: {
+            workoutSetId: payload.workoutSetId,
+            ...recordedSetPerformance(
+              currentSet,
+              status,
+              prepared.numericWeight,
+              prepared.numericResult,
+            ),
+          },
         },
       } : current);
       workoutElapsedAnchor.current = {
@@ -337,11 +408,12 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
             nextSet,
             { weight, result },
           );
+          setInputDrafts.current[nextSet.id] = nextSetInputs;
           setWeight(nextSetInputs.weight);
           setResult(nextSetInputs.result);
         }
         currentSetElapsedAnchor.current = success.nextSet.elapsedAnchor;
-        setCurrentIndex(success.nextSet.index);
+        setSetNavigation(initialSetNavigation(success.nextSet.index, workout.sets.length));
         setRestDuration(success.nextSet.restSeconds);
         setRestEndsAt(success.restEndsAt);
         setSecondsRemaining(success.nextSet.restSeconds);
@@ -395,6 +467,20 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
     setStopwatchStartedAt(Date.now() - stopwatchElapsedMs);
   }
 
+  function updateSetWeight(value: string) {
+    setWeight(value);
+    if (viewedSet) {
+      setInputDrafts.current[viewedSet.id] = { weight: value, result };
+    }
+  }
+
+  function updateSetResult(value: string) {
+    setResult(value);
+    if (viewedSet) {
+      setInputDrafts.current[viewedSet.id] = { weight, result: value };
+    }
+  }
+
   function pauseStopwatch() {
     if (stopwatchStartedAt === null) return;
     const elapsedMs = getStopwatchElapsedMs(
@@ -403,17 +489,17 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
     );
     setStopwatchElapsedMs(elapsedMs);
     setStopwatchStartedAt(null);
-    setResult(String(getStopwatchSeconds(elapsedMs)));
+    updateSetResult(String(getStopwatchSeconds(elapsedMs)));
   }
 
   function resetStopwatch() {
     setStopwatchStartedAt(null);
     setStopwatchElapsedMs(0);
-    setResult("");
+    updateSetResult("");
   }
 
   function updateDurationResult(value: string) {
-    setResult(value);
+    updateSetResult(value);
     if (stopwatchStartedAt !== null) return;
     const seconds = Number(value);
     if (Number.isFinite(seconds) && seconds >= 0) {
@@ -590,6 +676,87 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
     );
   }
 
+  async function savePastSet() {
+    if (!workout || !viewedSet || !isViewingPast || saving) return;
+    setSaving(true);
+    setError("");
+    setSaveState("");
+
+    try {
+      const unsyncedSets = await countPendingSetWrites(workout.id);
+      setPendingCount(unsyncedSets);
+      if (unsyncedSets) {
+        throw new Error("Sync the pending set before editing an earlier result.");
+      }
+      const recorded = workout.recordedPerformanceBySetId[viewedSet.id];
+      if (!recorded?.workoutSetId) {
+        throw new Error("Reload the workout before editing this set.");
+      }
+
+      const prepared = prepareSetRecord({
+        set: viewedSet,
+        status: "Completed",
+        weight,
+        result,
+      });
+      if (!prepared.ok) throw new Error(prepared.error);
+
+      await apiRequest(
+        `/api/v1/workouts/${encodeURIComponent(workout.id)}/sets/${encodeURIComponent(recorded.workoutSetId)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify(createSetCorrectionBody({
+            set: viewedSet,
+            status: "Completed",
+            numericWeight: prepared.numericWeight,
+            numericResult: prepared.numericResult,
+          })),
+        },
+      );
+      delete setInputDrafts.current[viewedSet.id];
+      setReplacingPastSet(false);
+      await load();
+      setSaveState("Set updated");
+    } catch (caught) {
+      setSaveState("Save failed");
+      setError(caught instanceof Error ? caught.message : "This set could not be updated.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function moveSetView(offset: number) {
+    if (!workout || saving || stopwatchStartedAt !== null) return;
+    setSetNavigation((current) => moveViewedSet(current, offset, workout.sets.length));
+  }
+
+  function viewSet(globalIndex: number) {
+    if (!workout || saving || stopwatchStartedAt !== null) return;
+    setSetNavigation((current) => viewSetAtIndex(current, globalIndex, workout.sets.length));
+  }
+
+  function returnToCurrentSet() {
+    if (!workout || saving || stopwatchStartedAt !== null) return;
+    setSetNavigation((current) => viewSetAtIndex(
+      current,
+      current.activeIndex,
+      workout.sets.length,
+    ));
+  }
+
+  function clearPastSetForReplacement() {
+    if (!viewedSet || !isViewingPast || saving) return;
+    const defaults = getSetInputDefaults(viewedSet);
+    setReplacingPastSet(true);
+    setStopwatchStartedAt(null);
+    setStopwatchElapsedMs(0);
+    setInputDrafts.current[viewedSet.id] = defaults;
+    setWeight(defaults.weight);
+    setResult(defaults.result);
+    setSaveState("");
+    setError("");
+  }
+
   return (
     <Screen>
       <View style={styles.topline}>
@@ -656,16 +823,33 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
       ) : null}
       {error ? <Message>{error}</Message> : null}
 
-      {currentSet ? (
+      {viewedSet ? (
         <Card style={styles.setCard}>
+          {viewedSupersetContext ? (
+            <SupersetBanner context={viewedSupersetContext} />
+          ) : null}
+          <SetNavigator
+            navigation={setNavigation}
+            sets={workout.sets}
+            status={isViewingPast ? viewedRecordedPerformance?.status ?? "Completed" : "Current"}
+            disabled={saving || stopwatchStartedAt !== null}
+            onPrevious={() => moveSetView(-1)}
+            onNext={() => moveSetView(1)}
+            onReturn={returnToCurrentSet}
+          />
+          {stopwatchStartedAt !== null ? (
+            <Text style={styles.navigationHint}>Pause the stopwatch to review another set.</Text>
+          ) : null}
           <CompactSetOverview
-            eyebrow={`${restEndsAt ? "Next · " : ""}Exercise ${exercisePosition} of ${exerciseOrders.length}`}
-            workoutSet={currentSet}
+            eyebrow={isViewingPast
+              ? `${viewedRecordedPerformance?.status === "Skipped" ? "Skipped" : "Logged"} set · Exercise ${exercisePosition} of ${exerciseOrders.length}`
+              : `${restEndsAt ? "Next · " : ""}Exercise ${exercisePosition} of ${exerciseOrders.length}`}
+            workoutSet={viewedSet}
           />
           {restEndsAt ? (
             <View style={styles.inlineRest}>
               <View style={styles.inlineRestTopline}>
-                <Eyebrow>Rest in progress</Eyebrow>
+                <Eyebrow>{isViewingPast ? "Current rest continues" : "Rest in progress"}</Eyebrow>
                 <Text
                   accessibilityLabel={`${secondsRemaining} seconds remaining`}
                   accessibilityLiveRegion="polite"
@@ -692,31 +876,40 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
                   ]}
                 />
               </View>
-              <Button
-                title="Skip Rest"
-                variant="secondary"
-                compact
-                loading={saving}
-                onPress={() => void skipRest()}
-              />
+              {isViewingPast ? (
+                <Text style={styles.pastEditHint}>
+                  Return to the current set to skip rest.
+                </Text>
+              ) : (
+                <Button
+                  title="Skip Rest"
+                  variant="secondary"
+                  compact
+                  loading={saving}
+                  onPress={() => void skipRest()}
+                />
+              )}
             </View>
           ) : null}
           <ActiveExerciseProgressChart
-            key={`progress:${currentSet.exerciseId}:${currentSet.exerciseOrder}`}
-            exerciseId={currentSet.exerciseId}
-            exerciseName={currentSet.exerciseName}
+            key={`progress:${viewedSet.exerciseId}:${viewedSet.exerciseOrder}`}
+            exerciseId={viewedSet.exerciseId}
+            exerciseName={viewedSet.exerciseName}
           />
           <ActiveSetComparison
             sets={currentExerciseSets}
             previousSets={previousExerciseSets}
             recordedPerformanceBySetId={workout.recordedPerformanceBySetId ?? {}}
-            currentSetId={currentSet.id}
+            selectedSetId={viewedSet.id}
+            activeSetIndex={currentIndex}
+            navigationDisabled={saving || stopwatchStartedAt !== null}
+            onSelectSet={viewSet}
             weight={weight}
             result={result}
           />
-          {!restEndsAt ? (
+          {isViewingPast || !restEndsAt ? (
             <View style={styles.logControls}>
-              {currentSet.targetUnit === "seconds" ? (
+              {viewedSet.targetUnit === "seconds" && !isViewingPast ? (
                 <SetStopwatch
                   elapsedMs={stopwatchElapsedMs}
                   running={stopwatchStartedAt !== null}
@@ -728,9 +921,9 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
               <View style={styles.logFields}>
                 <View style={styles.logField}>
                   <StepperField
-                    label={loadLabel(currentSet.loadType, currentSet.weightUnit)}
+                    label={loadLabel(viewedSet.loadType, viewedSet.weightUnit)}
                     value={weight}
-                    onChangeText={setWeight}
+                    onChangeText={updateSetWeight}
                     keyboardType="decimal-pad"
                     placeholder="0"
                     selectTextOnFocus
@@ -738,41 +931,82 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
                 </View>
                 <View style={styles.logField}>
                   <StepperField
-                    label={`${resultUnitName(currentSet.targetUnit, true)} completed`}
+                    label={`${resultUnitName(viewedSet.targetUnit, true)} completed`}
                     value={result}
                     onChangeText={
-                      currentSet.targetUnit === "seconds"
+                      viewedSet.targetUnit === "seconds"
                         ? updateDurationResult
-                        : setResult
+                        : updateSetResult
                     }
                     keyboardType="number-pad"
                     placeholder="0"
                     selectTextOnFocus
-                    editable={currentSet.targetUnit !== "seconds" || stopwatchStartedAt === null}
+                    editable={viewedSet.targetUnit !== "seconds" || stopwatchStartedAt === null}
                   />
                 </View>
               </View>
+              {isViewingPast ? (
+                <Text style={styles.pastEditHint}>
+                  Saving replaces this result. Your current position
+                  {restEndsAt ? " and rest timer" : ""} stay unchanged.
+                </Text>
+              ) : null}
               <View style={styles.setActions}>
-                <View style={styles.setAction}>
-                  <Button
-                    title={saving ? "Saving…" : "Complete"}
-                    compact
-                    loading={saving}
-                    onPress={() => void recordSet("Completed")}
-                  />
-                </View>
-                <View style={styles.setAction}>
-                  <Button
-                    title="Skip"
-                    variant="secondary"
-                    compact
-                    disabled={saving}
-                    onPress={() => void recordSet("Skipped")}
-                  />
-                </View>
+                {isViewingPast ? (
+                  <>
+                    <View style={styles.setAction}>
+                      <Button
+                        title={
+                          saving
+                            ? "Saving…"
+                            : replacingPastSet
+                              ? "Save replacement"
+                              : viewedRecordedPerformance?.status === "Skipped"
+                                ? "Complete skipped set"
+                                : "Save changes"
+                        }
+                        compact
+                        loading={saving}
+                        disabled={pendingCount > 0}
+                        onPress={() => void savePastSet()}
+                      />
+                    </View>
+                    {viewedRecordedPerformance?.status === "Completed" ? (
+                      <View style={styles.setAction}>
+                        <Button
+                          title="Clear and replace"
+                          variant="secondary"
+                          compact
+                          disabled={saving}
+                          onPress={clearPastSetForReplacement}
+                        />
+                      </View>
+                    ) : null}
+                  </>
+                ) : (
+                  <>
+                    <View style={styles.setAction}>
+                      <Button
+                        title={saving ? "Saving…" : "Complete"}
+                        compact
+                        loading={saving}
+                        onPress={() => void recordSet("Completed")}
+                      />
+                    </View>
+                    <View style={styles.setAction}>
+                      <Button
+                        title="Skip"
+                        variant="secondary"
+                        compact
+                        disabled={saving}
+                        onPress={() => void recordSet("Skipped")}
+                      />
+                    </View>
+                  </>
+                )}
               </View>
               {saveState ? (
-                <Text style={[
+                <Text accessibilityLiveRegion="polite" style={[
                   styles.saveState,
                   saveState === "Save failed" && styles.saveFailed,
                 ]}>
@@ -993,6 +1227,126 @@ function CompactSetOverview({
         </View>
       </View>
     </>
+  );
+}
+
+function SupersetBanner({ context }: { context: SupersetContext }) {
+  return (
+    <View accessibilityLabel={`${context.label}, round ${context.round} of ${context.totalRounds}`} style={styles.supersetBanner}>
+      <View style={styles.supersetTopline}>
+        <Text style={styles.supersetLabel}>
+          {context.label} · {context.memberNames.length} exercises
+        </Text>
+        <Text style={styles.supersetRound}>
+          Round {context.round} of {context.totalRounds}
+        </Text>
+      </View>
+      <View style={styles.supersetMembers}>
+        {context.memberNames.map((name, index) => (
+          <View key={`${index}:${name}`} style={styles.supersetMember}>
+            {index ? <Text style={styles.supersetArrow}>→</Text> : null}
+            <Text style={styles.supersetMemberName}>{name}</Text>
+          </View>
+        ))}
+      </View>
+      <Text style={styles.supersetHint}>
+        Alternate these exercises each round before taking the superset rest.
+      </Text>
+    </View>
+  );
+}
+
+function SetNavigator({
+  navigation,
+  sets,
+  status,
+  disabled,
+  onPrevious,
+  onNext,
+  onReturn,
+}: {
+  navigation: WorkoutSetNavigation;
+  sets: WorkoutView["sets"];
+  status: "Completed" | "Skipped" | "Current";
+  disabled: boolean;
+  onPrevious: () => void;
+  onNext: () => void;
+  onReturn: () => void;
+}) {
+  const previousSet = sets[navigation.viewedIndex - 1];
+  const nextSet = sets[navigation.viewedIndex + 1];
+  const viewingPast = viewedSetPosition(navigation) === "past";
+  const statusLabel = status === "Current"
+    ? "Current set"
+    : status === "Skipped"
+      ? "Skipped set"
+      : "Logged set";
+  return (
+    <View style={styles.setNavigator}>
+      <View style={styles.setNavigatorRow}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={previousSet
+            ? `Previous set, ${previousSet.exerciseName}, set ${previousSet.exerciseSetNumber}`
+            : "No previous logged set"}
+          accessibilityState={{ disabled: disabled || !previousSet }}
+          disabled={disabled || !previousSet}
+          onPress={onPrevious}
+          style={({ pressed }) => [
+            styles.setNavigatorButton,
+            (disabled || !previousSet) && styles.setNavigatorButtonDisabled,
+            pressed && styles.setNavigatorButtonPressed,
+          ]}
+        >
+          <Text style={styles.setNavigatorButtonText}>‹ Previous</Text>
+        </Pressable>
+        <View
+          accessible
+          accessibilityLabel={`${statusLabel}, set ${navigation.viewedIndex + 1} of ${navigation.activeIndex + 1} available`}
+          accessibilityLiveRegion="polite"
+          style={styles.setNavigatorStatus}
+        >
+          <Text style={styles.setNavigatorStatusLabel}>{statusLabel}</Text>
+          <Text style={styles.setNavigatorPosition}>
+            {navigation.viewedIndex + 1} of {navigation.activeIndex + 1}
+          </Text>
+        </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={nextSet && navigation.viewedIndex < navigation.activeIndex
+            ? `Next set, ${nextSet.exerciseName}, set ${nextSet.exerciseSetNumber}`
+            : "Already at the current set"}
+          accessibilityState={{
+            disabled: disabled || navigation.viewedIndex >= navigation.activeIndex,
+          }}
+          disabled={disabled || navigation.viewedIndex >= navigation.activeIndex}
+          onPress={onNext}
+          style={({ pressed }) => [
+            styles.setNavigatorButton,
+            (disabled || navigation.viewedIndex >= navigation.activeIndex)
+              && styles.setNavigatorButtonDisabled,
+            pressed && styles.setNavigatorButtonPressed,
+          ]}
+        >
+          <Text style={styles.setNavigatorButtonText}>Next ›</Text>
+        </Pressable>
+      </View>
+      {viewingPast ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Return to the current set"
+          disabled={disabled}
+          onPress={onReturn}
+          style={({ pressed }) => [
+            styles.returnToCurrent,
+            disabled && styles.setNavigatorButtonDisabled,
+            pressed && styles.setNavigatorButtonPressed,
+          ]}
+        >
+          <Text style={styles.returnToCurrentText}>Return to current set →</Text>
+        </Pressable>
+      ) : null}
+    </View>
   );
 }
 
@@ -1574,6 +1928,109 @@ const styles = StyleSheet.create({
   },
   timerValue: { height: "100%", borderRadius: radii.pill, backgroundColor: colors.accent },
   setCard: { backgroundColor: colors.surfaceRaised, gap: spacing.md },
+  supersetBanner: {
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.accent,
+    backgroundColor: colors.accentDark,
+  },
+  supersetTopline: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
+  supersetLabel: {
+    color: colors.accent,
+    fontSize: 10,
+    lineHeight: 14,
+    fontWeight: "800",
+    letterSpacing: 0.7,
+    textTransform: "uppercase",
+  },
+  supersetRound: {
+    color: colors.textMuted,
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: "700",
+    fontVariant: ["tabular-nums"],
+  },
+  supersetMembers: { minWidth: 0, flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  supersetMember: {
+    minWidth: 0,
+    maxWidth: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  supersetArrow: { color: colors.accent, fontSize: 14, fontWeight: "800" },
+  supersetMemberName: {
+    minWidth: 0,
+    flexShrink: 1,
+    color: colors.text,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "800",
+  },
+  supersetHint: { color: colors.textMuted, fontSize: 11, lineHeight: 16 },
+  setNavigator: {
+    overflow: "hidden",
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.background,
+  },
+  setNavigatorRow: { minHeight: 48, flexDirection: "row", alignItems: "stretch" },
+  setNavigatorButton: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: spacing.sm,
+    backgroundColor: colors.surface,
+  },
+  setNavigatorButtonDisabled: { opacity: 0.38 },
+  setNavigatorButtonPressed: { opacity: 0.72 },
+  setNavigatorButtonText: { color: colors.text, fontSize: 12, fontWeight: "800" },
+  setNavigatorStatus: {
+    flex: 1.3,
+    minWidth: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: spacing.xs,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderStrong,
+  },
+  setNavigatorStatusLabel: {
+    color: colors.accent,
+    fontSize: 9,
+    lineHeight: 13,
+    fontWeight: "800",
+    letterSpacing: 0.7,
+    textTransform: "uppercase",
+  },
+  setNavigatorPosition: {
+    color: colors.textDim,
+    fontSize: 10,
+    lineHeight: 14,
+    fontVariant: ["tabular-nums"],
+    textAlign: "center",
+  },
+  returnToCurrent: {
+    minHeight: 42,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.borderStrong,
+  },
+  returnToCurrentText: { color: colors.accent, fontSize: 12, fontWeight: "800" },
+  navigationHint: { color: colors.textDim, fontSize: 11, lineHeight: 16, textAlign: "center" },
   setHeadingRow: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -1615,6 +2072,7 @@ const styles = StyleSheet.create({
   },
   logFields: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
   logField: { flexGrow: 1, flexBasis: 260, minWidth: 0 },
+  pastEditHint: { color: colors.textMuted, fontSize: 11, lineHeight: 16 },
   setActions: { flexDirection: "row", alignItems: "stretch", gap: spacing.sm },
   setAction: { flex: 1, minWidth: 0 },
   saveState: { textAlign: "center", color: colors.success, fontSize: 12, fontWeight: "700" },

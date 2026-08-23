@@ -13,29 +13,40 @@ import {
   View,
 } from "react-native";
 import { apiRequest } from "../api/client";
-import { LoadingView, Screen } from "../ui/ui";
+import { LoadingView, Message, Screen } from "../ui/ui";
 import { colors, radii, spacing } from "../ui/tokens";
 import { CoachMarkdown } from "./coach-markdown";
 import {
   beginPlanAction,
+  bootstrapWithAppliedPlan,
   bootstrapWithOptimisticMessage,
+  bootstrapWithPreservedActivities,
   bootstrapWithProfile,
   bootstrapWithSendResponse,
+  bootstrapWithoutPlan,
   bootstrapWithoutOptimisticMessage,
+  coachToolActivityRows,
   modelSaveFailure,
   modelSelectionForOption,
   optimisticUserMessage,
+  planApplyBusyLabel,
+  planApplyFailure,
+  planApplySuccess,
+  readablePlanDiff,
   refreshedModelSelection,
   reviewablePlans,
   selectedModelOption,
   selectionFromProfile,
   sendFailureState,
+  type AssistantMessage,
   type AssistantThread,
   type CoachBootstrap,
   type CoachProfile,
   type ExerciseChangePlan,
   type ModelOption,
   type ModelSelection,
+  type PlanActionFeedback,
+  type PlanApplyResponse,
   type SendMessageResponse,
 } from "./coach-model";
 
@@ -57,6 +68,10 @@ export function CoachScreen() {
   const [savingModel, setSavingModel] = useState(false);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const [planBusy, setPlanBusy] = useState<string | null>(null);
+  const [planFeedback, setPlanFeedback] = useState<{
+    threadId: string;
+    feedback: PlanActionFeedback;
+  } | null>(null);
   const [composer, setComposer] = useState("");
   const [error, setError] = useState("");
   const [showModels, setShowModels] = useState(false);
@@ -69,7 +84,8 @@ export function CoachScreen() {
       const payload = await apiRequest<CoachBootstrap>(
         `/api/v1/assistant${threadId ? `?threadId=${encodeURIComponent(threadId)}` : ""}`,
       );
-      setData(payload);
+      setData((current) => bootstrapWithPreservedActivities(current, payload));
+      setPlanFeedback((current) => current?.threadId === payload.thread.id ? current : null);
       setSelection(selectionFromProfile(payload.profile));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "The coach could not be loaded.");
@@ -182,6 +198,7 @@ export function CoachScreen() {
     });
     setSending(true);
     setError("");
+    setPlanFeedback(null);
     setComposer("");
     setData((current) => bootstrapWithOptimisticMessage(current, optimisticMessage));
     try {
@@ -228,19 +245,47 @@ export function CoachScreen() {
 
   async function handlePlan(planId: string, action: "apply" | "reject", publish = true) {
     if (!data) return;
+    const plan = data.plans.find((candidate) => candidate.id === planId);
+    if (!plan) return;
+    const activeThreadId = data.thread.id;
     const transition = beginPlanAction(planId, action, publish);
     setPlanBusy(transition.busyKey);
     setError("");
+    setPlanFeedback(null);
     try {
-      await apiRequest(`/api/v1/assistant/plans/${encodeURIComponent(planId)}/${action}`, {
-        method: "POST",
-        body: JSON.stringify(transition.body),
-      });
-      await load(data.thread.id);
+      const payload = await apiRequest<PlanApplyResponse | { rejected: true; planId: string }>(
+        `/api/v1/assistant/plans/${encodeURIComponent(planId)}/${action}`,
+        {
+          method: "POST",
+          body: JSON.stringify(transition.body),
+        },
+      );
+      if (action === "apply" && "plan" in payload) {
+        setData((current) => bootstrapWithAppliedPlan(current, activeThreadId, payload.plan));
+        setPlanFeedback({
+          threadId: activeThreadId,
+          feedback: planApplySuccess(payload.plan, "published" in payload ? payload.published : publish),
+        });
+      } else {
+        setData((current) => bootstrapWithoutPlan(current, activeThreadId, planId));
+      }
     } catch (caught) {
-      const message = caught instanceof Error ? caught.message : "The change could not be completed.";
-      await load(data.thread.id);
-      setError(message);
+      let feedback = planApplyFailure(plan, caught);
+      try {
+        const refreshed = await apiRequest<CoachBootstrap>(
+          `/api/v1/assistant?threadId=${encodeURIComponent(activeThreadId)}`,
+        );
+        const refreshedPlan = refreshed.plans.find((candidate) => candidate.id === planId);
+        setData((current) => current?.thread.id === activeThreadId
+          ? bootstrapWithPreservedActivities(current, refreshed)
+          : current);
+        if (action === "apply" && refreshedPlan?.status === "applied") {
+          feedback = planApplySuccess(refreshedPlan, publish);
+        }
+      } catch {
+        // Keep the original, plan-specific failure when refresh is also unavailable.
+      }
+      setPlanFeedback({ threadId: activeThreadId, feedback });
     } finally {
       setPlanBusy(null);
     }
@@ -256,7 +301,8 @@ export function CoachScreen() {
     );
   }
 
-  const hasConversation = data.messages.length > 0 || reviewPlans.length > 0;
+  const activePlanFeedback = planFeedback?.threadId === data.thread.id ? planFeedback.feedback : null;
+  const hasConversation = data.messages.length > 0 || reviewPlans.length > 0 || Boolean(activePlanFeedback);
 
   return (
     <Screen scroll={false} safeTop={false} contentStyle={styles.screen}>
@@ -327,10 +373,7 @@ export function CoachScreen() {
                     </View>
                   </View>
                 ) : (
-                  <View key={message.id} style={styles.assistantRow}>
-                    <View style={styles.assistantAvatar}><Text style={styles.assistantAvatarText}>C</Text></View>
-                    <CoachMarkdown content={message.content} />
-                  </View>
+                  <AssistantMessageView key={message.id} message={message} />
                 )
               ))}
 
@@ -358,16 +401,22 @@ export function CoachScreen() {
                   </Text>
                   <View style={styles.planDiff}>
                     {plan.diff.map((change, index) => (
-                      <Text key={`${plan.id}:${index}`} style={styles.planDiffText}>• {change}</Text>
+                      <Text key={`${plan.id}:${index}`} style={styles.planDiffText}>• {readablePlanDiff(change)}</Text>
                     ))}
                   </View>
                   <View style={styles.planActions}>
                     <CompactAction
                       title={plan.kind === "exercise"
-                        ? exerciseApplyLabel(plan.action)
+                        ? planBusy === `${plan.id}:apply:true`
+                          ? planApplyBusyLabel(plan, true)
+                          : exerciseApplyLabel(plan.action)
                         : plan.action === "create"
-                          ? plan.status === "applying" ? "Retry creation" : "Create routine"
-                          : "Apply & publish"}
+                          ? planBusy === `${plan.id}:apply:true`
+                            ? planApplyBusyLabel(plan, true)
+                            : plan.status === "applying" ? "Retry creation" : "Create routine"
+                          : planBusy === `${plan.id}:apply:true`
+                            ? planApplyBusyLabel(plan, true)
+                            : "Apply & publish"}
                       primary
                       loading={planBusy === `${plan.id}:apply:true`}
                       disabled={Boolean(planBusy)}
@@ -375,7 +424,9 @@ export function CoachScreen() {
                     />
                     {plan.kind === "routine" && plan.action === "update" ? (
                       <CompactAction
-                        title="Save as draft"
+                        title={planBusy === `${plan.id}:apply:false`
+                          ? planApplyBusyLabel(plan, false)
+                          : "Save as draft"}
                         loading={planBusy === `${plan.id}:apply:false`}
                         disabled={Boolean(planBusy)}
                         onPress={() => void handlePlan(plan.id, "apply", false)}
@@ -393,6 +444,15 @@ export function CoachScreen() {
                   </View>
                 </View>
               ))}
+
+              {activePlanFeedback ? (
+                <View style={styles.assistantRow}>
+                  <View style={styles.assistantAvatar}><Text style={styles.assistantAvatarText}>C</Text></View>
+                  <View style={styles.planFeedback}>
+                    <Message tone={activePlanFeedback.tone}>{activePlanFeedback.message}</Message>
+                  </View>
+                </View>
+              ) : null}
 
               {sending ? (
                 <View style={styles.assistantRow}>
@@ -546,6 +606,31 @@ export function CoachScreen() {
   );
 }
 
+function AssistantMessageView({ message }: { message: AssistantMessage }) {
+  const activities = coachToolActivityRows(message.activities);
+  return (
+    <View style={styles.assistantRow}>
+      <View style={styles.assistantAvatar}><Text style={styles.assistantAvatarText}>C</Text></View>
+      <View style={styles.assistantContent}>
+        {activities.length ? (
+          <View style={styles.activityCard}>
+            <Text style={styles.activityTitle}>Coach activity</Text>
+            {activities.map((activity) => (
+              <View key={activity.key} style={styles.activityRow}>
+                <Text style={activity.tone === "success" ? styles.activitySuccess : styles.activityError}>
+                  {activity.tone === "success" ? "✓" : "!"}
+                </Text>
+                <Text style={styles.activityText}>{activity.label}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+        <CoachMarkdown content={message.content} />
+      </View>
+    </View>
+  );
+}
+
 function IconButton({
   label,
   symbol,
@@ -588,6 +673,8 @@ function CompactAction({
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={title}
+      accessibilityState={{ busy: loading, disabled: disabled || loading }}
       disabled={disabled || loading}
       onPress={onPress}
       style={({ pressed }) => [
@@ -599,7 +686,14 @@ function CompactAction({
       ]}
     >
       {loading ? (
-        <ActivityIndicator color={primary ? colors.background : colors.text} size="small" />
+        <View style={styles.compactActionLoading}>
+          <ActivityIndicator color={primary ? colors.background : colors.text} size="small" />
+          <Text style={[
+            styles.compactActionText,
+            primary && styles.compactActionTextPrimary,
+            subtle && styles.compactActionTextSubtle,
+          ]}>{title}</Text>
+        </View>
       ) : (
         <Text style={[
           styles.compactActionText,
@@ -747,6 +841,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceRaised,
   },
   assistantRow: { width: "100%", flexDirection: "row", alignItems: "flex-start", gap: spacing.md },
+  assistantContent: { flex: 1, minWidth: 0, gap: spacing.md },
   assistantAvatar: {
     width: 28,
     height: 28,
@@ -757,6 +852,19 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
   assistantAvatarText: { color: colors.background, fontSize: 13, fontWeight: "900" },
+  activityCard: {
+    padding: spacing.md,
+    gap: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    backgroundColor: colors.surface,
+  },
+  activityTitle: { color: colors.textMuted, fontSize: 12, fontWeight: "800" },
+  activityRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
+  activitySuccess: { color: colors.success, fontSize: 13, lineHeight: 19, fontWeight: "900" },
+  activityError: { color: colors.danger, fontSize: 13, lineHeight: 19, fontWeight: "900" },
+  activityText: { flex: 1, color: colors.text, fontSize: 13, lineHeight: 19 },
   messageText: { color: colors.text, fontSize: 15, lineHeight: 23 },
   thinkingRow: { minHeight: 28, flexDirection: "row", alignItems: "center", gap: spacing.sm },
   thinkingText: { color: colors.textMuted, fontSize: 14 },
@@ -778,6 +886,7 @@ const styles = StyleSheet.create({
   planDiff: { gap: 5 },
   planDiffText: { color: colors.text, fontSize: 13, lineHeight: 18 },
   planActions: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  planFeedback: { flex: 1, minWidth: 0 },
   compactAction: {
     minHeight: 36,
     minWidth: 74,
@@ -794,6 +903,7 @@ const styles = StyleSheet.create({
   compactActionText: { color: colors.text, fontSize: 13, fontWeight: "800" },
   compactActionTextPrimary: { color: colors.background },
   compactActionTextSubtle: { color: colors.textMuted },
+  compactActionLoading: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   composerDock: {
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.sm,

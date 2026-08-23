@@ -490,6 +490,7 @@ export const assistantMessages = sqliteTable(
     model: text("model"),
     reasoningEffort: text("reasoning_effort"),
     responseId: text("response_id"),
+    activitiesJson: text("activities_json").notNull().default("[]"),
     createdAt: text("created_at").notNull(),
   },
   (table) => [

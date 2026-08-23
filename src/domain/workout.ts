@@ -114,6 +114,7 @@ export type GuidedSet = {
   exerciseInstructions?: string;
   exerciseNotes?: string;
   supersetGroup?: string | null;
+  supersetDisplayGroup?: string | null;
 };
 
 function parseRestSeconds(rest: string) {
@@ -316,6 +317,7 @@ export function buildGuidedSets(routine: WorkoutPrescription): GuidedSet[] {
   const curlIndex = routine.exercises.findIndex((exercise) => exercise.name.toLowerCase() === "barbell curl");
   const pressdownIndex = routine.exercises.findIndex((exercise) => exercise.name.toLowerCase() === "cable triceps pressdown");
   const canInterleaveSuperset = curlIndex >= 0 && pressdownIndex === curlIndex + 1;
+  const legacySupersetGroup = "legacy-curl-pressdown";
 
   allExerciseSets.forEach((sets, exerciseIndex) => {
     if (canInterleaveSuperset && exerciseIndex === curlIndex) {
@@ -323,8 +325,12 @@ export function buildGuidedSets(routine: WorkoutPrescription): GuidedSet[] {
       const pressdowns = allExerciseSets[pressdownIndex];
       const rounds = Math.max(curls.length, pressdowns.length);
       for (let round = 0; round < rounds; round += 1) {
-        if (curls[round]) result.push(curls[round]);
-        if (pressdowns[round]) result.push(pressdowns[round]);
+        if (curls[round]) {
+          result.push({ ...curls[round], supersetDisplayGroup: legacySupersetGroup });
+        }
+        if (pressdowns[round]) {
+          result.push({ ...pressdowns[round], supersetDisplayGroup: legacySupersetGroup });
+        }
       }
       return;
     }

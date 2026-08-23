@@ -28,21 +28,41 @@ export type CoachRoutineProposal = Omit<RoutineVersionInput, "exercises"> & {
 type RoutineProposalMode = "create" | "update";
 
 const setFields = [
-  ["position", "position"],
-  ["setType", "type"],
-  ["targetType", "target type"],
-  ["targetMin", "target minimum"],
-  ["targetMax", "target maximum"],
-  ["targetDisplay", "display target"],
-  ["targetRirMin", "RIR minimum"],
-  ["targetRirMax", "RIR maximum"],
-  ["restAfterSec", "rest seconds"],
-  ["restRule", "rest rule"],
-  ["loadInstruction", "load instruction"],
-  ["sideMode", "side mode"],
-  ["tempo", "tempo"],
-  ["notes", "notes"],
+  ["position", "Position"],
+  ["setType", "Set type"],
+  ["targetType", "Target type"],
+  ["targetMin", "Minimum target"],
+  ["targetMax", "Maximum target"],
+  ["targetDisplay", "Displayed target"],
+  ["targetRirMin", "Minimum RIR"],
+  ["targetRirMax", "Maximum RIR"],
+  ["restAfterSec", "Rest after set"],
+  ["restRule", "Rest timing"],
+  ["loadInstruction", "Load guidance"],
+  ["sideMode", "Side mode"],
+  ["tempo", "Tempo"],
+  ["notes", "Notes"],
 ] as const satisfies ReadonlyArray<readonly [keyof RoutineSetInput, string]>;
+
+const optionLabels: Readonly<Record<string, string>> = {
+  warmup: "Warm-up",
+  regular: "Regular",
+  failure: "Failure",
+  drop: "Drop",
+  emom: "EMOM",
+  test: "Test",
+  reps: "Reps",
+  duration: "Duration",
+  rounds: "Rounds",
+  standard: "Standard",
+  after_both_sides: "After both sides",
+  no_rest_before_drop: "No rest before drop",
+  after_superset: "After superset",
+  bilateral: "Bilateral",
+  per_side: "Per side",
+  per_leg: "Per leg",
+  left_right: "Left / right",
+};
 
 export function completeRoutineChangeProposal(current: RoutineVersion, value: unknown) {
   return completeRoutineProposal(current, value, "update");
@@ -140,16 +160,18 @@ export function buildRoutineCreationDiff(
   proposed: CoachRoutineProposal,
   exerciseLibrary: ExerciseLibraryEntry[],
 ) {
-  const changes: string[] = [`Create routine code ${formatValue(routineCode)}.`];
+  const changes: string[] = [asSentence(`Create routine with code ${formatValue(routineCode)}`)];
   pushFieldChange(changes, "Routine name", null, proposed.focus);
   pushFieldChange(changes, "Routine summary", null, proposed.summary);
-  pushFieldChange(changes, "Estimated duration (minutes)", null, proposed.durationMin);
+  pushFieldChange(changes, "Estimated duration", null, proposed.durationMin, formatMinutes);
 
   const names = new Map(exerciseLibrary.map((exercise) => [exercise.id, exercise.name]));
   for (const exercise of sortedPlacements(proposed.exercises)) {
-    const label = JSON.stringify(names.get(exercise.exerciseId) ?? exercise.exerciseId);
-    changes.push(`Add ${label}: ${formatPlacement(exercise)}.`);
-    for (const set of sortedSets(exercise.sets)) changes.push(`${label} · add set: ${formatSet(set)}.`);
+    const label = placementLabel(names.get(exercise.exerciseId) ?? exercise.exerciseId, exercise.position);
+    changes.push(asSentence(`Add exercise: ${label} — ${formatPlacement(exercise)}`));
+    for (const set of sortedSets(exercise.sets)) {
+      changes.push(asSentence(`${label} · Add set ${set.position} — ${formatSet(set)}`));
+    }
   }
   return changes;
 }
@@ -163,7 +185,13 @@ export function buildRoutineChangeDiff(
   const changes: string[] = [];
   pushFieldChange(changes, "Routine name", current?.focus ?? null, proposed.focus);
   pushFieldChange(changes, "Routine summary", current?.summary ?? null, proposed.summary);
-  pushFieldChange(changes, "Estimated duration (minutes)", current?.durationMin ?? null, proposed.durationMin);
+  pushFieldChange(
+    changes,
+    "Estimated duration",
+    current?.durationMin ?? null,
+    proposed.durationMin,
+    formatMinutes,
+  );
 
   const names = new Map(exerciseLibrary.map((exercise) => [exercise.id, exercise.name]));
   const currentById = new Map(current?.exercises.map((exercise) => [exercise.id, exercise]) ?? []);
@@ -174,8 +202,10 @@ export function buildRoutineChangeDiff(
   for (const exercise of sortedPlacements(current?.exercises ?? [])) {
     if (retainedPlacementIds.has(exercise.id)) continue;
     const label = currentPlacementLabel(exercise);
-    changes.push(`Remove ${label}: ${formatPlacement(exercise)}.`);
-    for (const set of sortedSets(exercise.sets)) changes.push(`${label} · remove set: ${formatSet(set)}.`);
+    changes.push(asSentence(`Remove exercise: ${label} — ${formatPlacement(exercise)}`));
+    for (const set of sortedSets(exercise.sets)) {
+      changes.push(asSentence(`${label} · Remove set ${set.position} — ${formatSet(set)}`));
+    }
   }
 
   for (const exercise of sortedPlacements(proposed.exercises)) {
@@ -184,18 +214,20 @@ export function buildRoutineChangeDiff(
       : null;
     const proposedName = names.get(exercise.exerciseId) ?? existing?.exerciseName ?? exercise.exerciseId;
     if (!existing) {
-      const label = JSON.stringify(proposedName);
-      changes.push(`Add ${label}: ${formatPlacement(exercise)}.`);
-      for (const set of sortedSets(exercise.sets)) changes.push(`${label} · add set: ${formatSet(set)}.`);
+      const label = placementLabel(proposedName, exercise.position);
+      changes.push(asSentence(`Add exercise: ${label} — ${formatPlacement(exercise)}`));
+      for (const set of sortedSets(exercise.sets)) {
+        changes.push(asSentence(`${label} · Add set ${set.position} — ${formatSet(set)}`));
+      }
       continue;
     }
 
     const label = currentPlacementLabel(existing);
-    pushFieldChange(changes, `${label} · exercise`, existing.exerciseName, proposedName);
-    pushFieldChange(changes, `${label} · exercise position`, existing.position, exercise.position);
-    pushFieldChange(changes, `${label} · superset group`, existing.supersetGroup ?? null, exercise.supersetGroup ?? null);
-    pushFieldChange(changes, `${label} · exercise instructions`, existing.instructions ?? "", exercise.instructions ?? "");
-    pushFieldChange(changes, `${label} · exercise notes`, existing.notes ?? "", exercise.notes ?? "");
+    pushFieldChange(changes, `${label} · Exercise name`, existing.exerciseName, proposedName);
+    pushFieldChange(changes, `${label} · Position`, existing.position, exercise.position);
+    pushFieldChange(changes, `${label} · Superset group`, existing.supersetGroup ?? null, exercise.supersetGroup ?? null);
+    pushFieldChange(changes, `${label} · Instructions`, existing.instructions ?? "", exercise.instructions ?? "");
+    pushFieldChange(changes, `${label} · Notes`, existing.notes ?? "", exercise.notes ?? "");
     pushSetChanges(changes, label, existing.sets, exercise.sets);
   }
   return changes;
@@ -213,16 +245,24 @@ function pushSetChanges(
     .filter((id): id is string => Boolean(id)));
 
   for (const set of sortedSets(currentSets)) {
-    if (!retainedSetIds.has(set.id)) changes.push(`${exerciseLabel} · remove set: ${formatSet(set)}.`);
+    if (!retainedSetIds.has(set.id)) {
+      changes.push(asSentence(`${exerciseLabel} · Remove set ${set.position} — ${formatSet(set)}`));
+    }
   }
   for (const set of sortedSets(proposedSets)) {
     const current = set.sourceRoutineSetId ? currentById.get(set.sourceRoutineSetId) : null;
     if (!current) {
-      changes.push(`${exerciseLabel} · add set: ${formatSet(set)}.`);
+      changes.push(asSentence(`${exerciseLabel} · Add set ${set.position} — ${formatSet(set)}`));
       continue;
     }
     for (const [field, label] of setFields) {
-      pushFieldChange(changes, `${exerciseLabel} · set ${current.position} · ${label}`, current[field], set[field]);
+      pushFieldChange(
+        changes,
+        `${exerciseLabel} · Set ${current.position} · ${label}`,
+        current[field],
+        set[field],
+        (value) => formatSetValue(field, value),
+      );
     }
   }
 }
@@ -236,31 +276,61 @@ function sortedSets<T extends { position: number }>(sets: T[]) {
 }
 
 function currentPlacementLabel(exercise: RoutineExercise) {
-  return `${JSON.stringify(exercise.exerciseName)} placement at position ${exercise.position}`;
+  return placementLabel(exercise.exerciseName, exercise.position);
+}
+
+function placementLabel(exerciseName: string, position: number) {
+  return `${exerciseName} (position ${position})`;
 }
 
 function formatPlacement(placement: RoutineExercise | RoutineExerciseInput) {
   return [
-    `position=${placement.position}`,
-    `superset group=${formatValue(placement.supersetGroup ?? null)}`,
-    `instructions=${formatValue(placement.instructions ?? "")}`,
-    `notes=${formatValue(placement.notes ?? "")}`,
+    `Superset group: ${formatValue(placement.supersetGroup ?? null)}`,
+    `Instructions: ${formatValue(placement.instructions ?? "")}`,
+    `Notes: ${formatValue(placement.notes ?? "")}`,
   ].join("; ");
 }
 
 function formatSet(set: SetShape) {
-  return setFields.map(([field, label]) => `${label}=${formatValue(set[field])}`).join("; ");
+  return setFields
+    .filter(([field]) => field !== "position")
+    .map(([field, label]) => `${label}: ${formatSetValue(field, set[field])}`)
+    .join("; ");
 }
 
-function pushFieldChange(changes: string[], label: string, before: unknown, after: unknown) {
+function pushFieldChange(
+  changes: string[],
+  label: string,
+  before: unknown,
+  after: unknown,
+  formatter: (value: unknown) => string = formatValue,
+) {
   if (Object.is(before, after)) return;
-  changes.push(`${label}: ${formatValue(before)} -> ${formatValue(after)}.`);
+  changes.push(asSentence(`${label}: ${formatter(before)} → ${formatter(after)}`));
 }
 
 function formatValue(value: unknown) {
-  if (value === null || value === undefined) return "none";
-  if (typeof value === "string") return JSON.stringify(value);
+  if (value === null || value === undefined) return "Not set";
+  if (value === "") return "None";
   return String(value);
+}
+
+function formatMinutes(value: unknown) {
+  if (value === null || value === undefined) return "Not set";
+  return `${String(value)} minutes`;
+}
+
+function formatSetValue(field: keyof RoutineSetInput, value: unknown) {
+  if (value === null || value === undefined || value === "") return formatValue(value);
+  if (field === "restAfterSec") return `${String(value)} seconds`;
+  if (field === "setType" || field === "targetType" || field === "restRule" || field === "sideMode") {
+    return optionLabels[String(value)]!;
+  }
+  return formatValue(value);
+}
+
+function asSentence(value: string) {
+  return /[.!?]$/.test(value) ? value : `${value}.`;
 }
 
 function sourceId(value: unknown, label: string) {

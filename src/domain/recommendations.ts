@@ -288,7 +288,7 @@ export function buildRoutineRecommendations(
       : routine);
 
   let recommendationKind: RecommendationResult["recommendationKind"] = "recovery";
-  let summary = "Every rolling-plan routine needs caution because of recent muscle overlap or missing muscle tags. Consider rest or a lighter session; this is not a medical readiness assessment.";
+  let summary = "Every rolling-plan routine needs caution today. Review each routine's availability details before deciding; this is not a medical readiness assessment.";
   if (recommended) {
     recommendationKind = "routine";
     if (!validSessions.length && !recentSets.length) {

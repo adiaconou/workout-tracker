@@ -71,11 +71,24 @@ export type RoutineSummary = Omit<WorkoutPrescription, "exercises"> & {
 };
 
 export type RecordedSetPerformance = {
+  workoutSetId: string;
   status: "Completed" | "Skipped";
   actualWeight: number | null;
   actualReps: number | null;
   actualDurationSec: number | null;
   weightUnit: string;
+};
+
+export type RecordSetResponse = {
+  workoutSetId: string;
+  performanceId: string;
+  completedSets: number;
+  skippedSets: number;
+  nextSetIndex: number;
+  restSeconds: number;
+  restEndsAt: string | null;
+  workoutCompleted: boolean;
+  workoutElapsedSeconds: number;
 };
 
 export type WorkoutView = {

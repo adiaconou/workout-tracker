@@ -222,7 +222,7 @@ const createStatements = [
     id TEXT PRIMARY KEY, owner_email TEXT NOT NULL,
     thread_id TEXT NOT NULL REFERENCES assistant_threads(id) ON DELETE CASCADE,
     role TEXT NOT NULL, content TEXT NOT NULL, model TEXT, reasoning_effort TEXT,
-    response_id TEXT, created_at TEXT NOT NULL
+    response_id TEXT, activities_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL
   )`,
   "CREATE INDEX IF NOT EXISTS assistant_messages_thread_created_idx ON assistant_messages(thread_id, created_at)",
   `CREATE TABLE IF NOT EXISTS coach_check_ins (
@@ -301,6 +301,9 @@ const additiveColumns: Record<string, Record<string, string>> = {
   exercise_catalog: {
     origin: "TEXT NOT NULL DEFAULT 'custom'",
     template_key: "TEXT",
+  },
+  assistant_messages: {
+    activities_json: "TEXT NOT NULL DEFAULT '[]'",
   },
 };
 
@@ -825,11 +828,26 @@ export async function materializeWorkoutFromSnapshot(d1: D1Database, ownerEmail:
   if (statements.length) await d1.batch(statements);
 }
 
-export async function ensureEntityData(d1: D1Database, ownerEmail: string) {
+const entityDataInFlight = new Map<string, Promise<void>>();
+
+async function provisionEntityData(d1: D1Database, ownerEmail: string) {
   await ensureDefaultExerciseCatalog(d1, ownerEmail);
   await normalizeExistingRoutineData(d1, ownerEmail);
   await synchronizeCanonicalExerciseMuscles(d1, ownerEmail);
   await materializeExistingWorkoutData(d1, ownerEmail);
+}
+
+export async function ensureEntityData(d1: D1Database, ownerEmail: string) {
+  const existing = entityDataInFlight.get(ownerEmail);
+  if (existing) return existing;
+
+  const pending = provisionEntityData(d1, ownerEmail);
+  entityDataInFlight.set(ownerEmail, pending);
+  try {
+    await pending;
+  } finally {
+    if (entityDataInFlight.get(ownerEmail) === pending) entityDataInFlight.delete(ownerEmail);
+  }
 }
 
 async function normalizeExistingRoutineData(d1: D1Database, ownerEmail: string) {

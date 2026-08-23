@@ -7,6 +7,7 @@ import {
   type WorkoutPrescriptionExercise,
 } from "../../domain/workout";
 import type {
+  RecordSetResponse,
   RecordedSetPerformance,
   RoutineSummary,
   WorkoutView,
@@ -779,15 +780,24 @@ export async function getWorkoutSession(ownerEmail: string, sessionId: string): 
     session.startedAt,
   );
   const recordedSetRows = await db()
-    .prepare(`SELECT prescribed_set_id AS prescribedSetId,
-      exercise_order AS exerciseOrder, actual_weight AS actualWeight,
-      actual_reps AS actualReps, actual_duration_sec AS actualDurationSec,
-      weight_unit AS weightUnit, status
-      FROM set_performances
-      WHERE session_id = ? AND owner_email = ? AND status IN ('Completed', 'Skipped')
-      ORDER BY set_order`)
+    .prepare(`SELECT materialized.id AS workoutSetId,
+      performance.prescribed_set_id AS prescribedSetId,
+      performance.exercise_order AS exerciseOrder,
+      performance.actual_weight AS actualWeight,
+      performance.actual_reps AS actualReps,
+      performance.actual_duration_sec AS actualDurationSec,
+      performance.weight_unit AS weightUnit, performance.status
+      FROM set_performances performance
+      INNER JOIN workout_sets materialized
+        ON materialized.workout_id = performance.session_id
+        AND materialized.owner_email = performance.owner_email
+        AND materialized.prescribed_set_id = performance.prescribed_set_id
+      WHERE performance.session_id = ? AND performance.owner_email = ?
+        AND performance.status IN ('Completed', 'Skipped')
+      ORDER BY performance.set_order`)
     .bind(sessionId, ownerEmail)
     .all<{
+      workoutSetId: string;
       prescribedSetId: string;
       exerciseOrder: number;
       actualWeight: number | null;
@@ -801,6 +811,7 @@ export async function getWorkoutSession(ownerEmail: string, sessionId: string): 
   for (const row of recordedSetRows.results) {
     const status = row.status === "Skipped" ? "Skipped" : "Completed";
     recordedPerformanceBySetId[row.prescribedSetId] = {
+      workoutSetId: row.workoutSetId,
       status,
       actualWeight: row.actualWeight === null ? null : Number(row.actualWeight),
       actualReps: row.actualReps === null ? null : Number(row.actualReps),
@@ -907,20 +918,35 @@ function effectiveRestSecondsForSet(sets: GuidedSet[], currentIndex: number) {
   return deferredRest.length ? Math.max(...deferredRest) : current.restSeconds;
 }
 
-export async function recordWorkoutSet(ownerEmail: string, sessionId: string, input: RecordSetInput) {
+export async function recordWorkoutSet(
+  ownerEmail: string,
+  sessionId: string,
+  input: RecordSetInput,
+): Promise<RecordSetResponse | null> {
   const session = await getRawWorkoutSession(ownerEmail, sessionId);
   if (!session) return null;
   if (session.status !== "In Progress") {
     const existing = input.prescribedSetId
-      ? await db().prepare(`SELECT id AS performanceId,
-          workout_elapsed_seconds AS workoutElapsedSeconds
-          FROM set_performances WHERE session_id = ? AND owner_email = ?
-          AND prescribed_set_id = ?`)
+      ? await db().prepare(`SELECT performance.id AS performanceId,
+          performance.workout_elapsed_seconds AS workoutElapsedSeconds,
+          materialized.id AS workoutSetId
+          FROM set_performances performance
+          INNER JOIN workout_sets materialized
+            ON materialized.workout_id = performance.session_id
+            AND materialized.owner_email = performance.owner_email
+            AND materialized.prescribed_set_id = performance.prescribed_set_id
+          WHERE performance.session_id = ? AND performance.owner_email = ?
+          AND performance.prescribed_set_id = ?`)
         .bind(sessionId, ownerEmail, input.prescribedSetId)
-        .first<{ performanceId: string; workoutElapsedSeconds: number | null }>()
+        .first<{
+          performanceId: string;
+          workoutElapsedSeconds: number | null;
+          workoutSetId: string;
+        }>()
       : null;
     if (existing) {
       return {
+        workoutSetId: existing.workoutSetId,
         performanceId: existing.performanceId,
         completedSets: Number(session.completedSets),
         skippedSets: Number(session.skippedSets),
@@ -946,15 +972,28 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
   if (!prescribedSet) throw new Error("This workout has no remaining sets.");
   if (input.prescribedSetId !== prescribedSet.id) {
     const existing = input.prescribedSetId
-      ? await db().prepare(`SELECT id AS performanceId, target_rest_sec AS restSeconds,
-          workout_elapsed_seconds AS workoutElapsedSeconds
-          FROM set_performances WHERE session_id = ? AND owner_email = ?
-          AND prescribed_set_id = ?`)
+      ? await db().prepare(`SELECT performance.id AS performanceId,
+          performance.target_rest_sec AS restSeconds,
+          performance.workout_elapsed_seconds AS workoutElapsedSeconds,
+          materialized.id AS workoutSetId
+          FROM set_performances performance
+          INNER JOIN workout_sets materialized
+            ON materialized.workout_id = performance.session_id
+            AND materialized.owner_email = performance.owner_email
+            AND materialized.prescribed_set_id = performance.prescribed_set_id
+          WHERE performance.session_id = ? AND performance.owner_email = ?
+          AND performance.prescribed_set_id = ?`)
         .bind(sessionId, ownerEmail, input.prescribedSetId)
-        .first<{ performanceId: string; restSeconds: number; workoutElapsedSeconds: number | null }>()
+        .first<{
+          performanceId: string;
+          restSeconds: number;
+          workoutElapsedSeconds: number | null;
+          workoutSetId: string;
+        }>()
       : null;
     if (existing) {
       return {
+        workoutSetId: existing.workoutSetId,
         performanceId: existing.performanceId,
         completedSets: Number(session.completedSets),
         skippedSets: Number(session.skippedSets),
@@ -999,10 +1038,11 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
   const priorRestFinishedAt = Number.isFinite(priorRestEndsAtMs)
     ? priorRestWasSkipped ? receivedAt : session.restEndsAt
     : null;
-  const currentTiming = await db().prepare(`SELECT started_at AS startedAt
+  const currentTiming = await db().prepare(`SELECT id AS workoutSetId, started_at AS startedAt
       FROM workout_sets WHERE workout_id = ? AND owner_email = ? AND prescribed_set_id = ?`)
     .bind(sessionId, ownerEmail, prescribedSet.id)
-    .first<{ startedAt: string | null }>();
+    .first<{ workoutSetId: string; startedAt: string | null }>();
+  if (!currentTiming) throw new Error("This workout set could not be found.");
   const setStartedAt = currentTiming?.startedAt
     ?? priorRestFinishedAt
     ?? (currentIndex === 0 ? session.startedAt : receivedAt);
@@ -1133,6 +1173,7 @@ export async function recordWorkoutSet(ownerEmail: string, sessionId: string, in
   await d1.batch(statements);
 
   return {
+    workoutSetId: currentTiming.workoutSetId,
     performanceId,
     completedSets,
     skippedSets,

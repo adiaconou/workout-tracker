@@ -17,6 +17,11 @@ export type CoachResponse = {
   incomplete_details?: { reason?: string } | null;
 };
 
+export type CoachToolActivity = {
+  name: string;
+  status: "succeeded" | "failed";
+};
+
 type CoachToolCall = {
   name: string;
   argumentsValue: Record<string, unknown>;
@@ -24,7 +29,7 @@ type CoachToolCall = {
 
 type CoachToolCallRecord = CoachToolCall & {
   output: unknown;
-  status: "succeeded" | "failed";
+  status: CoachToolActivity["status"];
 };
 
 export class CoachToolLoopError extends Error {}
@@ -48,6 +53,7 @@ export async function runCoachToolLoop(input: {
   const maxRunDurationMs = input.maxRunDurationMs ?? defaultCoachRunDurationMs;
   let responseId = "";
   const callSignatureCounts = new Map<string, number>();
+  const activities: CoachToolActivity[] = [];
   let forceFinalResponse = false;
   let proposalStaged = false;
 
@@ -62,7 +68,7 @@ export async function runCoachToolLoop(input: {
     if (!calls.length) {
       const text = outputText(output);
       if (!text) throw new CoachToolLoopError("The selected model returned no coaching response.");
-      return { text, responseId };
+      return { text, responseId, activities: withoutRepairedFailures(activities) };
     }
     if (forceFinalResponse) {
       throw new CoachToolLoopError("The selected model tried to call a tool after tools were disabled for final synthesis.");
@@ -75,7 +81,8 @@ export async function runCoachToolLoop(input: {
 
       let argumentsValue: Record<string, unknown> = {};
       let toolOutput: unknown;
-      let status: "succeeded" | "failed" = "succeeded";
+      let status: CoachToolActivity["status"] = "succeeded";
+      let executed = false;
       let parseError: unknown;
       try {
         const parsed = JSON.parse(call.arguments ?? "{}") as unknown;
@@ -109,6 +116,7 @@ export async function runCoachToolLoop(input: {
         status = "failed";
         toolOutput = { error: input.formatError(parseError, "The tool call arguments were invalid.") };
       } else {
+        executed = true;
         try {
           toolOutput = await input.executeTool({ name, argumentsValue });
           if (input.isProposalTool?.(name)) {
@@ -121,6 +129,7 @@ export async function runCoachToolLoop(input: {
         }
       }
 
+      if (executed) activities.push({ name, status });
       try {
         await input.recordToolCall({ name, argumentsValue, output: toolOutput, status });
       } catch (error) {
@@ -129,6 +138,18 @@ export async function runCoachToolLoop(input: {
       conversation.push({ type: "function_call_output", call_id: callId, output: JSON.stringify(toolOutput) });
     }
   }
+}
+
+function withoutRepairedFailures(activities: CoachToolActivity[]) {
+  const laterSuccesses = new Set<string>();
+  const visible: CoachToolActivity[] = [];
+  for (let index = activities.length - 1; index >= 0; index -= 1) {
+    const activity = activities[index]!;
+    if (activity.status === "failed" && laterSuccesses.has(activity.name)) continue;
+    if (activity.status === "succeeded") laterSuccesses.add(activity.name);
+    visible.push(activity);
+  }
+  return visible.reverse();
 }
 
 function validateResponse(response: CoachResponse) {

@@ -834,6 +834,10 @@ test("guided workout construction covers all legacy parsing and interleaving pat
     "Barbell Curl",
     "Cable Triceps Pressdown",
   ]);
+  assert.deepEqual(
+    new Set(interleaved.slice(0, 4).map((set) => set.supersetDisplayGroup)),
+    new Set(["legacy-curl-pressdown"]),
+  );
   assert.ok(interleaved.some((set) => set.restRule === "no_rest_before_drop"));
   assert.ok(interleaved.some((set) => set.restRule === "after_both_sides"));
   assert.ok(interleaved.some((set) => set.restRule === "after_superset"));

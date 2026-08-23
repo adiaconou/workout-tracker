@@ -1,0 +1,1 @@
+ALTER TABLE `assistant_messages` ADD `activities_json` text DEFAULT '[]' NOT NULL;

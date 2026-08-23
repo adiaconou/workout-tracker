@@ -368,7 +368,22 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
     const searchThread = await createThread();
     enqueueTool("search_exercises", { query: "Flat dumbbell bench press", includeArchived: false });
     enqueueText("That exercise is unavailable with your selected equipment.");
-    assertStatus(await sendMessage(searchThread.id, "Can I use a flat dumbbell bench press?"), 201);
+    const searchReply = assertStatus(
+      await sendMessage(searchThread.id, "Can I use a flat dumbbell bench press?"),
+      201,
+    );
+    assert.deepEqual(searchReply.assistantMessage.activities, [
+      { name: "search_exercises", status: "succeeded" },
+    ]);
+    const reloadedSearchThread = assertStatus(
+      await request(`/api/v1/assistant?threadId=${encodeURIComponent(searchThread.id)}`),
+      200,
+    );
+    assert.deepEqual(
+      reloadedSearchThread.messages.find((message) => message.id === searchReply.assistantMessage.id)?.activities,
+      [{ name: "search_exercises", status: "succeeded" }],
+      "Human-readable activity metadata should survive a thread reload",
+    );
     const searchAudit = await first(`SELECT output_json AS outputJson FROM assistant_tool_calls
       WHERE thread_id = ? AND tool_name = 'search_exercises' ORDER BY created_at DESC LIMIT 1`, searchThread.id);
     assert.deepEqual(JSON.parse(searchAudit.outputJson).exercises, []);
@@ -562,8 +577,8 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
     });
 
     assert.equal(plan.routineId, null);
-    assert.match(plan.diff.join("\n"), /Create routine code "COACH-NEW"/i);
-    assert.match(plan.diff.join("\n"), /Add "Coach New Routine Exercise"/i);
+    assert.match(plan.diff.join("\n"), /Create routine with code COACH-NEW/i);
+    assert.match(plan.diff.join("\n"), /Add exercise: Coach New Routine Exercise/i);
     assert.equal(await count("SELECT COUNT(*) AS count FROM routines WHERE owner_email = ? AND code = 'COACH-NEW'", ownerEmail), 0);
     assert.equal(await count("SELECT COUNT(*) AS count FROM routine_versions WHERE routine_id = ?", plan.id), 0);
 
@@ -729,10 +744,10 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
     assert.ok(plan);
     assert.equal(plan.status, "pending");
     assert.match(plan.diff.join("\n"), /Routine summary.*Assistant exercise-plan integration test.*Exact review-card coverage/i);
-    assert.match(plan.diff.join("\n"), /exercise instructions.*controlled three-second/i);
-    assert.match(plan.diff.join("\n"), /superset group.*"A"/i);
-    assert.match(plan.diff.join("\n"), /rest rule.*after_superset/i);
-    assert.match(plan.diff.join("\n"), /load instruction.*heaviest technically clean/i);
+    assert.match(plan.diff.join("\n"), /Instructions:.*controlled three-second/i);
+    assert.match(plan.diff.join("\n"), /Superset group: Not set → A/i);
+    assert.match(plan.diff.join("\n"), /Rest timing: Standard → After superset/i);
+    assert.match(plan.diff.join("\n"), /Load guidance:.*heaviest technically clean/i);
     assert.match(plan.diff.join("\n"), /tempo.*3-1-1/i);
     assert.match(plan.diff.join("\n"), /set 1.*notes.*final rep smooth/i);
     assert.equal(await count("SELECT COUNT(*) AS count FROM routine_versions WHERE routine_id = ?", created.id), versionsBefore);

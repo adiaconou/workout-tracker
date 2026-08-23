@@ -22,6 +22,7 @@ const entityMigrationFilenames = [
   "drizzle/0012_sturdy_harpoon.sql",
   "drizzle/0013_outstanding_jean_grey.sql",
   "drizzle/0014_program_generation_jobs.sql",
+  "drizzle/0015_material_rockslide.sql",
 ];
 
 test("applies the complete migration chain and creates the normalized entity model", async () => {
@@ -51,6 +52,7 @@ test("applies the complete migration chain and creates the normalized entity mod
       setPerformances: setPerformanceColumns,
       authSessions: sqlite.prepare("PRAGMA table_info(auth_sessions)").all(),
       exercisePlans: sqlite.prepare("PRAGMA table_info(assistant_exercise_change_plans)").all(),
+      assistantMessages: sqlite.prepare("PRAGMA table_info(assistant_messages)").all(),
       exercisePlanIndexes: sqlite.prepare("PRAGMA index_list(assistant_exercise_change_plans)").all(),
       exercisePlanForeignKeys: sqlite.prepare("PRAGMA foreign_key_list(assistant_exercise_change_plans)").all(),
       programGenerationJobs: programGenerationJobColumns,
@@ -84,6 +86,7 @@ test("applies the complete migration chain and creates the normalized entity mod
     assert.match(inspected, /base_updated_at/);
     assert.match(inspected, /base_input_json/);
     assert.match(inspected, /applied_exercise_id/);
+    assert.match(inspected, /activities_json/);
     assert.match(inspected, /assistant_exercise_change_plans_owner_status_idx/);
     assert.match(inspected, /assistant_exercise_change_plans_thread_created_idx/);
     assert.ok(programIndexes.some((index) => index.name === "routine_programs_one_active_owner_idx" && index.unique === 1));

@@ -34,6 +34,7 @@ import {
   CoachToolLoopError,
   runCoachToolLoop,
   type CoachResponse,
+  type CoachToolActivity,
   type CoachToolChoice,
 } from "./tool-loop";
 import {
@@ -131,9 +132,14 @@ type AssistantMessage = {
   threadId: string;
   role: "user" | "assistant";
   content: string;
+  activities?: CoachToolActivity[];
   model: string | null;
   reasoningEffort: string | null;
   createdAt: string;
+};
+
+type AssistantMessageRow = Omit<AssistantMessage, "activities"> & {
+  activitiesJson: string;
 };
 
 type CoachCheckIn = {
@@ -1066,14 +1072,16 @@ async function createAssistantMessage({ request, env, user }: AssistantContext) 
       threadId: thread.id,
       role: "assistant",
       content: result.text,
+      activities: result.activities,
       model,
       reasoningEffort,
       createdAt: new Date().toISOString(),
     };
     await env.DB.batch([
       env.DB.prepare(`INSERT INTO assistant_messages (
-        id, owner_email, thread_id, role, content, model, reasoning_effort, response_id, created_at
-      ) VALUES (?, ?, ?, 'assistant', ?, ?, ?, ?, ?)`)
+        id, owner_email, thread_id, role, content, model, reasoning_effort,
+        response_id, activities_json, created_at
+      ) VALUES (?, ?, ?, 'assistant', ?, ?, ?, ?, ?, ?)`)
         .bind(
           assistantMessage.id,
           user.email,
@@ -1082,6 +1090,7 @@ async function createAssistantMessage({ request, env, user }: AssistantContext) 
           model,
           reasoningEffort,
           result.responseId,
+          JSON.stringify(result.activities),
           assistantMessage.createdAt,
         ),
       env.DB.prepare("UPDATE assistant_threads SET updated_at = ? WHERE id = ? AND owner_email = ?")
@@ -2116,12 +2125,16 @@ async function listThreads(env: WorkerEnv, ownerEmail: string) {
 
 async function listMessages(env: WorkerEnv, ownerEmail: string, threadId: string, limit = 50) {
   const rows = await env.DB.prepare(`SELECT id, thread_id AS threadId, role, content,
-    model, reasoning_effort AS reasoningEffort, created_at AS createdAt FROM (
-      SELECT id, thread_id, role, content, model, reasoning_effort, created_at
+    model, reasoning_effort AS reasoningEffort, activities_json AS activitiesJson,
+    created_at AS createdAt FROM (
+      SELECT id, thread_id, role, content, model, reasoning_effort, activities_json, created_at
       FROM assistant_messages WHERE owner_email = ? AND thread_id = ?
       ORDER BY created_at DESC LIMIT ?
-    ) ORDER BY created_at ASC`).bind(ownerEmail, threadId, limit).all<AssistantMessage>();
-  return rows.results;
+    ) ORDER BY created_at ASC`).bind(ownerEmail, threadId, limit).all<AssistantMessageRow>();
+  return rows.results.map(({ activitiesJson, ...message }) => ({
+    ...message,
+    activities: JSON.parse(activitiesJson) as CoachToolActivity[],
+  }));
 }
 
 async function listCheckIns(env: WorkerEnv, ownerEmail: string) {

@@ -2,13 +2,21 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   beginPlanAction,
+  bootstrapWithAppliedPlan,
   bootstrapWithOptimisticMessage,
+  bootstrapWithPreservedActivities,
   bootstrapWithProfile,
   bootstrapWithSendResponse,
+  bootstrapWithoutPlan,
   bootstrapWithoutOptimisticMessage,
+  coachToolActivityRows,
   modelSaveFailure,
   modelSelectionForOption,
   optimisticUserMessage,
+  planApplyBusyLabel,
+  planApplyFailure,
+  planApplySuccess,
+  readablePlanDiff,
   refreshedModelSelection,
   reviewablePlans,
   selectedModelOption,
@@ -182,6 +190,108 @@ test("model persistence success merges profiles and failure restores selection",
   });
 });
 
+test("tool activity becomes concise, deduplicated, human-readable rows", () => {
+  assert.deepEqual(coachToolActivityRows(undefined), []);
+  assert.deepEqual(coachToolActivityRows([
+    { name: "get_routine", status: "succeeded" },
+    { name: "get_routine", status: "succeeded" },
+    { name: "get_routine", status: "failed" },
+    { name: "unknown_read", status: "succeeded" },
+    { name: "unknown_write", status: "failed" },
+  ]), [
+    {
+      key: "get_routine:succeeded",
+      label: "Checked the current routine",
+      tone: "success",
+    },
+    {
+      key: "get_routine:failed",
+      label: "Couldn’t check the current routine",
+      tone: "error",
+    },
+    {
+      key: "unknown_read:succeeded",
+      label: "Completed a coaching step",
+      tone: "success",
+    },
+    {
+      key: "unknown_write:failed",
+      label: "A coaching step failed",
+      tone: "error",
+    },
+  ]);
+});
+
+test("bootstrap refresh preserves current-turn activity without crossing threads", () => {
+  const currentAssistant = {
+    ...message("assistant-current", "assistant"),
+    activities: [{ name: "get_workout_history", status: "succeeded" as const }],
+  };
+  const current = bootstrap({ messages: [currentAssistant, message("plain", "assistant")] });
+  const payload = bootstrap({
+    messages: [
+      message("assistant-current", "assistant"),
+      {
+        ...message("server-activity", "assistant"),
+        activities: [{ name: "get_routine", status: "succeeded" as const }],
+      },
+      message("plain", "assistant"),
+    ],
+  });
+
+  assert.equal(bootstrapWithPreservedActivities(null, payload), payload);
+  assert.equal(bootstrapWithPreservedActivities(
+    bootstrap({ thread: otherThread }),
+    payload,
+  ), payload);
+  const merged = bootstrapWithPreservedActivities(current, payload);
+  assert.deepEqual(merged.messages[0]?.activities, currentAssistant.activities);
+  assert.deepEqual(merged.messages[1]?.activities, [{ name: "get_routine", status: "succeeded" }]);
+  assert.equal(merged.messages[2]?.activities, undefined);
+});
+
+test("legacy stored plan diffs become readable without changing new plan text", () => {
+  const readable = [
+    "Routine name: Not set → Strength.",
+    "Add exercise: Deadlift (position 1) — Superset group: Not set.",
+    "A custom summary that already reads naturally.",
+  ];
+  for (const change of readable) assert.equal(readablePlanDiff(change), change);
+
+  assert.equal(
+    readablePlanDiff('Routine summary: none -> "Keep the \\"brace\\" steady.".'),
+    'Routine summary: Not set → Keep the "brace" steady.',
+  );
+  assert.equal(
+    readablePlanDiff('Add "Conventional Deadlift": position=1; superset group=none; instructions="Keep the bar close."; notes="".'),
+    "Add exercise: Conventional Deadlift (position 1) — Superset group: Not set; Instructions: Keep the bar close; Notes: None.",
+  );
+  assert.equal(
+    readablePlanDiff('"Split Squat" placement at position 2 · set 1 · rest rule: "standard" -> "after_both_sides".'),
+    "Split Squat (position 2) · Set 1 · Rest timing: Standard → After both sides.",
+  );
+  assert.equal(
+    readablePlanDiff('Deadlift · add set: position=2; type="regular"; target type="reps".'),
+    "Deadlift · Add set 2 — Set type: Regular; Target type: Reps.",
+  );
+  assert.equal(
+    readablePlanDiff("Deadlift · set 2 · custom field: old -> new"),
+    "Deadlift · set 2 · custom field: old → new",
+  );
+  assert.equal(
+    readablePlanDiff("Tracking: duration; loading: external; side mode: per_side."),
+    "Tracking: Duration; Loading: External; Side mode: Per side.",
+  );
+  assert.equal(
+    readablePlanDiff(String.raw`Instructions: "\x".`),
+    String.raw`Instructions: "\x".`,
+  );
+  assert.equal(
+    readablePlanDiff(String.raw`Instructions: "\x"`),
+    String.raw`Instructions: "\x"`,
+  );
+});
+
 test("optimistic messages append with exact local metadata", () => {
   const optimistic = optimisticUserMessage({
     id: "local-1",
@@ -297,6 +407,79 @@ test("review cards retain pending plans and interrupted routine creation only", 
     "routine-create-applying",
   ]);
   assert.deepEqual(reviewablePlans(undefined), []);
+});
+
+test("plan updates are guarded by thread and handled plans leave the review list", () => {
+  const first = plan("plan-1");
+  const second = plan("plan-2", { exerciseName: "Deadlift" });
+  const current = bootstrap({ plans: [first, second] });
+  const applied = { ...first, status: "applied" as const };
+
+  assert.equal(bootstrapWithAppliedPlan(null, thread.id, applied), null);
+  assert.equal(bootstrapWithAppliedPlan(current, otherThread.id, applied), current);
+  const updated = bootstrapWithAppliedPlan(current, thread.id, applied);
+  assert.deepEqual(updated?.plans, [applied, second]);
+  assert.deepEqual(reviewablePlans(updated?.plans), [second]);
+
+  assert.equal(bootstrapWithoutPlan(null, thread.id, first.id), null);
+  assert.equal(bootstrapWithoutPlan(current, otherThread.id, first.id), current);
+  assert.deepEqual(bootstrapWithoutPlan(current, thread.id, first.id)?.plans, [second]);
+});
+
+test("plan actions use readable progress and success messages for every action", () => {
+  const routineCreate = plan("routine-create", {
+    kind: "routine",
+    action: "create",
+    routineCode: "PULL-2",
+    proposedRoutine: { focus: "Pull", durationMin: 45, exercises: [] },
+  });
+  const routineUpdate = plan("routine-update", {
+    kind: "routine",
+    action: "update",
+    routineCode: "A",
+    proposedRoutine: { focus: "Strength", durationMin: 45, exercises: [] },
+  });
+  const exerciseCreate = plan("exercise-create", { action: "create", exerciseName: "Farmer Carry" });
+  const exerciseUpdate = plan("exercise-update", { action: "update", exerciseName: "Squat" });
+  const exerciseArchive = plan("exercise-archive", { action: "archive", exerciseName: "Old Squat" });
+
+  assert.equal(planApplyBusyLabel(routineCreate, true), "Creating routine…");
+  assert.equal(planApplyBusyLabel(routineUpdate, true), "Applying & publishing…");
+  assert.equal(planApplyBusyLabel(routineUpdate, false), "Saving draft…");
+  assert.equal(planApplyBusyLabel(exerciseCreate, true), "Adding to library…");
+  assert.equal(planApplyBusyLabel(exerciseUpdate, true), "Updating exercise…");
+  assert.equal(planApplyBusyLabel(exerciseArchive, true), "Archiving exercise…");
+
+  assert.deepEqual(planApplySuccess(routineCreate, true), {
+    planId: "routine-create",
+    message: "Routine PULL-2 created and published.",
+    tone: "success",
+  });
+  assert.equal(planApplySuccess(routineUpdate, true).message, "Routine A updated and published.");
+  assert.equal(planApplySuccess(routineUpdate, false).message, "Draft saved for routine A.");
+  assert.equal(planApplySuccess(exerciseCreate, true).message, "Farmer Carry added to your exercise library.");
+  assert.equal(planApplySuccess(exerciseUpdate, true).message, "Squat updated.");
+  assert.equal(planApplySuccess(exerciseArchive, true).message, "Old Squat archived.");
+});
+
+test("plan action failures retain the API message or name the affected target", () => {
+  const routine = plan("routine", {
+    kind: "routine",
+    action: "update",
+    routineCode: "A",
+    proposedRoutine: { focus: "Strength", durationMin: 45, exercises: [] },
+  });
+  const exercise = plan("exercise", { exerciseName: "Squat" });
+  assert.deepEqual(planApplyFailure(routine, new Error("Routine changed.")), {
+    planId: "routine",
+    message: "Routine changed.",
+    tone: "error",
+  });
+  assert.deepEqual(planApplyFailure(exercise, null), {
+    planId: "exercise",
+    message: "Squat could not be changed.",
+    tone: "error",
+  });
 });
 
 test("plan transitions produce stable busy keys and apply/reject bodies", () => {

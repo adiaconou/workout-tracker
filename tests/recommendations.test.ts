@@ -350,6 +350,8 @@ test("does not recommend a rolling-plan routine while every option needs caution
   assert.equal(result.recommendationKind, "recovery");
   assert.ok(result.routines.every((routine) => routine.availability === "caution"));
   assert.match(result.summary, /not a medical readiness assessment/i);
+  assert.match(result.summary, /review each routine's availability details/i);
+  assert.doesNotMatch(result.summary, /missing muscle tags/i);
 });
 
 test("does not block the planned routine after one recently completed pull-up set", () => {

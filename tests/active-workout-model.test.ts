@@ -1,15 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createSetCorrectionBody,
   createSetRecordBody,
   discardWorkoutSuccessState,
   elapsedFromAnchor,
   finishEarlySuccessState,
+  initialSetNavigation,
+  moveViewedSet,
   pendingFinishError,
   prepareSetRecord,
   recordedSetPerformance,
   recordSetSuccessState,
+  reconcileSetNavigation,
   resultUnitName,
+  supersetContext,
+  viewedSetPosition,
+  viewSetAtIndex,
   type ActiveWorkoutSet,
   type CompleteWorkoutResponse,
   type RecordSetResponse,
@@ -23,6 +30,7 @@ const repsSet: ActiveWorkoutSet = {
 
 function recordResponse(overrides: Partial<RecordSetResponse> = {}): RecordSetResponse {
   return {
+    workoutSetId: "workout-set-1",
     performanceId: "performance-1",
     completedSets: 2,
     skippedSets: 1,
@@ -166,6 +174,238 @@ test("completed repetition and duration sets produce exact queued payloads", () 
       actualWeight: 0,
       actualReps: null,
       actualDurationSec: 30,
+  });
+});
+
+test("set corrections replace the measurement appropriate to the target unit", () => {
+  assert.deepEqual(createSetCorrectionBody({
+    set: repsSet,
+    status: "Completed",
+    numericWeight: 100.5,
+    numericResult: 8,
+  }), {
+    status: "completed",
+    actualWeight: 100.5,
+    actualReps: 8,
+    actualDurationSec: null,
+  });
+  assert.deepEqual(createSetCorrectionBody({
+    set: { ...repsSet, targetUnit: "rounds" },
+    status: "Completed",
+    numericWeight: 20,
+    numericResult: 4,
+  }), {
+    status: "completed",
+    actualWeight: 20,
+    actualReps: 4,
+    actualDurationSec: null,
+  });
+  assert.deepEqual(createSetCorrectionBody({
+    set: { ...repsSet, targetUnit: "seconds" },
+    status: "Completed",
+    numericWeight: 0,
+    numericResult: 45,
+  }), {
+    status: "completed",
+    actualWeight: 0,
+    actualReps: null,
+    actualDurationSec: 45,
+  });
+});
+
+test("skipped set corrections clear measurements", () => {
+  assert.deepEqual(createSetCorrectionBody({
+    set: repsSet,
+    status: "Skipped",
+    numericWeight: Number.NaN,
+    numericResult: Number.NaN,
+  }), {
+    status: "skipped",
+    actualWeight: null,
+    actualReps: null,
+    actualDurationSec: null,
+  });
+});
+
+test("set navigation starts at the authoritative active set", () => {
+  assert.deepEqual(initialSetNavigation(3, 6), {
+    activeIndex: 3,
+    viewedIndex: 3,
+  });
+  assert.deepEqual(initialSetNavigation(-2, 6), {
+    activeIndex: 0,
+    viewedIndex: 0,
+  });
+  assert.deepEqual(initialSetNavigation(20, 6), {
+    activeIndex: 5,
+    viewedIndex: 5,
+  });
+  assert.deepEqual(initialSetNavigation(Number.NaN, 0), {
+    activeIndex: 0,
+    viewedIndex: 0,
+  });
+});
+
+test("browsing is limited to logged sets and the current active set", () => {
+  const navigation = initialSetNavigation(3, 6);
+  assert.deepEqual(viewSetAtIndex(navigation, 1.9, 6), {
+    activeIndex: 3,
+    viewedIndex: 1,
+  });
+  assert.deepEqual(viewSetAtIndex(navigation, -1, 6), {
+    activeIndex: 3,
+    viewedIndex: 0,
+  });
+  assert.deepEqual(viewSetAtIndex(navigation, 5, 6), {
+    activeIndex: 3,
+    viewedIndex: 3,
+  });
+  assert.deepEqual(viewSetAtIndex(navigation, Number.POSITIVE_INFINITY, 6), {
+    activeIndex: 3,
+    viewedIndex: 0,
+  });
+  assert.deepEqual(moveViewedSet(viewSetAtIndex(navigation, 2, 6), -1, 6), {
+    activeIndex: 3,
+    viewedIndex: 1,
+  });
+  assert.deepEqual(moveViewedSet(navigation, 1, 6), navigation);
+});
+
+test("navigation distinguishes past results from the actionable current set", () => {
+  assert.equal(viewedSetPosition({ activeIndex: 3, viewedIndex: 2 }), "past");
+  assert.equal(viewedSetPosition({ activeIndex: 3, viewedIndex: 3 }), "current");
+});
+
+test("refresh follows an advancing current set", () => {
+  assert.deepEqual(reconcileSetNavigation({
+    navigation: { activeIndex: 1, viewedIndex: 1 },
+    previousSetIds: ["a", "b", "c"],
+    nextSetIds: ["a", "b", "c"],
+    nextActiveIndex: 2,
+  }), {
+    activeIndex: 2,
+    viewedIndex: 2,
+  });
+});
+
+test("refresh preserves a browsed past set by identity", () => {
+  assert.deepEqual(reconcileSetNavigation({
+    navigation: { activeIndex: 3, viewedIndex: 1 },
+    previousSetIds: ["a", "b", "c", "d"],
+    nextSetIds: ["a", "c", "b", "d", "e"],
+    nextActiveIndex: 3,
+  }), {
+    activeIndex: 3,
+    viewedIndex: 2,
+  });
+});
+
+test("refresh clamps an unavailable or removed past selection", () => {
+  assert.deepEqual(reconcileSetNavigation({
+    navigation: { activeIndex: 4, viewedIndex: 3 },
+    previousSetIds: ["a", "b", "c", "d", "e"],
+    nextSetIds: ["a", "b"],
+    nextActiveIndex: 1,
+  }), {
+    activeIndex: 1,
+    viewedIndex: 1,
+  });
+  assert.deepEqual(reconcileSetNavigation({
+    navigation: { activeIndex: 2, viewedIndex: 1 },
+    previousSetIds: [],
+    nextSetIds: ["a", "b", "c"],
+    nextActiveIndex: 2,
+  }), {
+    activeIndex: 2,
+    viewedIndex: 1,
+  });
+});
+
+test("superset context is absent for missing, blank, or single-member groups", () => {
+  assert.equal(supersetContext([], 0), null);
+  assert.equal(supersetContext([{
+    supersetGroup: "   ",
+    exerciseOrder: 1,
+    exerciseName: "Row",
+    exerciseSetNumber: 1,
+    exerciseSetTotal: 3,
+  }], 0), null);
+  assert.equal(supersetContext([{
+    supersetGroup: "A",
+    exerciseOrder: 1,
+    exerciseName: "Row",
+    exerciseSetNumber: 1,
+    exerciseSetTotal: 3,
+  }, {
+    supersetGroup: " A ",
+    exerciseOrder: 1,
+    exerciseName: "Row",
+    exerciseSetNumber: 2,
+    exerciseSetTotal: 3,
+  }], 0), null);
+});
+
+test("superset context describes members in routine order and the current round", () => {
+  const sets = [{
+    supersetGroup: " A ",
+    exerciseOrder: 2,
+    exerciseName: "Triceps pressdown",
+    exerciseSetNumber: 2,
+    exerciseSetTotal: 2,
+  }, {
+    supersetGroup: "B",
+    exerciseOrder: 3,
+    exerciseName: "Lateral raise",
+    exerciseSetNumber: 1,
+    exerciseSetTotal: 3,
+  }, {
+    supersetGroup: "A",
+    exerciseOrder: 1,
+    exerciseName: "Barbell curl",
+    exerciseSetNumber: 1,
+    exerciseSetTotal: 3,
+  }, {
+    supersetGroup: "A",
+    exerciseOrder: 1,
+    exerciseName: "Barbell curl",
+    exerciseSetNumber: 2,
+    exerciseSetTotal: 3,
+  }, {
+    supersetGroup: "A",
+    exerciseOrder: 1,
+    exerciseName: "Barbell curl",
+    exerciseSetNumber: 3,
+    exerciseSetTotal: 3,
+  }];
+
+  assert.deepEqual(supersetContext(sets, 0), {
+    label: "Superset",
+    memberNames: ["Barbell curl", "Triceps pressdown"],
+    round: 2,
+    totalRounds: 3,
+  });
+  assert.equal(supersetContext(sets, 1), null);
+  assert.equal(supersetContext(sets, 4), null);
+});
+
+test("superset context supports display-only legacy grouping", () => {
+  assert.deepEqual(supersetContext([{
+    supersetDisplayGroup: "legacy-pair",
+    exerciseOrder: 1,
+    exerciseName: "Curl",
+    exerciseSetNumber: 1,
+    exerciseSetTotal: 2,
+  }, {
+    supersetDisplayGroup: "legacy-pair",
+    exerciseOrder: 2,
+    exerciseName: "Pressdown",
+    exerciseSetNumber: 1,
+    exerciseSetTotal: 2,
+  }], 0), {
+    label: "Superset",
+    memberNames: ["Curl", "Pressdown"],
+    round: 1,
+    totalRounds: 2,
   });
 });
 

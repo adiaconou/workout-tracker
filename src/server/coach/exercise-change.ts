@@ -21,6 +21,26 @@ export type CompleteExerciseInput = {
   muscles: ExerciseMuscle[];
 };
 
+const trackingLabels: Readonly<Record<TrackingType, string>> = {
+  reps: "Reps",
+  duration: "Duration",
+  rounds: "Rounds",
+};
+
+const loadLabels: Readonly<Record<LoadType, string>> = {
+  external: "External weight",
+  bodyweight: "Bodyweight",
+  added: "Added weight",
+  assistance: "Assistance",
+};
+
+const sideLabels: Readonly<Record<SideMode, string>> = {
+  bilateral: "Bilateral",
+  per_side: "Per side",
+  per_leg: "Per leg",
+  left_right: "Left / right",
+};
+
 export function completeExerciseInput(value: unknown): CompleteExerciseInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("A complete proposed exercise is required.");
@@ -59,37 +79,52 @@ export function buildExerciseChangeDiff(
   if (action === "create") {
     if (!proposed) throw new Error("A new exercise needs a complete definition.");
     return [
-      `Add \"${proposed.name}\" to the exercise library.`,
-      `Equipment: ${proposed.equipment}; movement: ${proposed.movementPattern}.`,
-      `Tracking: ${proposed.trackingType}; loading: ${proposed.defaultLoadType}; side mode: ${proposed.sideMode}.`,
-      `Instructions: ${formatInstructions(proposed.instructions)}.`,
-      `Muscles: ${formatMuscles(proposed.muscles)}.`,
+      asSentence(`Add ${proposed.name} to the exercise library`),
+      asSentence(
+        `Equipment: ${formatIdentifier(proposed.equipment)}; Movement: ${formatIdentifier(proposed.movementPattern)}`,
+      ),
+      asSentence(
+        `Tracking: ${trackingLabels[proposed.trackingType]}; `
+        + `Loading: ${loadLabels[proposed.defaultLoadType]}; `
+        + `Side mode: ${sideLabels[proposed.sideMode]}`,
+      ),
+      asSentence(`Instructions: ${formatInstructions(proposed.instructions)}`),
+      asSentence(`Muscles: ${formatMuscles(proposed.muscles)}`),
     ];
   }
 
   if (!current) throw new Error("The target exercise could not be found.");
   if (action === "archive") {
     return [
-      `Archive \"${current.name}\" from the exercise library.`,
+      `Archive ${current.name} from the exercise library.`,
       "Existing routine versions and workout history remain unchanged.",
     ];
   }
   if (!proposed) throw new Error("An exercise update needs a complete definition.");
 
   const changes: string[] = [];
-  if (current.name !== proposed.name) changes.push(`Name: ${current.name} -> ${proposed.name}`);
-  if (current.equipment !== proposed.equipment) changes.push(`Equipment: ${current.equipment} -> ${proposed.equipment}`);
-  if (current.movementPattern !== proposed.movementPattern) changes.push(`Movement: ${current.movementPattern} -> ${proposed.movementPattern}`);
-  if (current.trackingType !== proposed.trackingType) changes.push(`Tracking: ${current.trackingType} -> ${proposed.trackingType}`);
-  if (current.defaultLoadType !== proposed.defaultLoadType) changes.push(`Loading: ${current.defaultLoadType} -> ${proposed.defaultLoadType}`);
-  if (current.sideMode !== proposed.sideMode) changes.push(`Side mode: ${current.sideMode} -> ${proposed.sideMode}`);
-  if (current.instructions !== proposed.instructions) {
-    changes.push(`Instructions: ${formatInstructions(current.instructions)} -> ${formatInstructions(proposed.instructions)}`);
-  }
+  pushFieldChange(changes, "Name", current.name, proposed.name, String);
+  pushFieldChange(changes, "Equipment", current.equipment, proposed.equipment, formatIdentifier);
+  pushFieldChange(changes, "Movement", current.movementPattern, proposed.movementPattern, formatIdentifier);
+  pushFieldChange(changes, "Tracking", current.trackingType, proposed.trackingType, formatTracking);
+  pushFieldChange(changes, "Loading", current.defaultLoadType, proposed.defaultLoadType, formatLoading);
+  pushFieldChange(changes, "Side mode", current.sideMode, proposed.sideMode, formatSideMode);
+  pushFieldChange(changes, "Instructions", current.instructions, proposed.instructions, formatInstructions);
   if (canonicalMuscles(current.muscles) !== canonicalMuscles(proposed.muscles)) {
-    changes.push(`Muscles: ${formatMuscles(current.muscles)} -> ${formatMuscles(proposed.muscles)}`);
+    changes.push(asSentence(`Muscles: ${formatMuscles(current.muscles)} → ${formatMuscles(proposed.muscles)}`));
   }
   return changes;
+}
+
+function pushFieldChange<T extends string>(
+  changes: string[],
+  label: string,
+  before: T,
+  after: T,
+  formatter: (value: T) => string,
+) {
+  if (before === after) return;
+  changes.push(asSentence(`${label}: ${formatter(before)} → ${formatter(after)}`));
 }
 
 function canonicalMuscles(muscles: ExerciseMuscle[]) {
@@ -99,13 +134,36 @@ function canonicalMuscles(muscles: ExerciseMuscle[]) {
 }
 
 function formatMuscles(muscles: ExerciseMuscle[]) {
-  if (!muscles.length) return "none specified";
+  if (!muscles.length) return "None specified";
   return [...muscles]
     .sort((left, right) => left.muscleGroup.localeCompare(right.muscleGroup))
-    .map((muscle) => `${muscle.muscleGroup} (${muscle.role}, ${muscle.weight})`)
+    .map((muscle) => (
+      `${formatIdentifier(muscle.muscleGroup)} (${formatIdentifier(muscle.role)}, weight ${muscle.weight})`
+    ))
     .join(", ");
 }
 
 function formatInstructions(instructions: string) {
-  return instructions ? JSON.stringify(instructions) : "none";
+  return instructions || "None";
+}
+
+function formatIdentifier(value: string) {
+  const readable = value.replaceAll("_", " ");
+  return readable.charAt(0).toUpperCase() + readable.slice(1);
+}
+
+function formatTracking(value: TrackingType) {
+  return trackingLabels[value];
+}
+
+function formatLoading(value: LoadType) {
+  return loadLabels[value];
+}
+
+function formatSideMode(value: SideMode) {
+  return sideLabels[value];
+}
+
+function asSentence(value: string) {
+  return /[.!?]$/.test(value) ? value : `${value}.`;
 }

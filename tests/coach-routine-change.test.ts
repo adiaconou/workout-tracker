@@ -133,7 +133,7 @@ const library = [
   { id: "deadlift", name: "Conventional Deadlift" },
 ];
 
-test("validates and fully discloses a brand-new routine proposal", () => {
+test("validates and fully discloses a brand-new routine proposal in plain language", () => {
   const proposed = proposal([
     proposedExercise({
       sourceRoutineExerciseId: null,
@@ -150,14 +150,15 @@ test("validates and fully discloses a brand-new routine proposal", () => {
   assert.doesNotMatch(JSON.stringify(completed.input), /sourceRoutine(?:Exercise|Set)Id/);
 
   const text = buildRoutineCreationDiff("PULL-2", completed.proposal, library).join("\n");
-  assert.match(text, /Create routine code "PULL-2"/i);
-  assert.match(text, /Routine name[\s\S]*none[\s\S]*"Strength"/i);
+  assert.match(text, /Create routine with code PULL-2/i);
+  assert.match(text, /Routine name[\s\S]*Not set[\s\S]*Strength/i);
   assert.match(text, /Routine summary[\s\S]*Heavy compounds/i);
-  assert.match(text, /duration[\s\S]*60/i);
-  assert.match(text, /Add "Conventional Deadlift"[\s\S]*position=1/i);
-  assert.match(text, /instructions="Keep the bar close\."/i);
-  assert.match(text, /notes="Reset every rep\."/i);
-  assert.match(text, /add set[\s\S]*rest seconds=120[\s\S]*tempo="2-1-1"/i);
+  assert.match(text, /Estimated duration[\s\S]*60 minutes/i);
+  assert.match(text, /Add exercise: Conventional Deadlift \(position 1\)/i);
+  assert.match(text, /Instructions: Keep the bar close\./i);
+  assert.match(text, /Notes: Reset every rep\./i);
+  assert.match(text, /Add set 1[\s\S]*Rest after set: 120 seconds[\s\S]*Tempo: 2-1-1/i);
+  assert.doesNotMatch(text, /[{}]|\b(?:position|type|target|instructions|notes)=/i);
 });
 
 test("requires null source identities for every new routine placement and set", () => {
@@ -178,7 +179,24 @@ test("requires null source identities for every new routine placement and set", 
   );
 });
 
-test("discloses every routine and exercise-placement field with exact text", () => {
+test("renders empty optional routine details as readable words", () => {
+  const proposed = proposal([
+    proposedExercise({
+      sourceRoutineExerciseId: null,
+      instructions: "",
+      notes: "",
+      sets: [proposedSet(null, { loadInstruction: "", tempo: null, notes: "" })],
+    }),
+  ]);
+
+  const text = buildRoutineCreationDiff("PLAIN", proposed, library).join("\n");
+
+  assert.match(text, /Instructions: None; Notes: None/i);
+  assert.match(text, /Load guidance: None[\s\S]*Tempo: Not set[\s\S]*Notes: None/i);
+  assert.doesNotMatch(text, /""|null|undefined/i);
+});
+
+test("discloses every routine and exercise-placement field with readable before and after values", () => {
   const proposed = proposal([
     proposedExercise({
       exerciseId: "deadlift",
@@ -194,14 +212,14 @@ test("discloses every routine and exercise-placement field with exact text", () 
 
   const text = buildRoutineChangeDiff(routine(), proposed, library).join("\n");
 
-  assert.match(text, /Routine name[\s\S]*"Strength"[\s\S]*"Hypertrophy"/i);
-  assert.match(text, /Routine summary[\s\S]*"Heavy compounds with conservative accessories\."[\s\S]*"Moderate loads with controlled eccentrics and exact pauses\."/i);
-  assert.match(text, /duration[\s\S]*60[\s\S]*75/i);
-  assert.match(text, /exercise:[\s\S]*"Barbell Bench Press"[\s\S]*"Conventional Deadlift"/i);
-  assert.match(text, /exercise position[\s\S]*1[\s\S]*2/i);
-  assert.match(text, /superset group[\s\S]*none[\s\S]*"A"/i);
-  assert.match(text, /exercise instructions[\s\S]*"Pause for one second on the chest\."[\s\S]*"Lower for exactly three seconds, then pause\."/i);
-  assert.match(text, /exercise notes[\s\S]*"Use a competition-width grip\."[\s\S]*"Leave one clean rep before technical failure\."/i);
+  assert.match(text, /Routine name: Strength → Hypertrophy/i);
+  assert.match(text, /Routine summary: Heavy compounds with conservative accessories\. → Moderate loads with controlled eccentrics and exact pauses\./i);
+  assert.match(text, /Estimated duration: 60 minutes → 75 minutes/i);
+  assert.match(text, /Exercise name: Barbell Bench Press → Conventional Deadlift/i);
+  assert.match(text, /Position: 1 → 2/i);
+  assert.match(text, /Superset group: Not set → A/i);
+  assert.match(text, /Instructions: Pause for one second on the chest\. → Lower for exactly three seconds, then pause\./i);
+  assert.match(text, /Notes: Use a competition-width grip\. → Leave one clean rep before technical failure\./i);
 });
 
 test("discloses before and after values for every editable set field", () => {
@@ -227,25 +245,23 @@ test("discloses before and after values for every editable set field", () => {
   ).join("\n");
 
   const expectedChanges = [
-    [/set 1[^\n]*type:/i, /"regular"[\s\S]*"failure"/i],
-    [/target type/i, /"reps"[\s\S]*"duration"/i],
-    [/target minimum/i, /8[\s\S]*40/],
-    [/target maximum/i, /10[\s\S]*50/],
-    [/display target/i, /"8-10 reps"[\s\S]*"40-50 seconds"/],
-    [/RIR minimum/i, /1[\s\S]*0/],
-    [/RIR maximum/i, /2[\s\S]*0/],
-    [/rest seconds/i, /90[\s\S]*120/],
-    [/rest rule/i, /"standard"[\s\S]*"after_both_sides"/],
-    [/load instruction/i, /"Use the last completed working weight\."[\s\S]*"Reduce the load after the left side\."/],
-    [/side mode/i, /"bilateral"[\s\S]*"left_right"/],
-    [/tempo/i, /none[\s\S]*"3-1-1"/i],
-    [/set 1[^\n]*notes:/i, /"Stop if bar speed breaks down\."[\s\S]*"Technical failure only; do not grind another rep\."/],
-  ] as const;
+    "Set type: Regular → Failure.",
+    "Target type: Reps → Duration.",
+    "Minimum target: 8 → 40.",
+    "Maximum target: 10 → 50.",
+    "Displayed target: 8-10 reps → 40-50 seconds.",
+    "Minimum RIR: 1 → 0.",
+    "Maximum RIR: 2 → 0.",
+    "Rest after set: 90 seconds → 120 seconds.",
+    "Rest timing: Standard → After both sides.",
+    "Load guidance: Use the last completed working weight. → Reduce the load after the left side.",
+    "Side mode: Bilateral → Left / right.",
+    "Tempo: Not set → 3-1-1.",
+    "Notes: Stop if bar speed breaks down. → Technical failure only; do not grind another rep.",
+  ];
 
-  for (const [label, values] of expectedChanges) {
-    assert.match(text, label);
-    assert.match(text, values);
-  }
+  for (const expected of expectedChanges) assert.ok(text.includes(expected), expected);
+  assert.doesNotMatch(text, /after_both_sides|left_right|[{}]|\b(?:type|target|notes)=/i);
 });
 
 test("uses stable set IDs to report reorders, additions, and removals", () => {
@@ -265,10 +281,10 @@ test("uses stable set IDs to report reorders, additions, and removals", () => {
 
   const text = buildRoutineChangeDiff(current, proposed, library).join("\n");
 
-  assert.match(text, /set[\s\S]*position[\s\S]*2[\s\S]*1/i);
-  assert.match(text, /set[\s\S]*position[\s\S]*1[\s\S]*2/i);
-  assert.match(text, /remove set[\s\S]*position=3[\s\S]*"Remove this backoff set"/i);
-  assert.match(text, /add set[\s\S]*position=4[\s\S]*"New finisher set"/i);
+  assert.match(text, /Set 2 · Position: 2 → 1/i);
+  assert.match(text, /Set 1 · Position: 1 → 2/i);
+  assert.match(text, /Remove set 3[\s\S]*Displayed target: Remove this backoff set/i);
+  assert.match(text, /Add set 4[\s\S]*Displayed target: New finisher set/i);
 });
 
 test("adds, removes, and reorders exercises by stable placement ID", () => {
@@ -298,11 +314,11 @@ test("adds, removes, and reorders exercises by stable placement ID", () => {
 
   const text = buildRoutineChangeDiff(routine([bench, squat]), proposed, library).join("\n");
 
-  assert.match(text, /Remove[\s\S]*Back Squat/i);
-  assert.match(text, /Add[\s\S]*Conventional Deadlift[\s\S]*position=1/i);
-  assert.match(text, /Barbell Bench Press[\s\S]*exercise position[\s\S]*1[\s\S]*2/i);
-  assert.match(text, /instructions="Keep the bar close to the shins\."/i);
-  assert.match(text, /notes="No touch-and-go reps\."/i);
+  assert.match(text, /Remove exercise: Back Squat \(position 2\)/i);
+  assert.match(text, /Add exercise: Conventional Deadlift \(position 1\)/i);
+  assert.match(text, /Barbell Bench Press[\s\S]*Position: 1 → 2/i);
+  assert.match(text, /Instructions: Keep the bar close to the shins\./i);
+  assert.match(text, /Notes: No touch-and-go reps\./i);
 });
 
 test("does not collapse duplicate exercise IDs and tracks each placement independently", () => {
@@ -339,10 +355,10 @@ test("does not collapse duplicate exercise IDs and tracks each placement indepen
 
   const text = buildRoutineChangeDiff(routine([first, second]), proposed, library).join("\n");
 
-  assert.match(text, /"Close-grip bench instructions\."[\s\S]*"Close-grip bench instructions, elbows tucked\."/);
-  assert.match(text, /"First bench placement notes\."[\s\S]*"First bench placement notes, keep feet planted\."/);
-  assert.match(text, /exercise position[\s\S]*2[\s\S]*1/i);
-  assert.match(text, /exercise position[\s\S]*1[\s\S]*2/i);
+  assert.match(text, /Close-grip bench instructions\. → Close-grip bench instructions, elbows tucked\./);
+  assert.match(text, /First bench placement notes\. → First bench placement notes, keep feet planted\./);
+  assert.match(text, /Position: 2 → 1/i);
+  assert.match(text, /Position: 1 → 2/i);
   assert.doesNotMatch(text, /Remove[\s\S]*Barbell Bench Press/i);
   assert.doesNotMatch(text, /Add[\s\S]*Barbell Bench Press/i);
 });

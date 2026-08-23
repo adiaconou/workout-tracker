@@ -591,7 +591,8 @@ function RoutineListRow({
   onStart: () => void;
   onToggle: () => void;
 }) {
-  const [focusedAction, setFocusedAction] = useState<"details" | "open" | "start" | null>(null);
+  const [focusedAction, setFocusedAction] = useState<"details" | "open" | "row" | "start" | null>(null);
+  const [rowHovered, setRowHovered] = useState(false);
   const title = routineMuscleTitle(routine.focus, routine.summary);
   const durationLabel = routineDurationLabel(
     routine.averageDurationSeconds,
@@ -603,6 +604,41 @@ function RoutineListRow({
   const description = routine.summary.trim() || "No description has been added.";
   const descriptionLabelId = `routine-${routine.code.replace(/[^a-z0-9_-]/gi, "-")}-description-label`;
   const availabilityLabel = AVAILABILITY_KEY[availabilityKind].label;
+  const webLinkProps = Platform.OS === "web"
+    ? {
+        href: `/routines/${encodeURIComponent(routine.code)}`,
+        onKeyDown: (event: {
+          key?: string;
+          nativeEvent?: { key?: string };
+          preventDefault: () => void;
+        }) => {
+          if ((event.key ?? event.nativeEvent?.key) !== "Enter") return;
+          event.preventDefault();
+          onOpen();
+        },
+      }
+    : {};
+
+  const openTarget = (
+    <Pressable
+      {...webLinkProps}
+      accessibilityRole="link"
+      accessibilityLabel={`Open Routine ${routine.code}, ${title}`}
+      onBlur={() => setFocusedAction(null)}
+      onFocus={() => setFocusedAction("row")}
+      onHoverIn={() => setRowHovered(true)}
+      onHoverOut={() => setRowHovered(false)}
+      onPress={(event) => {
+        if (Platform.OS === "web") event.preventDefault();
+        onOpen();
+      }}
+      style={({ pressed }) => [
+        styles.routineOpenTarget,
+        (pressed || rowHovered) && styles.routineOpenTargetActive,
+        focusedAction === "row" && Platform.OS === "web" && styles.webFocusRing,
+      ]}
+    />
+  );
 
   const actions = (
     <View
@@ -623,9 +659,16 @@ function RoutineListRow({
         ]}
       >
         <Text style={styles.rowActionText}>Details</Text>
-        <Text aria-hidden accessible={false} style={styles.rowActionIcon}>
-          {expanded ? "⌃" : "⌄"}
-        </Text>
+        <View
+          aria-hidden
+          accessible={false}
+          style={[
+            styles.rowActionChevronFrame,
+            expanded && styles.rowActionChevronFrameExpanded,
+          ]}
+        >
+          <View style={styles.rowActionChevron} />
+        </View>
       </Pressable>
       <Pressable
         accessibilityRole="button"
@@ -654,31 +697,35 @@ function RoutineListRow({
     <View role={compact ? "listitem" : "rowgroup"} style={styles.routineRow}>
       {compact ? (
         <View style={styles.routineMainCompact}>
-          <View style={styles.compactTitleLine}>
-            <RoutineCodeBadge code={routine.code} />
-            <Text numberOfLines={2} style={styles.routineName}>{title}</Text>
-            <AvailabilityIcon
-              description={availabilityDescription}
-              kind={availabilityKind}
-            />
+          {openTarget}
+          <View pointerEvents="none" style={styles.routineCompactContent}>
+            <View style={styles.compactTitleLine}>
+              <RoutineCodeBadge code={routine.code} />
+              <Text numberOfLines={2} style={styles.routineName}>{title}</Text>
+              <AvailabilityIcon
+                description={availabilityDescription}
+                kind={availabilityKind}
+              />
+            </View>
+            <Text style={styles.routineMetadata}>{metadata}</Text>
+            <Text style={styles.lastDone}>{lastDoneLabel}</Text>
           </View>
-          <Text style={styles.routineMetadata}>{metadata}</Text>
-          <Text style={styles.lastDone}>{lastDoneLabel}</Text>
           {actions}
         </View>
       ) : (
         <View role="row" style={styles.routineMain}>
-          <View role="cell" style={styles.routineSummaryCell}>
+          {openTarget}
+          <View pointerEvents="none" role="cell" style={styles.routineSummaryCell}>
             <RoutineCodeBadge code={routine.code} />
             <View style={styles.routineSummaryCopy}>
               <Text numberOfLines={1} style={styles.routineName}>{title}</Text>
               <Text numberOfLines={1} style={styles.routineMetadata}>{metadata}</Text>
             </View>
           </View>
-          <Text role="cell" numberOfLines={1} style={[styles.lastDone, styles.lastDoneColumn]}>
-            {lastDoneLabel}
-          </Text>
-          <View role="cell" style={styles.availabilityColumn}>
+          <View pointerEvents="none" role="cell" style={styles.lastDoneColumn}>
+            <Text numberOfLines={1} style={styles.lastDone}>{lastDoneLabel}</Text>
+          </View>
+          <View pointerEvents="none" role="cell" style={styles.availabilityColumn}>
             <AvailabilityIcon
               description={availabilityDescription}
               kind={availabilityKind}
@@ -1049,6 +1096,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   routineMain: {
+    position: "relative",
     minHeight: 64,
     flexDirection: "row",
     alignItems: "center",
@@ -1057,9 +1105,24 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
   },
   routineMainCompact: {
+    position: "relative",
     minHeight: 136,
     gap: 5,
     padding: spacing.md,
+  },
+  routineCompactContent: { gap: 5 },
+  routineOpenTarget: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 0,
+  },
+  routineOpenTargetActive: {
+    borderLeftWidth: 3,
+    borderLeftColor: colors.accent,
+    backgroundColor: colors.surfaceRaised,
   },
   compactTitleLine: {
     flexDirection: "row",
@@ -1123,6 +1186,8 @@ const styles = StyleSheet.create({
   availabilityAvailable: { color: colors.success },
   availabilityCaution: { color: colors.warning },
   routineActions: {
+    position: "relative",
+    zIndex: 1,
     width: 168,
     flexShrink: 0,
     flexDirection: "row",
@@ -1146,7 +1211,22 @@ const styles = StyleSheet.create({
   },
   rowActionPressed: { backgroundColor: colors.border },
   rowActionText: { color: colors.text, fontSize: 12, lineHeight: 16, fontWeight: "700" },
-  rowActionIcon: { color: colors.textMuted, fontSize: 15, lineHeight: 16, fontWeight: "800" },
+  rowActionChevronFrame: {
+    width: 12,
+    height: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rowActionChevronFrameExpanded: { transform: [{ rotate: "180deg" }] },
+  rowActionChevron: {
+    width: 7,
+    height: 7,
+    marginTop: -3,
+    borderRightWidth: 2,
+    borderBottomWidth: 2,
+    borderColor: colors.textMuted,
+    transform: [{ rotate: "45deg" }],
+  },
   startIcon: { color: colors.text, fontSize: 11, lineHeight: 16 },
   descriptionPanel: {
     gap: spacing.sm,

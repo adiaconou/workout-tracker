@@ -211,17 +211,17 @@ test("exercise change helpers reject incomplete states and disclose every field"
     muscles: [],
   };
   assert.deepEqual(buildExerciseChangeDiff("update", current, proposed), [
-    "Equipment: barbell -> dumbbell",
-    "Movement: push -> carry",
-    "Tracking: reps -> duration",
-    "Loading: external -> bodyweight",
-    "Side mode: bilateral -> left_right",
-    'Instructions: "Pause." -> none',
-    "Muscles: chest (primary, 1) -> none specified",
+    "Equipment: Barbell → Dumbbell.",
+    "Movement: Push → Carry.",
+    "Tracking: Reps → Duration.",
+    "Loading: External weight → Bodyweight.",
+    "Side mode: Bilateral → Left / right.",
+    "Instructions: Pause. → None.",
+    "Muscles: Chest (Primary, weight 1) → None specified.",
   ]);
   const create = buildExerciseChangeDiff("create", null, proposed).join("\n");
-  assert.match(create, /Instructions: none/);
-  assert.match(create, /Muscles: none specified/);
+  assert.match(create, /Instructions: None/);
+  assert.match(create, /Muscles: None specified/);
 });
 
 type ProposedExercise = CoachRoutineProposal["exercises"][number];
@@ -398,7 +398,7 @@ test("routine diff fallbacks and semantic defaults are observable", () => {
     exerciseId: "unknown",
     sets: [proposedSet(null)],
   }])).proposal;
-  assert.match(buildRoutineCreationDiff("NEW", creation, []).join("\n"), /Add "unknown"/);
+  assert.match(buildRoutineCreationDiff("NEW", creation, []).join("\n"), /Add exercise: unknown \(position 1\)/);
 
   const current = routineVersion();
   const aggregate = {
@@ -417,8 +417,8 @@ test("routine diff fallbacks and semantic defaults are observable", () => {
 
   const noCurrent = { ...aggregate, currentVersionId: null, currentVersion: null };
   const noCurrentText = buildRoutineChangeDiff(noCurrent, creation, []).join("\n");
-  assert.match(noCurrentText, /Routine name: none/);
-  assert.match(noCurrentText, /Add "unknown"/);
+  assert.match(noCurrentText, /Routine name: Not set/);
+  assert.match(noCurrentText, /Add exercise: unknown \(position 1\)/);
 
   const withoutLibraryName = buildRoutineChangeDiff(aggregate, routineProposal([{
     ...proposedExercise(),
@@ -431,15 +431,15 @@ test("routine diff fallbacks and semantic defaults are observable", () => {
     instructions: undefined as never,
     notes: undefined as never,
   }]), []).join("\n");
-  assert.match(missingOptionalText, /exercise instructions.*"Pause\.".*""/i);
-  assert.match(missingOptionalText, /exercise notes.*"Stay tight\.".*""/i);
+  assert.match(missingOptionalText, /Instructions: Pause\. → None/i);
+  assert.match(missingOptionalText, /Notes: Stay tight\. → None/i);
   assert.match(buildRoutineCreationDiff("OPTIONAL", routineProposal([{
     ...proposedExercise(),
     sourceRoutineExerciseId: null,
     instructions: undefined as never,
     notes: undefined as never,
     sets: [proposedSet(null)],
-  }]), []).join("\n"), /instructions=""; notes=""/i);
+  }]), []).join("\n"), /Instructions: None; Notes: None/i);
 
   const sparseCurrent = routineVersion([routineExercise({
     instructions: undefined as never,
@@ -473,7 +473,7 @@ test("routine diff fallbacks and semantic defaults are observable", () => {
     normalizedSparse,
     [],
   ).join("\n");
-  assert.match(sparseDiff, /target minimum: none -> none/i);
+  assert.match(sparseDiff, /Minimum target: Not set → Not set/i);
 });
 
 const formatLoopError = (error: unknown, fallback: string) => (
