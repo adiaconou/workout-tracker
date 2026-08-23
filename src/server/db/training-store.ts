@@ -82,8 +82,10 @@ async function getWorkoutMeasurementSnapshot(
   };
 }
 
-export async function ensureWorkoutSchema() {
-  const d1 = db();
+const workoutSchemaReady = new WeakSet<D1Database>();
+const workoutSchemaInFlight = new WeakMap<D1Database, Promise<void>>();
+
+async function provisionWorkoutSchema(d1: D1Database) {
   await d1.batch([
     d1.prepare(`CREATE TABLE IF NOT EXISTS routines (
       id TEXT PRIMARY KEY,
@@ -206,6 +208,22 @@ export async function ensureWorkoutSchema() {
         await d1.prepare(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`).run();
       }
     }
+  }
+}
+
+export async function ensureWorkoutSchema() {
+  const d1 = db();
+  if (workoutSchemaReady.has(d1)) return;
+  const existing = workoutSchemaInFlight.get(d1);
+  if (existing) return existing;
+
+  const pending = provisionWorkoutSchema(d1);
+  workoutSchemaInFlight.set(d1, pending);
+  try {
+    await pending;
+    workoutSchemaReady.add(d1);
+  } finally {
+    if (workoutSchemaInFlight.get(d1) === pending) workoutSchemaInFlight.delete(d1);
   }
 }
 

@@ -311,7 +311,10 @@ const postAdditiveStatements = [
   "CREATE UNIQUE INDEX IF NOT EXISTS exercise_catalog_owner_template_idx ON exercise_catalog(owner_email, template_key)",
 ];
 
-export async function ensureEntitySchema(d1: D1Database) {
+const entitySchemaReady = new WeakSet<D1Database>();
+const entitySchemaInFlight = new WeakMap<D1Database, Promise<void>>();
+
+async function provisionEntitySchema(d1: D1Database) {
   await d1.batch(createStatements.map((sql) => d1.prepare(sql)));
   for (const [table, columns] of Object.entries(additiveColumns)) {
     const info = await d1.prepare(`PRAGMA table_info(${table})`).all<{ name: string }>();
@@ -329,6 +332,21 @@ export async function ensureEntitySchema(d1: D1Database) {
     WHERE onboarding_version >= ? AND onboarding_completed_at IS NULL`)
     .bind(currentOnboardingVersion)
     .run();
+}
+
+export async function ensureEntitySchema(d1: D1Database) {
+  if (entitySchemaReady.has(d1)) return;
+  const existing = entitySchemaInFlight.get(d1);
+  if (existing) return existing;
+
+  const pending = provisionEntitySchema(d1);
+  entitySchemaInFlight.set(d1, pending);
+  try {
+    await pending;
+    entitySchemaReady.add(d1);
+  } finally {
+    if (entitySchemaInFlight.get(d1) === pending) entitySchemaInFlight.delete(d1);
+  }
 }
 
 function inferEquipment(name: string) {
@@ -418,32 +436,34 @@ async function catalogExercise(
 
 async function ensureDefaultExerciseCatalog(d1: D1Database, ownerEmail: string) {
   const now = new Date().toISOString();
+  type CatalogRecord = {
+    id: string;
+    normalizedName: string;
+    origin: string;
+    templateKey: string | null;
+  };
+  const catalog = await d1.prepare(`SELECT id, normalized_name AS normalizedName,
+    origin, template_key AS templateKey FROM exercise_catalog WHERE owner_email = ?`)
+    .bind(ownerEmail)
+    .all<CatalogRecord>();
+  const byId = new Map(catalog.results.map((record) => [record.id, record]));
+  const byName = new Map(catalog.results.map((record) => [record.normalizedName, record]));
+  const byTemplate = new Map(
+    catalog.results
+      .filter((record): record is CatalogRecord & { templateKey: string } => record.templateKey !== null)
+      .map((record) => [record.templateKey, record]),
+  );
+
   for (const exercise of homeGymExercises) {
     const normalizedName = normalizeExerciseName(exercise.name);
     const encodedName = encodeURIComponent(normalizedName);
     const exerciseId = `${ownerEmail}::home-gym::${encodedName}`;
     const legacyCatalogId = `${ownerEmail}::catalog::${encodedName}`;
     const templateKey = defaultExerciseTemplateKey(normalizedName);
-    const existing = await d1.prepare(`SELECT id, origin, template_key AS templateKey FROM exercise_catalog
-      WHERE owner_email = ?
-        AND (id = ? OR id = ? OR template_key = ? OR normalized_name = ?)
-      ORDER BY CASE
-        WHEN template_key = ? THEN 0
-        WHEN id = ? THEN 1
-        WHEN id = ? THEN 2
-        ELSE 3
-      END LIMIT 1`)
-      .bind(
-        ownerEmail,
-        exerciseId,
-        legacyCatalogId,
-        templateKey,
-        normalizedName,
-        templateKey,
-        exerciseId,
-        legacyCatalogId,
-      )
-      .first<{ id: string; origin: string; templateKey: string | null }>();
+    const existing = byTemplate.get(templateKey)
+      ?? byId.get(exerciseId)
+      ?? byId.get(legacyCatalogId)
+      ?? byName.get(normalizedName);
     if (existing) {
       const isGeneratedDefault = existing.id === exerciseId || existing.id === legacyCatalogId;
       if (isGeneratedDefault && existing.origin === "custom" && existing.templateKey === null) {
@@ -489,6 +509,15 @@ async function ensureDefaultExerciseCatalog(d1: D1Database, ownerEmail: string) 
         .bind(exerciseId, muscle.muscleGroup, muscle.role, muscle.weight));
     }
     await d1.batch(statements);
+    const inserted = {
+      id: exerciseId,
+      normalizedName,
+      origin: "default",
+      templateKey,
+    };
+    byId.set(exerciseId, inserted);
+    byName.set(normalizedName, inserted);
+    byTemplate.set(templateKey, inserted);
   }
 }
 

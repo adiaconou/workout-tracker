@@ -727,6 +727,81 @@ test("default exercise provisioning adopts only generated legacy rows and preser
   }
 });
 
+test("entity schema provisioning shares an in-flight failure and allows a retry", async () => {
+  const sqlite = new DatabaseSync(":memory:");
+  const sqliteD1 = new SqliteD1(sqlite);
+  const d1 = sqliteD1 as unknown as D1Database;
+
+  try {
+    sqliteD1.beforeNextBatch(() => {
+      throw new Error("Transient schema failure");
+    });
+
+    const attempts = await Promise.allSettled([
+      ensureEntitySchema(d1),
+      ensureEntitySchema(d1),
+    ]);
+    assert.deepEqual(attempts.map((attempt) => attempt.status), ["rejected", "rejected"]);
+    for (const attempt of attempts) {
+      assert.equal(attempt.status, "rejected");
+      assert.match(String(attempt.reason), /transient schema failure/i);
+    }
+
+    await ensureEntitySchema(d1);
+    const table = await d1.prepare(`SELECT name FROM sqlite_master
+      WHERE type = 'table' AND name = 'workout_sessions'`).first<{ name: string }>();
+    assert.equal(table?.name, "workout_sessions");
+  } finally {
+    sqlite.close();
+  }
+});
+
+test("workout history remains readable when full owner provisioning fails", async () => {
+  const sqlite = new DatabaseSync(":memory:");
+  const sqliteD1 = new SqliteD1(sqlite);
+  const d1 = sqliteD1 as unknown as D1Database;
+  const owner = "history-without-provisioning@example.com";
+  const startedAt = "2026-08-20T12:00:00.000Z";
+  const completedAt = "2026-08-20T12:30:00.000Z";
+
+  try {
+    await ensureEntitySchema(d1);
+    await d1.prepare(`INSERT INTO workout_sessions (
+      id, owner_email, routine_code, routine_version, status, snapshot_json,
+      current_exercise, current_set, completed_sets, skipped_sets, total_sets,
+      started_at, completed_at, updated_at
+    ) VALUES ('history-session', ?, 'A', 1, 'Completed', ?, 1, 2, 1, 0, 1, ?, ?, ?)`)
+      .bind(
+        owner,
+        JSON.stringify({ focus: "History survives provisioning" }),
+        startedAt,
+        completedAt,
+        completedAt,
+      )
+      .run();
+
+    const historyOnlyD1 = {
+      prepare(sql: string) {
+        if (/SELECT[\s\S]*FROM exercise_catalog/i.test(sql)) {
+          throw new Error("Full owner provisioning must not run for workout history");
+        }
+        return sqliteD1.prepare(sql);
+      },
+      batch(statements: SqliteStatement[]) {
+        return sqliteD1.batch(statements);
+      },
+    } as unknown as D1Database;
+    const history = await new D1EntityRepository(historyOnlyD1).listWorkoutHistory(owner);
+
+    assert.equal(history.workouts.length, 1);
+    assert.equal(history.workouts[0]?.id, "history-session");
+    assert.equal(history.workouts[0]?.routineTitle, "History survives provisioning");
+    assert.equal(history.stats.workoutCount, 1);
+  } finally {
+    sqlite.close();
+  }
+});
+
 test("entity provisioning shares an in-flight failure and allows a retry", async () => {
   const sqlite = new DatabaseSync(":memory:");
   const sqliteD1 = new SqliteD1(sqlite);

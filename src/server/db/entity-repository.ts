@@ -896,7 +896,7 @@ export class D1EntityRepository implements EntityRepository {
     ownerEmail: string,
     query: WorkoutHistoryQuery = {},
   ): Promise<WorkoutHistoryPage> {
-    await this.ready(ownerEmail);
+    await ensureEntitySchema(this.d1);
     const clauses = [
       "ws.owner_email = ?",
       "ws.status <> 'In Progress'",
