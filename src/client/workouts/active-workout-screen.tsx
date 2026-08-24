@@ -35,6 +35,10 @@ import { colors, radii, spacing } from "../ui/tokens";
 import { ActiveExerciseProgressChart } from "./active-exercise-progress-chart";
 import { ActiveSetComparison } from "./active-set-comparison";
 import {
+  comparisonLoadPhrase,
+  formatComparisonTableCells,
+} from "./set-comparison";
+import {
   activeSetPrescription,
   specialSetTypeLabel,
 } from "./active-set-prescription";
@@ -109,6 +113,7 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
     () => new Set(),
   );
   const [showFullProgress, setShowFullProgress] = useState(false);
+  const [showWorkoutMenu, setShowWorkoutMenu] = useState(false);
   const [showFinishEarly, setShowFinishEarly] = useState(false);
   const [showDiscardWorkout, setShowDiscardWorkout] = useState(false);
   const [stopwatchStartedAt, setStopwatchStartedAt] = useState<number | null>(null);
@@ -219,9 +224,9 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   const isViewingFuture = viewedPosition === "future";
   const returnToCurrentLabel = isViewingCurrent
     ? null
-    : viewedSet?.exerciseOrder === currentSet?.exerciseOrder
-      ? "Return to current set"
-      : "Return to current exercise";
+    : viewedSet?.exerciseOrder === currentSet?.exerciseOrder && currentSet
+      ? `Return to set ${currentSet.exerciseSetNumber}`
+      : "Return to current set";
   const viewedRecordedPerformance = viewedSet
     ? workout?.recordedPerformanceBySetId[viewedSet.id]
     : undefined;
@@ -733,9 +738,20 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
     }
   }
 
-  function moveExerciseView(offset: number) {
+  function viewExercise(exerciseOrder: number) {
     if (!workout || saving || stopwatchStartedAt !== null) return;
-    setSetNavigation((current) => moveViewedExercise(current, workout.sets, offset));
+    setSetNavigation((current) => {
+      const activeExerciseOrder = workout.sets[current.activeIndex]?.exerciseOrder;
+      if (exerciseOrder === activeExerciseOrder) {
+        return viewSetAtIndex(current, current.activeIndex, workout.sets.length);
+      }
+      const orders = Array.from(new Set(workout.sets.map((set) => set.exerciseOrder)));
+      const viewedOrder = workout.sets[current.viewedIndex]?.exerciseOrder;
+      const from = orders.indexOf(viewedOrder ?? exerciseOrder);
+      const to = orders.indexOf(exerciseOrder);
+      return moveViewedExercise(current, workout.sets, to - Math.max(0, from));
+    });
+    setShowFullProgress(false);
   }
 
   function viewSet(globalIndex: number) {
@@ -752,9 +768,9 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
     ));
   }
 
-  function clearPastSetForReplacement() {
-    if (!viewedSet || !isViewingPast || saving) return;
-    const defaults = getSetInputDefaults(viewedSet);
+  function beginPastSetEdit() {
+    if (!viewedSet || !viewedRecordedPerformance || !isViewingPast || saving) return;
+    const defaults = getRecordedSetInputValues(viewedSet, viewedRecordedPerformance);
     setReplacingPastSet(true);
     setStopwatchStartedAt(null);
     setStopwatchElapsedMs(0);
@@ -765,36 +781,89 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
     setError("");
   }
 
+  function cancelPastSetEdit() {
+    if (!viewedSet || !viewedRecordedPerformance || saving) return;
+    const recorded = getRecordedSetInputValues(viewedSet, viewedRecordedPerformance);
+    setInputDrafts.current[viewedSet.id] = recorded;
+    setWeight(recorded.weight);
+    setResult(recorded.result);
+    setStopwatchStartedAt(null);
+    setStopwatchElapsedMs(
+      viewedSet.targetUnit === "seconds" && recorded.result
+        ? Math.max(0, Number(recorded.result) || 0) * 1000
+        : 0,
+    );
+    setReplacingPastSet(false);
+    setSaveState("");
+    setError("");
+  }
+
   return (
     <Screen>
-      <View style={styles.topline}>
-        <Pressable accessibilityRole="link" onPress={() => router.replace(`/routines/${workout.routineCode}`)}>
-          <Text style={styles.exit}>← Exit workout</Text>
-        </Pressable>
-        <Text numberOfLines={1} style={styles.routineLabel}>
-          Routine {workout.routineCode} · {formatElapsedDuration(liveWorkoutElapsedSeconds)} elapsed
+      <View style={styles.workoutHeader}>
+        <View style={styles.workoutHeaderSide}>
+          <Pressable
+            accessibilityRole="link"
+            accessibilityLabel={`Back to Routine ${workout.routineCode}`}
+            onPress={() => router.replace(`/routines/${workout.routineCode}`)}
+            style={({ pressed }) => [styles.headerBack, pressed && styles.headerActionPressed]}
+          >
+            <View accessibilityElementsHidden style={styles.headerBackChevron} />
+            <Text style={styles.headerBackText}>Back</Text>
+          </Pressable>
+        </View>
+        <Text numberOfLines={1} style={styles.workoutHeaderTitle}>
+          Routine {workout.routineCode}
         </Text>
+        <View style={[styles.workoutHeaderSide, styles.workoutHeaderRight]}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="More workout actions"
+            accessibilityState={{ expanded: showWorkoutMenu }}
+            disabled={saving}
+            onPress={() => setShowWorkoutMenu(true)}
+            style={({ pressed }) => [
+              styles.moreAction,
+              pressed && styles.headerActionPressed,
+              saving && styles.headerActionDisabled,
+            ]}
+          >
+            <View accessibilityElementsHidden style={styles.moreDots}>
+              <View style={styles.moreDot} />
+              <View style={styles.moreDot} />
+              <View style={styles.moreDot} />
+            </View>
+          </Pressable>
+        </View>
       </View>
-      <View style={styles.progressActions}>
-        <Text style={styles.progressCaption}>
-          {completedOrSkipped} of {workout.totalSets} sets
-        </Text>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="View full workout progress"
-          onPress={() => setShowFullProgress(true)}
-          hitSlop={8}
-        >
-          <Text style={styles.progressLink}>View full workout →</Text>
-        </Pressable>
-      </View>
-      <View
-        accessibilityRole="progressbar"
-        accessibilityValue={{ min: 0, max: workout.totalSets, now: completedOrSkipped }}
-        style={styles.progressTrack}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`View workout, ${completedOrSkipped} of ${workout.totalSets} sets, ${formatElapsedDuration(liveWorkoutElapsedSeconds)} elapsed`}
+        onPress={() => setShowFullProgress(true)}
+        style={({ pressed }) => [styles.workoutProgress, pressed && styles.workoutProgressPressed]}
       >
-        <View style={[styles.progressValue, { width: `${progress * 100}%` }]} />
-      </View>
+        <View style={styles.workoutProgressRow}>
+          <Text numberOfLines={1} style={styles.workoutProgressCopy}>
+            <Text style={styles.workoutProgressCount}>
+              {completedOrSkipped} of {workout.totalSets} sets
+            </Text>
+            <Text style={styles.workoutProgressTime}>
+              {` · ${formatElapsedDuration(liveWorkoutElapsedSeconds)} elapsed`}
+            </Text>
+          </Text>
+          <View accessibilityElementsHidden style={styles.workoutProgressAction}>
+            <Text style={styles.workoutProgressActionText}>View workout</Text>
+            <View style={styles.inlineChevron} />
+          </View>
+        </View>
+        <View
+          accessibilityRole="progressbar"
+          accessibilityValue={{ min: 0, max: workout.totalSets, now: completedOrSkipped }}
+          style={styles.progressTrack}
+        >
+          <View style={[styles.progressValue, { width: `${progress * 100}%` }]} />
+        </View>
+      </Pressable>
 
       <WorkoutProgressModal
         visible={showFullProgress}
@@ -802,7 +871,22 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
         completedSets={completedOrSkipped}
         totalSets={workout.totalSets}
         exercises={exerciseProgress}
+        navigationDisabled={saving || stopwatchStartedAt !== null}
         onClose={() => setShowFullProgress(false)}
+        onSelectExercise={viewExercise}
+      />
+      <WorkoutMenu
+        visible={showWorkoutMenu}
+        saving={saving}
+        onClose={() => setShowWorkoutMenu(false)}
+        onFinishEarly={() => {
+          setShowWorkoutMenu(false);
+          setShowFinishEarly(true);
+        }}
+        onDiscard={() => {
+          setShowWorkoutMenu(false);
+          setShowDiscardWorkout(true);
+        }}
       />
       <FinishWorkoutModal
         visible={showFinishEarly}
@@ -838,17 +922,10 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
               onSkip={() => void skipRest()}
             />
           ) : null}
-          <Card style={styles.setCard}>
+          <View style={styles.setCard}>
             {viewedSupersetContext ? (
               <SupersetBanner context={viewedSupersetContext} />
             ) : null}
-            <ExerciseNavigator
-              navigation={setNavigation}
-              sets={workout.sets}
-              disabled={saving || stopwatchStartedAt !== null}
-              onPrevious={() => moveExerciseView(-1)}
-              onNext={() => moveExerciseView(1)}
-            />
             {stopwatchStartedAt !== null ? (
               <Text style={styles.navigationHint}>
                 Pause the stopwatch to review another exercise or set.
@@ -859,10 +936,8 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
                 restEndsAt && isViewingCurrent ? "Next" : null,
                 specialSetTypeLabel(viewedSet.setType),
               ].filter(Boolean).join(" · ")}
-              returnLabel={returnToCurrentLabel}
-              returnAccessibilityLabel={`${returnToCurrentLabel ?? "Return to current exercise"}, ${currentSet?.exerciseName ?? "current workout position"}`}
-              returnDisabled={saving || stopwatchStartedAt !== null}
-              onReturn={returnToCurrentSet}
+              exercisePosition={exerciseOrders.indexOf(viewedSet.exerciseOrder) + 1}
+              exerciseTotal={exerciseOrders.length}
               workoutSet={viewedSet}
             />
             <ActiveSetComparison
@@ -873,13 +948,87 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
               activeSetIndex={currentIndex}
               navigationDisabled={saving || stopwatchStartedAt !== null}
               onSelectSet={viewSet}
-              weight={weight}
-              result={result}
               progressiveTrainingEnabled={Boolean(
                 user?.trainingProfile.progressiveTrainingEnabled,
               )}
+              showSummaryTable={!isViewingPast}
             />
-          {!isViewingFuture && (isViewingPast || !restEndsAt) ? (
+
+            {isViewingCurrent && !restEndsAt ? (
+              <View style={styles.skipSetRow}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Skip current set ${viewedSet.exerciseSetNumber}`}
+                  disabled={saving}
+                  onPress={() => void recordSet("Skipped")}
+                  style={({ pressed }) => [
+                    styles.skipSetAction,
+                    pressed && styles.skipSetActionPressed,
+                    saving && styles.headerActionDisabled,
+                  ]}
+                >
+                  <Text style={styles.skipSetText}>Skip this set</Text>
+                </Pressable>
+              </View>
+            ) : null}
+
+            {isViewingPast && !replacingPastSet ? (
+              <View style={styles.pastSetSummary}>
+                <View style={styles.pastSetHeading}>
+                  <Text style={styles.pastSetTitle}>
+                    {viewedRecordedPerformance?.status === "Skipped" ? "Skipped" : "Completed"}{" "}
+                    set {viewedSet.exerciseSetNumber}
+                  </Text>
+                  {returnToCurrentLabel ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`${returnToCurrentLabel}, ${currentSet?.exerciseName ?? "current workout position"}`}
+                      disabled={saving || stopwatchStartedAt !== null}
+                      onPress={returnToCurrentSet}
+                      style={({ pressed }) => [
+                        styles.returnToCurrentInline,
+                        pressed && styles.headerActionPressed,
+                      ]}
+                    >
+                      <Text style={styles.returnToCurrentText}>{returnToCurrentLabel}</Text>
+                      <View accessibilityElementsHidden style={styles.inlineChevron} />
+                    </Pressable>
+                  ) : null}
+                </View>
+                <View style={styles.recordedResult}>
+                  <Text style={styles.recordedResultLabel}>Recorded result</Text>
+                  <Text style={styles.recordedResultValue}>
+                    {formatRecordedResult(viewedSet, viewedRecordedPerformance)}
+                  </Text>
+                  <Text style={styles.recordedResultHint}>
+                    Your current workout remains on {currentSet?.exerciseName ?? "the current exercise"},
+                    {" "}set {currentSet?.exerciseSetNumber ?? currentIndex + 1}.
+                  </Text>
+                </View>
+                <Button
+                  title={viewedRecordedPerformance?.status === "Skipped"
+                    ? "Complete skipped set"
+                    : "Edit recorded result"}
+                  variant="secondary"
+                  disabled={saving || pendingCount > 0}
+                  onPress={beginPastSetEdit}
+                />
+              </View>
+            ) : null}
+
+            {isViewingFuture ? (
+              <View style={styles.futureSetNotice}>
+                <Text style={styles.futureSetText}>This set is upcoming.</Text>
+                <Button
+                  title="Return to current set"
+                  variant="secondary"
+                  disabled={saving || stopwatchStartedAt !== null}
+                  onPress={returnToCurrentSet}
+                />
+              </View>
+            ) : null}
+
+          {(isViewingCurrent && !restEndsAt) || (isViewingPast && replacingPastSet) ? (
             <View style={styles.logControls}>
               {viewedSet.targetUnit === "seconds" && isViewingCurrent ? (
                 <SetStopwatch
@@ -892,9 +1041,10 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
               ) : null}
               <View style={styles.logFields}>
                 <View style={styles.logField}>
-                  <StepperField
-                    label={loadLabel(viewedSet.loadType, viewedSet.weightUnit)}
-                    value={weight}
+                   <StepperField
+                     label={loadLabel(viewedSet.loadType, viewedSet.weightUnit)}
+                     variant="segmented"
+                     value={weight}
                     onChangeText={updateSetWeight}
                     keyboardType="decimal-pad"
                     placeholder="0"
@@ -902,9 +1052,10 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
                   />
                 </View>
                 <View style={styles.logField}>
-                  <StepperField
-                    label={`${resultUnitName(viewedSet.targetUnit, true)} completed`}
-                    value={result}
+                   <StepperField
+                     label={`${resultUnitName(viewedSet.targetUnit, true)} completed`}
+                     variant="segmented"
+                     value={result}
                     onChangeText={
                       viewedSet.targetUnit === "seconds"
                         ? updateDurationResult
@@ -919,121 +1070,69 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
               </View>
               {isViewingPast ? (
                 <Text style={styles.pastEditHint}>
-                  Saving replaces this result. Your current position
-                  {restEndsAt ? " and rest timer" : ""} stay unchanged.
+                  This replaces the recorded result. It does not advance the workout
+                  {restEndsAt ? " or change the rest timer" : " or start rest"}.
                 </Text>
               ) : null}
-              <View style={styles.setActions}>
-                {isViewingPast ? (
-                  <>
-                    <View style={styles.setAction}>
-                      <Button
-                        title={
-                          saving
-                            ? "Saving…"
-                            : replacingPastSet
-                              ? "Save replacement"
-                              : viewedRecordedPerformance?.status === "Skipped"
-                                ? "Complete skipped set"
-                                : "Save changes"
-                        }
-                        compact
-                        loading={saving}
-                        disabled={pendingCount > 0}
-                        onPress={() => void savePastSet()}
-                      />
-                    </View>
-                    {viewedRecordedPerformance?.status === "Completed" ? (
-                      <View style={styles.setAction}>
-                        <Button
-                          title="Clear and replace"
-                          variant="secondary"
-                          compact
-                          disabled={saving}
-                          onPress={clearPastSetForReplacement}
-                        />
-                      </View>
-                    ) : null}
-                  </>
-                ) : (
-                  <>
-                    <View style={styles.setAction}>
-                      <Button
-                        title={saving ? "Saving…" : "Complete"}
-                        compact
-                        loading={saving}
-                        onPress={() => void recordSet("Completed")}
-                      />
-                    </View>
-                    <View style={styles.setAction}>
-                      <Button
-                        title="Skip"
-                        variant="secondary"
-                        compact
-                        disabled={saving}
-                        onPress={() => void recordSet("Skipped")}
-                      />
-                    </View>
-                  </>
-                )}
-              </View>
-              {saveState ? (
-                <Text accessibilityLiveRegion="polite" style={[
-                  styles.saveState,
-                  saveState === "Save failed" && styles.saveFailed,
-                ]}>
-                  {saveState}
-                </Text>
-              ) : null}
-              {pendingCount ? (
+              {isViewingPast ? (
+                <View style={styles.setActions}>
+                  <View style={styles.setAction}>
+                    <Button
+                      title={saving ? "Saving…" : "Save correction"}
+                      compact
+                      loading={saving}
+                      disabled={pendingCount > 0}
+                      onPress={() => void savePastSet()}
+                    />
+                  </View>
+                  <View style={styles.setAction}>
+                    <Button
+                      title="Cancel"
+                      variant="secondary"
+                      compact
+                      disabled={saving}
+                      onPress={cancelPastSetEdit}
+                    />
+                  </View>
+                </View>
+              ) : (
                 <Button
-                  title="Retry pending save"
-                  variant="secondary"
-                  compact
+                  title={saving ? "Saving…" : "Complete set"}
                   loading={saving}
-                  onPress={() => void retryPending()}
+                  onPress={() => void recordSet("Completed")}
                 />
-              ) : null}
+              )}
             </View>
           ) : null}
+            {saveState ? (
+              <Text accessibilityLiveRegion="polite" style={[
+                styles.saveState,
+                saveState === "Save failed" && styles.saveFailed,
+              ]}>
+                {saveState}
+              </Text>
+            ) : null}
+            {pendingCount ? (
+              <Button
+                title="Retry pending save"
+                variant="secondary"
+                compact
+                loading={saving}
+                onPress={() => void retryPending()}
+              />
+            ) : null}
             <ActiveExerciseProgressChart
               key={`progress:${workout.id}:${viewedSet.exerciseId}:${viewedSet.exerciseOrder}`}
               exerciseId={viewedSet.exerciseId}
               exerciseName={viewedSet.exerciseName}
+              title="6-month progress"
+              quietDisclosure
             />
-          </Card>
+          </View>
         </View>
       ) : (
         <Message>There are no remaining sets, but this workout has not been finalized.</Message>
       )}
-      <View style={styles.finishEarlyAction}>
-        <Button
-          title="Finish workout early"
-          variant="ghost"
-          disabled={saving}
-          onPress={() => setShowFinishEarly(true)}
-        />
-        <Text style={styles.finishEarlyHint}>
-          Saves completed work and marks every remaining set as skipped.
-        </Text>
-      </View>
-      <View style={styles.discardWorkoutAction}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Discard this workout permanently"
-          disabled={saving}
-          onPress={() => setShowDiscardWorkout(true)}
-          style={({ pressed }) => [
-            styles.discardWorkoutButton,
-            pressed && styles.discardWorkoutButtonPressed,
-          ]}
-        >
-          <Text style={styles.discardWorkoutButtonText}>Discard workout</Text>
-        </Pressable>
-        <Text style={styles.discardWorkoutHint}>
-          Permanently deletes this in-progress workout instead of saving it to history.
-        </Text>
-      </View>
     </Screen>
   );
 }
@@ -1235,26 +1334,38 @@ function CompletionExerciseTimingCard({
   );
 }
 
+function formatRecordedResult(
+  workoutSet: WorkoutView["sets"][number],
+  performance: WorkoutView["recordedPerformanceBySetId"][string] | undefined,
+) {
+  if (!performance) return "Recorded result unavailable";
+  if (performance.status === "Skipped") return "Skipped";
+  const cells = formatComparisonTableCells(workoutSet, performance);
+  const load = comparisonLoadPhrase(workoutSet.loadType, cells.load);
+  const singular = Number(cells.result) === 1;
+  const unit = workoutSet.targetUnit === "seconds"
+    ? singular ? "second" : "seconds"
+    : workoutSet.targetUnit === "rounds"
+      ? singular ? "round" : "rounds"
+      : singular ? "rep" : "reps";
+  return `${load} × ${cells.result} ${unit}`;
+}
+
 function CompactSetOverview({
   qualifier,
-  returnLabel,
-  returnAccessibilityLabel,
-  returnDisabled,
-  onReturn,
+  exercisePosition,
+  exerciseTotal,
   workoutSet,
 }: {
   qualifier: string;
-  returnLabel: string | null;
-  returnAccessibilityLabel: string;
-  returnDisabled: boolean;
-  onReturn: () => void;
+  exercisePosition: number;
+  exerciseTotal: number;
   workoutSet: WorkoutView["sets"][number];
 }) {
-  const [returnFocused, setReturnFocused] = useState(false);
-  useEffect(() => {
-    setReturnFocused(false);
-  }, [returnLabel]);
   const prescription = activeSetPrescription(workoutSet);
+  const secondaryMetadata = prescription.metadata.filter(
+    (item) => !item.text.startsWith("RIR "),
+  );
   const guidance = buildCompactSetDetails({
     primaryValues: [
       prescription.target,
@@ -1268,45 +1379,19 @@ function CompactSetOverview({
   });
   return (
     <>
-      {qualifier ? <Eyebrow>{qualifier}</Eyebrow> : null}
+      {qualifier ? <Text style={styles.exerciseQualifier}>{qualifier}</Text> : null}
       <View style={styles.setHeadingBlock}>
-        <Heading size="medium">{workoutSet.exerciseName}</Heading>
-        {returnLabel ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={returnAccessibilityLabel}
-            accessibilityState={{ disabled: returnDisabled }}
-            disabled={returnDisabled}
-            hitSlop={10}
-            onBlur={() => setReturnFocused(false)}
-            onFocus={() => setReturnFocused(true)}
-            onPress={onReturn}
-            style={({ pressed }) => [
-              styles.returnToCurrentInline,
-              returnDisabled && styles.setNavigatorButtonDisabled,
-              pressed && styles.setNavigatorButtonPressed,
-              returnFocused && Platform.OS === "web" && styles.returnToCurrentFocused,
-            ]}
-          >
-            <Text style={styles.returnToCurrentText}>{returnLabel} →</Text>
-          </Pressable>
+        <Text accessibilityRole="header" style={styles.exerciseName}>
+          {workoutSet.exerciseName}
+        </Text>
+        <Text style={styles.exercisePosition}>
+          Exercise {exercisePosition} of {exerciseTotal}
+        </Text>
+        {secondaryMetadata.length ? (
+          <Text style={styles.exerciseMetadata}>
+            {secondaryMetadata.map((item) => item.text).join(" · ")}
+          </Text>
         ) : null}
-      </View>
-      <View
-        accessible
-        accessibilityLabel={prescription.accessibilityLabel}
-        style={styles.setSummary}
-      >
-        <Text style={styles.setMetricLabel}>Target</Text>
-        <View style={styles.setPrescription}>
-          <Text style={styles.setMetricValue}>{prescription.target}</Text>
-          {prescription.metadata.map((item) => (
-            <View key={item.text} style={styles.setPrescriptionMetadata}>
-              <Text aria-hidden style={styles.setMetricSeparator}>·</Text>
-              <Text style={styles.setMetricMeta}>{item.text}</Text>
-            </View>
-          ))}
-        </View>
       </View>
       {guidance.length ? (
         <View style={styles.setGuidance}>
@@ -1348,82 +1433,59 @@ function SupersetBanner({ context }: { context: SupersetContext }) {
   );
 }
 
-function ExerciseNavigator({
-  navigation,
-  sets,
-  disabled,
-  onPrevious,
-  onNext,
+function WorkoutMenu({
+  visible,
+  saving,
+  onClose,
+  onFinishEarly,
+  onDiscard,
 }: {
-  navigation: WorkoutSetNavigation;
-  sets: WorkoutView["sets"];
-  disabled: boolean;
-  onPrevious: () => void;
-  onNext: () => void;
+  visible: boolean;
+  saving: boolean;
+  onClose: () => void;
+  onFinishEarly: () => void;
+  onDiscard: () => void;
 }) {
-  const viewedSet = sets[navigation.viewedIndex];
-  const exerciseOrders = Array.from(new Set(sets.map((set) => set.exerciseOrder)));
-  const exercisePosition = viewedSet
-    ? exerciseOrders.indexOf(viewedSet.exerciseOrder)
-    : -1;
-  const previousExerciseOrder = exerciseOrders[exercisePosition - 1];
-  const nextExerciseOrder = exerciseOrders[exercisePosition + 1];
-  const previousExercise = sets.find(
-    (set) => set.exerciseOrder === previousExerciseOrder,
-  );
-  const nextExercise = sets.find((set) => set.exerciseOrder === nextExerciseOrder);
   return (
-    <View style={styles.setNavigator}>
-      <View style={styles.setNavigatorRow}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      statusBarTranslucent
+      onRequestClose={onClose}
+    >
+      <View style={styles.menuOverlay}>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={previousExercise
-            ? `Previous exercise, ${previousExercise.exerciseName}`
-            : "No previous exercise"}
-          accessibilityState={{ disabled: disabled || !previousExercise }}
-          disabled={disabled || !previousExercise}
-          onPress={onPrevious}
-          style={({ pressed }) => [
-            styles.setNavigatorButton,
-            (disabled || !previousExercise) && styles.setNavigatorButtonDisabled,
-            pressed && styles.setNavigatorButtonPressed,
-          ]}
-        >
-          <Text style={styles.setNavigatorButtonText}>‹ Previous</Text>
-        </Pressable>
-        <View
-          accessible
-          accessibilityLabel={viewedSet
-            ? `Exercise ${exercisePosition + 1} of ${exerciseOrders.length}, ${viewedSet.exerciseName}`
-            : "Exercise"}
-          accessibilityLiveRegion="polite"
-          style={styles.setNavigatorStatus}
-        >
-          <Text style={styles.setNavigatorStatusLabel}>Exercise</Text>
-          <Text style={styles.setNavigatorPosition}>
-            {viewedSet
-              ? `${exercisePosition + 1} of ${exerciseOrders.length}`
-              : "—"}
-          </Text>
+          accessibilityLabel="Close workout actions"
+          onPress={onClose}
+          style={styles.modalBackdrop}
+        />
+        <View accessibilityViewIsModal style={styles.workoutMenu}>
+          <Pressable
+            accessibilityRole="menuitem"
+            disabled={saving}
+            onPress={onFinishEarly}
+            style={({ pressed }) => [styles.workoutMenuItem, pressed && styles.workoutMenuItemPressed]}
+          >
+            <Text style={styles.workoutMenuItemText}>Finish workout early</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="menuitem"
+            accessibilityLabel="Discard this workout permanently"
+            disabled={saving}
+            onPress={onDiscard}
+            style={({ pressed }) => [
+              styles.workoutMenuItem,
+              styles.workoutMenuDangerItem,
+              pressed && styles.workoutMenuItemPressed,
+            ]}
+          >
+            <Text style={styles.workoutMenuDangerText}>Discard workout</Text>
+          </Pressable>
         </View>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={nextExercise
-            ? `Next exercise, ${nextExercise.exerciseName}`
-            : "No next exercise"}
-          accessibilityState={{ disabled: disabled || !nextExercise }}
-          disabled={disabled || !nextExercise}
-          onPress={onNext}
-          style={({ pressed }) => [
-            styles.setNavigatorButton,
-            (disabled || !nextExercise) && styles.setNavigatorButtonDisabled,
-            pressed && styles.setNavigatorButtonPressed,
-          ]}
-        >
-          <Text style={styles.setNavigatorButtonText}>Next ›</Text>
-        </Pressable>
       </View>
-    </View>
+    </Modal>
   );
 }
 
@@ -1433,14 +1495,18 @@ function WorkoutProgressModal({
   completedSets,
   totalSets,
   exercises,
+  navigationDisabled,
   onClose,
+  onSelectExercise,
 }: {
   visible: boolean;
   routineCode: string;
   completedSets: number;
   totalSets: number;
   exercises: ExerciseProgress[];
+  navigationDisabled: boolean;
   onClose: () => void;
+  onSelectExercise: (exerciseOrder: number) => void;
 }) {
   return (
     <Modal
@@ -1488,6 +1554,8 @@ function WorkoutProgressModal({
               <ExerciseProgressRow
                 key={exercise.exerciseOrder}
                 exercise={exercise}
+                disabled={navigationDisabled}
+                onPress={() => onSelectExercise(exercise.exerciseOrder)}
               />
             ))}
           </ScrollView>
@@ -1560,7 +1628,15 @@ function FinishWorkoutModal({
   );
 }
 
-function ExerciseProgressRow({ exercise }: { exercise: ExerciseProgress }) {
+function ExerciseProgressRow({
+  exercise,
+  disabled,
+  onPress,
+}: {
+  exercise: ExerciseProgress;
+  disabled: boolean;
+  onPress: () => void;
+}) {
   const statusLabel =
     exercise.status === "completed"
       ? "Done"
@@ -1570,11 +1646,18 @@ function ExerciseProgressRow({ exercise }: { exercise: ExerciseProgress }) {
           ? "In progress"
           : "Upcoming";
   return (
-    <View
-      style={[
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`View ${exercise.exerciseName}, ${statusLabel.toLowerCase()}, ${exercise.completedSets} of ${exercise.totalSets} sets logged`}
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      style={({ pressed }) => [
         styles.progressExercise,
         exercise.status === "completed" && styles.progressExerciseCompleted,
         exercise.status === "current" && styles.progressExerciseCurrent,
+        pressed && styles.progressExercisePressed,
+        disabled && styles.progressExerciseDisabled,
       ]}
     >
       <View
@@ -1631,7 +1714,8 @@ function ExerciseProgressRow({ exercise }: { exercise: ExerciseProgress }) {
           {statusLabel}
         </Text>
       </View>
-    </View>
+      <View accessibilityElementsHidden style={styles.progressExerciseChevron} />
+    </Pressable>
   );
 }
 
@@ -1741,20 +1825,118 @@ const styles = StyleSheet.create({
   completionSetStatus: { color: colors.text, fontSize: 12, fontWeight: "700" },
   completionSetRest: { color: colors.textDim, fontSize: 10 },
   completionActions: { gap: spacing.sm, paddingTop: spacing.sm },
-  topline: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  exit: { color: colors.textMuted, fontSize: 12, fontWeight: "700" },
-  routineLabel: { color: colors.textDim, fontSize: 11, flex: 1, textAlign: "right" },
-  progressTrack: { height: 5, borderRadius: radii.pill, backgroundColor: colors.surfaceRaised, overflow: "hidden" },
-  progressValue: { height: "100%", backgroundColor: colors.accent, borderRadius: radii.pill },
-  progressActions: {
-    minHeight: 28,
+  workoutHeader: {
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  workoutHeaderSide: { width: 88, alignItems: "flex-start" },
+  workoutHeaderRight: { alignItems: "flex-end" },
+  workoutHeaderTitle: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.textMuted,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  headerBack: {
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingRight: spacing.sm,
+  },
+  headerBackChevron: {
+    width: 8,
+    height: 8,
+    borderLeftWidth: 1.5,
+    borderBottomWidth: 1.5,
+    borderColor: colors.textMuted,
+    transform: [{ rotateZ: "45deg" }],
+  },
+  headerBackText: { color: colors.textMuted, fontSize: 12, lineHeight: 16, fontWeight: "700" },
+  headerActionPressed: { opacity: 0.68 },
+  headerActionDisabled: { opacity: 0.42 },
+  moreAction: {
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.pill,
+  },
+  moreDots: { flexDirection: "row", alignItems: "center", gap: 3 },
+  moreDot: { width: 3, height: 3, borderRadius: radii.pill, backgroundColor: colors.textMuted },
+  workoutProgress: {
+    position: "relative",
+    minHeight: 70,
+    justifyContent: "center",
+    paddingTop: 10,
+    paddingBottom: 15,
+  },
+  workoutProgressPressed: { opacity: 0.72 },
+  workoutProgressRow: {
+    minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: spacing.md,
+    gap: spacing.sm,
   },
-  progressCaption: { color: colors.textDim, fontSize: 11 },
-  progressLink: { color: colors.accent, fontSize: 12, fontWeight: "800" },
+  workoutProgressCopy: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.textDim,
+    fontSize: 12,
+    lineHeight: 18,
+    fontVariant: ["tabular-nums"],
+  },
+  workoutProgressCount: { color: colors.text, fontSize: 14, lineHeight: 20, fontWeight: "500" },
+  workoutProgressTime: { color: colors.textDim },
+  workoutProgressAction: { flexDirection: "row", alignItems: "center", gap: 0 },
+  workoutProgressActionText: { color: colors.textMuted, fontSize: 13, lineHeight: 16, fontWeight: "500" },
+  inlineChevron: {
+    width: 7,
+    height: 7,
+    borderRightWidth: 1.5,
+    borderBottomWidth: 1.5,
+    borderColor: colors.textMuted,
+    transform: [{ rotateZ: "-45deg" }],
+  },
+  progressTrack: {
+    position: "absolute",
+    right: 0,
+    bottom: 7,
+    left: 0,
+    height: 4,
+    borderRadius: radii.pill,
+    backgroundColor: colors.surfaceRaised,
+    overflow: "hidden",
+  },
+  progressValue: { height: "100%", backgroundColor: colors.accent, borderRadius: radii.pill },
+  menuOverlay: {
+    flex: 1,
+    alignItems: "flex-end",
+    paddingTop: 64,
+    paddingHorizontal: spacing.lg,
+  },
+  workoutMenu: {
+    width: 220,
+    overflow: "hidden",
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.surface,
+  },
+  workoutMenuItem: {
+    minHeight: 48,
+    justifyContent: "center",
+    paddingHorizontal: spacing.lg,
+  },
+  workoutMenuDangerItem: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
+  workoutMenuItemPressed: { backgroundColor: colors.surfaceRaised },
+  workoutMenuItemText: { color: colors.text, fontSize: 13, lineHeight: 18, fontWeight: "700" },
+  workoutMenuDangerText: { color: colors.danger, fontSize: 13, lineHeight: 18, fontWeight: "700" },
   modalOverlay: {
     flex: 1,
     justifyContent: "flex-end",
@@ -1826,6 +2008,8 @@ const styles = StyleSheet.create({
     borderColor: colors.accent,
     backgroundColor: colors.accentDark,
   },
+  progressExercisePressed: { opacity: 0.7 },
+  progressExerciseDisabled: { opacity: 0.44 },
   progressExerciseOrder: {
     width: 30,
     height: 30,
@@ -1866,6 +2050,15 @@ const styles = StyleSheet.create({
   progressStatusTextDone: { color: colors.success },
   progressStatusTextCurrent: { color: colors.background },
   progressStatusTextInProgress: { color: colors.warning },
+  progressExerciseChevron: {
+    width: 7,
+    height: 7,
+    marginRight: 3,
+    borderRightWidth: 1.5,
+    borderBottomWidth: 1.5,
+    borderColor: colors.textMuted,
+    transform: [{ rotateZ: "-45deg" }],
+  },
   stopwatch: {
     gap: spacing.md,
     padding: spacing.md,
@@ -2035,7 +2228,7 @@ const styles = StyleSheet.create({
     outlineWidth: 2,
   },
   restIslandSkipText: { color: colors.textMuted, fontSize: 12, lineHeight: 16, fontWeight: "800" },
-  setCard: { backgroundColor: colors.surfaceRaised, gap: spacing.md },
+  setCard: { gap: spacing.md },
   supersetBanner: {
     gap: spacing.sm,
     padding: spacing.md,
@@ -2130,9 +2323,11 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   returnToCurrentInline: {
-    alignSelf: "flex-start",
     minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
     justifyContent: "center",
+    gap: spacing.sm,
     paddingVertical: spacing.xs,
   },
   returnToCurrentText: {
@@ -2148,7 +2343,37 @@ const styles = StyleSheet.create({
     outlineWidth: 2,
   },
   navigationHint: { color: colors.textDim, fontSize: 11, lineHeight: 16, textAlign: "center" },
-  setHeadingBlock: { gap: spacing.xs },
+  exerciseQualifier: {
+    color: colors.accent,
+    fontSize: 10,
+    lineHeight: 14,
+    fontWeight: "800",
+    letterSpacing: 1,
+    textAlign: "center",
+    textTransform: "uppercase",
+  },
+  setHeadingBlock: {
+    minHeight: 78,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.xs,
+  },
+  exerciseName: {
+    color: colors.text,
+    fontSize: 26,
+    lineHeight: 31,
+    fontWeight: "500",
+    letterSpacing: -0.5,
+    textAlign: "center",
+  },
+  exercisePosition: {
+    color: colors.textDim,
+    fontSize: 11,
+    lineHeight: 15,
+    fontVariant: ["tabular-nums"],
+    textAlign: "center",
+  },
+  exerciseMetadata: { color: colors.textMuted, fontSize: 11, lineHeight: 15, textAlign: "center" },
   setSummary: {
     minHeight: 44,
     flexDirection: "row",
@@ -2201,14 +2426,56 @@ const styles = StyleSheet.create({
   setGuidance: { gap: spacing.xs },
   setGuidanceText: { color: colors.textMuted, fontSize: 11, lineHeight: 16 },
   setGuidanceLabel: { color: colors.textDim, fontWeight: "800" },
+  skipSetRow: { minHeight: 44, alignItems: "flex-end", justifyContent: "center" },
+  skipSetAction: {
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: spacing.sm,
+  },
+  skipSetActionPressed: { opacity: 0.66 },
+  skipSetText: { color: colors.textMuted, fontSize: 12, lineHeight: 16, fontWeight: "700" },
+  pastSetSummary: { gap: spacing.md },
+  pastSetHeading: {
+    minHeight: 44,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
+  pastSetTitle: { color: colors.text, fontSize: 17, lineHeight: 22, fontWeight: "800" },
+  recordedResult: {
+    gap: spacing.xs,
+    padding: spacing.lg,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  recordedResultLabel: {
+    color: colors.textDim,
+    fontSize: 9,
+    lineHeight: 13,
+    fontWeight: "800",
+    letterSpacing: 0.7,
+    textTransform: "uppercase",
+  },
+  recordedResultValue: { color: colors.text, fontSize: 18, lineHeight: 24, fontWeight: "800" },
+  recordedResultHint: { color: colors.textMuted, fontSize: 11, lineHeight: 16 },
+  futureSetNotice: {
+    gap: spacing.md,
+    padding: spacing.lg,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  futureSetText: { color: colors.textMuted, fontSize: 12, lineHeight: 17, textAlign: "center" },
   logControls: {
     gap: spacing.md,
-    paddingTop: spacing.md,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.borderStrong,
   },
   logFields: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
-  logField: { flexGrow: 1, flexBasis: 260, minWidth: 0 },
+  logField: { flexGrow: 1, flexBasis: 150, minWidth: 0 },
   pastEditHint: { color: colors.textMuted, fontSize: 11, lineHeight: 16 },
   setActions: { flexDirection: "row", alignItems: "stretch", gap: spacing.sm },
   setAction: { flex: 1, minWidth: 0 },

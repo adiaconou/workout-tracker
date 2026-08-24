@@ -231,6 +231,7 @@ export function StepperField({
   minimum = 0,
   step = 1,
   error,
+  variant = "default",
   ...props
 }: Omit<FieldProps, "onChangeText" | "value"> & {
   label: string;
@@ -240,6 +241,7 @@ export function StepperField({
   onChangeText: (value: string) => void;
   minimum?: number;
   step?: number;
+  variant?: "default" | "segmented";
 }) {
   const numericValue = Number(value);
   const disabled = props.editable === false;
@@ -267,9 +269,18 @@ export function StepperField({
   }
 
   return (
-    <View style={styles.field}>
-      <Text nativeID={labelId} style={styles.fieldLabel}>{label}</Text>
-      <View style={styles.stepperRow}>
+    <View style={[styles.field, variant === "segmented" && styles.segmentedField]}>
+      <Text
+        nativeID={labelId}
+        style={[styles.fieldLabel, variant === "segmented" && styles.segmentedFieldLabel]}
+      >
+        {label}
+      </Text>
+      <View style={[
+        styles.stepperRow,
+        variant === "segmented" && styles.segmentedStepperRow,
+        variant === "segmented" && focusedControl && styles.segmentedStepperRowFocused,
+      ]}>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Decrease ${label} by ${step}`}
@@ -280,6 +291,7 @@ export function StepperField({
           onPress={() => changeBy(-step)}
           style={({ pressed }) => [
             styles.stepperButton,
+            variant === "segmented" && styles.segmentedStepperButton,
             !canDecrement && styles.stepperButtonDisabled,
             pressed && canDecrement && styles.stepperButtonPressed,
             focusedControl === "decrease" && Platform.OS === "web" && styles.webFocusRing,
@@ -314,6 +326,7 @@ export function StepperField({
           style={[
             styles.input,
             styles.stepperInput,
+            variant === "segmented" && styles.segmentedStepperInput,
             focusedControl === "input" && styles.inputFocused,
             focusedControl === "input" && Platform.OS === "web" && styles.webFocusRing,
             props.style,
@@ -329,6 +342,7 @@ export function StepperField({
           onPress={() => changeBy(step)}
           style={({ pressed }) => [
             styles.stepperButton,
+            variant === "segmented" && styles.segmentedStepperButton,
             disabled && styles.stepperButtonDisabled,
             pressed && !disabled && styles.stepperButtonPressed,
             focusedControl === "increase" && Platform.OS === "web" && styles.webFocusRing,
@@ -516,6 +530,44 @@ const styles = StyleSheet.create({
     fontSize: 24,
     lineHeight: 28,
     fontWeight: "700",
+  },
+  segmentedField: { gap: 7 },
+  segmentedFieldLabel: {
+    color: colors.text,
+    lineHeight: 17,
+    fontWeight: "400",
+    textTransform: "none",
+    letterSpacing: 0,
+  },
+  segmentedStepperRow: {
+    height: 52,
+    gap: 0,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: radii.md,
+    backgroundColor: colors.surfaceRaised,
+  },
+  segmentedStepperRowFocused: { borderColor: colors.accent },
+  segmentedStepperButton: {
+    width: 44,
+    minHeight: 50,
+    borderWidth: 0,
+    borderRadius: 0,
+    backgroundColor: colors.surfaceRaised,
+  },
+  segmentedStepperInput: {
+    minHeight: 50,
+    borderWidth: 0,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    borderRadius: 0,
+    backgroundColor: colors.background,
+    paddingHorizontal: 2,
+    paddingVertical: 0,
+    fontSize: 19,
+    fontWeight: "500",
   },
   fieldHint: { color: colors.textDim, fontSize: 12, lineHeight: 17 },
   fieldError: { color: colors.danger, fontSize: 12, lineHeight: 17, fontWeight: "700" },

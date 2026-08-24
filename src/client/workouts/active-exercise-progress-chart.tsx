@@ -157,9 +157,13 @@ function LinePlot({ progress }: { progress: ExerciseProgress }) {
 export function ActiveExerciseProgressChart({
   exerciseId,
   exerciseName,
+  title = "6-month progress",
+  quietDisclosure = false,
 }: {
   exerciseId: string;
   exerciseName: string;
+  title?: string;
+  quietDisclosure?: boolean;
 }) {
   const { profile } = useProfile();
   const preferredWeightUnit = profile?.measurementSystem === "metric" ? "kg" : "lb";
@@ -216,32 +220,38 @@ export function ActiveExerciseProgressChart({
     <View style={styles.disclosure}>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`${expanded ? "Collapse" : "Expand"} 6-month progress for ${exerciseName}, ${accessibilitySummary}`}
+        accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${title} for ${exerciseName}, ${accessibilitySummary}`}
         accessibilityState={{ expanded }}
         onBlur={() => setFocused(false)}
         onFocus={() => setFocused(true)}
         onPress={() => setExpanded((current) => !current)}
         style={({ pressed }) => [
           styles.disclosureToggle,
+          quietDisclosure && styles.quietDisclosureToggle,
           pressed && styles.pressed,
           focused && Platform.OS === "web" && styles.webFocusRing,
         ]}
       >
-        <Text numberOfLines={1} style={styles.disclosureTitle}>6-month progress</Text>
-        <Text numberOfLines={1} style={styles.disclosureSummary}>
-          {progress && latest ? (
-            <>
-              {valueLabel(latest.value, progress)}
-              {trend ? <Text style={styles.disclosureTrend}>{` · ${trend}`}</Text> : null}
-            </>
-          ) : summary}
-        </Text>
         <Text
+          numberOfLines={1}
+          style={[styles.disclosureTitle, quietDisclosure && styles.quietDisclosureTitle]}
+        >
+          {title}
+        </Text>
+        {!quietDisclosure ? (
+          <Text numberOfLines={1} style={styles.disclosureSummary}>
+            {progress && latest ? (
+              <>
+                {valueLabel(latest.value, progress)}
+                {trend ? <Text style={styles.disclosureTrend}>{` · ${trend}`}</Text> : null}
+              </>
+            ) : summary}
+          </Text>
+        ) : null}
+        <View
           accessible={false}
           style={[styles.disclosureChevron, expanded && styles.disclosureChevronExpanded]}
-        >
-          ⌄
-        </Text>
+        />
       </Pressable>
       {expanded ? (
         <View style={styles.frame}>
@@ -300,6 +310,8 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     fontWeight: "800",
   },
+  quietDisclosureToggle: { minHeight: 54, paddingVertical: 0 },
+  quietDisclosureTitle: { fontSize: 14, lineHeight: 18, fontWeight: "400" },
   disclosureSummary: {
     flexShrink: 1,
     color: colors.text,
@@ -310,13 +322,15 @@ const styles = StyleSheet.create({
   },
   disclosureTrend: { color: colors.accent },
   disclosureChevron: {
-    width: 18,
-    color: colors.textMuted,
-    fontSize: 18,
-    lineHeight: 20,
-    textAlign: "center",
+    width: 7,
+    height: 7,
+    marginHorizontal: 5,
+    borderRightWidth: 1.5,
+    borderBottomWidth: 1.5,
+    borderColor: colors.textMuted,
+    transform: [{ rotateZ: "-45deg" }],
   },
-  disclosureChevronExpanded: { transform: [{ rotateZ: "180deg" }] },
+  disclosureChevronExpanded: { transform: [{ rotateZ: "45deg" }] },
   frame: {
     minHeight: FRAME_HEIGHT,
     gap: spacing.sm,

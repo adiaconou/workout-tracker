@@ -4,13 +4,16 @@ import type { WorkoutView } from "../../contracts/api";
 import { colors, radii, spacing } from "../ui/tokens";
 import {
   alignPreviousExerciseSets,
-  formatSetComparisonPerformance,
-  liveSetComparisonPerformance,
+  comparisonLoadHeading,
+  comparisonResultHeading,
+  formatComparisonTableCells,
+  formatComparisonTargetCells,
   type ComparisonPerformance,
+  type ComparisonTableCells,
 } from "./set-comparison";
 import { recommendProgressiveTarget } from "./progressive-target";
 
-const CELL_WIDTH = 132;
+const SET_BUTTON_STRIDE = 50;
 
 export function ActiveSetComparison({
   sets,
@@ -20,9 +23,8 @@ export function ActiveSetComparison({
   activeSetIndex,
   navigationDisabled,
   onSelectSet,
-  weight,
-  result,
   progressiveTrainingEnabled,
+  showSummaryTable = true,
 }: {
   sets: WorkoutView["sets"];
   previousSets: NonNullable<WorkoutView["previousPerformanceByExercise"][number]>["sets"];
@@ -31,13 +33,13 @@ export function ActiveSetComparison({
   activeSetIndex: number;
   navigationDisabled: boolean;
   onSelectSet: (globalIndex: number) => void;
-  weight: string;
-  result: string;
   progressiveTrainingEnabled: boolean;
+  showSummaryTable?: boolean;
 }) {
   const scrollRef = useRef<ScrollView>(null);
-  const currentOccurrenceIndex = sets.findIndex((set) => set.id === selectedSetId);
-  const scrollTarget = Math.max(0, currentOccurrenceIndex * CELL_WIDTH - CELL_WIDTH / 2);
+  const selectedIndex = Math.max(0, sets.findIndex((set) => set.id === selectedSetId));
+  const selectedSet = sets[selectedIndex];
+  const scrollTarget = Math.max(0, selectedIndex * SET_BUTTON_STRIDE - SET_BUTTON_STRIDE);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -45,16 +47,6 @@ export function ActiveSetComparison({
     }, 0);
     return () => clearTimeout(timer);
   }, [scrollTarget, selectedSetId]);
-
-  const currentValues = useMemo(() => sets.map((set) => {
-    const recorded = recordedPerformanceBySetId[set.id];
-    if (recorded) return formatSetComparisonPerformance(set, recorded);
-    if (set.id !== selectedSetId || set.globalIndex !== activeSetIndex) return "—";
-    return formatSetComparisonPerformance(
-      set,
-      liveSetComparisonPerformance(set, weight, result),
-    );
-  }), [activeSetIndex, recordedPerformanceBySetId, result, selectedSetId, sets, weight]);
 
   const alignedPreviousSets = useMemo(() => alignPreviousExerciseSets(
     sets.map((set) => ({
@@ -67,227 +59,252 @@ export function ActiveSetComparison({
     previousSets,
   ), [previousSets, sets]);
 
-  const previousValues = useMemo(() => {
-    return sets.map((set, index) => {
-      const previous = alignedPreviousSets[index];
-      if (!previous) return "—";
-      const performance: ComparisonPerformance = {
-        status: previous.status,
-        actualWeight: previous.actualWeight,
-        actualReps: previous.actualReps,
-        actualDurationSec: previous.actualDurationSec,
-        weightUnit: previous.weightUnit || set.weightUnit,
-        targetType: previous.targetType,
-        loadType: previous.loadType,
-      };
-      return formatSetComparisonPerformance(set, performance);
-    });
-  }, [alignedPreviousSets, sets]);
-
-  const recommendedValues = useMemo(() => sets.map((set, index) => (
-    formatSetComparisonPerformance(
-      set,
-      recommendProgressiveTarget(set, alignedPreviousSets[index]),
-    )
-  )), [alignedPreviousSets, sets]);
+  const rows = useMemo(() => {
+    if (!selectedSet) return [];
+    const previous = alignedPreviousSets[selectedIndex];
+    const previousPerformance: ComparisonPerformance | undefined = previous
+      ? {
+          status: previous.status,
+          actualWeight: previous.actualWeight,
+          actualReps: previous.actualReps,
+          actualDurationSec: previous.actualDurationSec,
+          weightUnit: previous.weightUnit || selectedSet.weightUnit,
+          targetType: previous.targetType,
+          loadType: previous.loadType,
+        }
+      : undefined;
+    const targetCells = formatComparisonTargetCells(selectedSet);
+    const recommended = formatComparisonTableCells(
+      selectedSet,
+      recommendProgressiveTarget(selectedSet, previous),
+    );
+    const comparisonRows: Array<{
+      label: string;
+      cells: ComparisonTableCells;
+      recommended?: boolean;
+    }> = [];
+    if (progressiveTrainingEnabled) {
+      comparisonRows.push({
+        label: "Recommended",
+        cells: { ...recommended, rir: targetCells.rir },
+        recommended: true,
+      });
+    }
+    comparisonRows.push(
+      { label: "Range", cells: targetCells },
+      {
+        label: "Last time",
+        cells: formatComparisonTableCells(selectedSet, previousPerformance),
+      },
+    );
+    return comparisonRows;
+  }, [alignedPreviousSets, progressiveTrainingEnabled, selectedIndex, selectedSet]);
 
   return (
-    <View style={[
-      styles.comparison,
-      progressiveTrainingEnabled && styles.comparisonProgressive,
-    ]}>
-      <View style={styles.rowLabels}>
-        <Text style={styles.cornerLabel}>Set</Text>
-        <Text style={styles.rowLabel}>This workout</Text>
-        {progressiveTrainingEnabled ? (
-          <Text style={[styles.rowLabel, styles.recommendedRowLabel]}>Recommended</Text>
-        ) : null}
-        <Text style={styles.rowLabel}>Last time</Text>
-      </View>
-      <ScrollView
-        ref={scrollRef}
-        horizontal
-        accessibilityLabel="Set-by-set performance comparison"
-        contentContainerStyle={styles.scrollContent}
-        onContentSizeChange={() => {
-          scrollRef.current?.scrollTo({ x: scrollTarget, animated: false });
-        }}
-        showsHorizontalScrollIndicator={false}
-        style={styles.scroll}
-      >
-        {sets.map((set, index) => {
-          const active = set.id === selectedSetId;
-          const recorded = recordedPerformanceBySetId[set.id];
-          const skipped = recorded?.status === "Skipped";
-          const completed = recorded?.status === "Completed";
-          const setState = skipped
-            ? "skipped"
-            : completed
-              ? "logged"
-              : set.globalIndex === activeSetIndex
-                ? "current"
-                : set.globalIndex > activeSetIndex
-                  ? "upcoming"
-                  : "not logged";
-          return (
-            <View key={set.id} style={styles.column}>
-              <View style={styles.columnLabelSlot}>
+    <View style={styles.comparison}>
+      <View style={styles.selector}>
+        <Text nativeID="active-set-selector-label" style={styles.selectorLabel}>Sets</Text>
+        <ScrollView
+          ref={scrollRef}
+          horizontal
+          accessibilityLabelledBy="active-set-selector-label"
+          contentContainerStyle={styles.selectorContent}
+          onContentSizeChange={() => {
+            scrollRef.current?.scrollTo({ x: scrollTarget, animated: false });
+          }}
+          showsHorizontalScrollIndicator={false}
+          style={styles.selectorScroll}
+        >
+          {sets.map((set, index) => {
+            const recorded = recordedPerformanceBySetId[set.id];
+            const completed = recorded?.status === "Completed";
+            const skipped = recorded?.status === "Skipped";
+            const current = set.globalIndex === activeSetIndex;
+            const selected = set.id === selectedSetId;
+            const upcoming = !recorded && set.globalIndex > activeSetIndex;
+            const selectable = current || Boolean(recorded);
+            const disabled = navigationDisabled || !selectable;
+            const state = current
+              ? "current workout set"
+              : completed
+                ? "completed"
+                : skipped
+                  ? "skipped"
+                  : upcoming
+                    ? "upcoming"
+                    : "not logged";
+            return (
+              <Pressable
+                key={set.id}
+                accessibilityRole="button"
+                accessibilityLabel={`Set ${index + 1}, ${state}${selected ? ", selected" : ""}`}
+                accessibilityState={{ disabled, selected }}
+                disabled={disabled}
+                onPress={() => onSelectSet(set.globalIndex)}
+                style={({ pressed }) => [
+                  styles.setButton,
+                  pressed && styles.setButtonPressed,
+                  disabled && styles.setButtonDisabled,
+                ]}
+              >
                 <View style={[
-                  styles.columnLabelMarker,
-                  active && styles.columnLabelMarkerActive,
+                  styles.setMarker,
+                  (completed || skipped) && styles.setMarkerRecorded,
+                  selected && !current && styles.setMarkerViewed,
+                  current && styles.setMarkerCurrent,
                 ]}>
                   <Text style={[
-                    styles.columnLabel,
-                    active && styles.columnLabelActive,
+                    styles.setNumber,
+                    selected && !current && styles.setNumberViewed,
+                    current && styles.setNumberCurrent,
                   ]}>
                     {index + 1}
                   </Text>
+                  {completed ? (
+                    <Text accessibilityElementsHidden style={[
+                      styles.setStatusGlyph,
+                      selected && !current && styles.setNumberViewed,
+                    ]}>✓</Text>
+                  ) : skipped ? (
+                    <Text accessibilityElementsHidden style={styles.setStatusGlyph}>–</Text>
+                  ) : null}
                 </View>
-              </View>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`View ${set.exerciseName}, set ${index + 1} of ${sets.length}, ${setState}${active ? ", selected" : ""}, ${currentValues[index]}`}
-                accessibilityState={{ disabled: navigationDisabled, selected: active }}
-                disabled={navigationDisabled}
-                onPress={() => onSelectSet(set.globalIndex)}
-                style={({ pressed }) => [
-                  styles.cell,
-                  active && styles.cellActive,
-                  completed && styles.cellCompleted,
-                  skipped && styles.cellSkipped,
-                  pressed && styles.cellPressed,
-                ]}
-              >
-                <Text
-                  numberOfLines={2}
-                  style={[
-                    styles.cellText,
-                    active && styles.cellTextActive,
-                    skipped && styles.cellTextSkipped,
-                  ]}
-                >
-                  {currentValues[index]}
-                </Text>
               </Pressable>
-              {progressiveTrainingEnabled ? (
-                <View
-                  accessible
-                  accessibilityLabel={`Recommended target, set ${index + 1}, ${
-                    recommendedValues[index] === "—"
-                      ? "no baseline"
-                      : recommendedValues[index]
-                  }`}
-                  style={[styles.cell, styles.recommendedCell]}
-                >
-                  <Text numberOfLines={2} style={[styles.cellText, styles.recommendedCellText]}>
-                    {recommendedValues[index]}
-                  </Text>
-                </View>
-              ) : null}
-              <View
-                accessible
-                accessibilityLabel={`Last time, set ${index + 1}, ${previousValues[index]}`}
-                style={styles.cell}
-              >
-                <Text numberOfLines={2} style={styles.cellText}>
-                  {previousValues[index]}
-                </Text>
-              </View>
+            );
+          })}
+        </ScrollView>
+      </View>
+
+      {showSummaryTable && selectedSet ? (
+        <View
+          accessible
+          accessibilityLabel={`Set comparison. ${rows.map((row) => `${row.label}: ${row.cells.load}, ${row.cells.result}, RIR ${row.cells.rir}`).join(". ")}`}
+          style={styles.table}
+        >
+          <View style={[styles.tableRow, styles.tableHeader]}>
+            <Text style={[styles.tableHeaderText, styles.labelColumn]}> </Text>
+            <Text style={[styles.tableHeaderText, styles.loadColumn]}>
+              {comparisonLoadHeading(selectedSet.loadType)}
+            </Text>
+            <Text style={[styles.tableHeaderText, styles.resultColumn]}>
+              {comparisonResultHeading(selectedSet.targetUnit)}
+            </Text>
+            <Text style={[styles.tableHeaderText, styles.rirColumn]}>RIR</Text>
+          </View>
+          {rows.map((row) => (
+            <View key={row.label} style={styles.tableRow}>
+              <Text style={[
+                styles.rowLabel,
+                styles.labelColumn,
+                row.recommended && styles.recommendedText,
+              ]}>
+                {row.label}
+              </Text>
+              <Text style={[
+                styles.cellText,
+                styles.loadColumn,
+                row.recommended && styles.recommendedText,
+              ]}>{row.cells.load}</Text>
+              <Text style={[
+                styles.cellText,
+                styles.resultColumn,
+                row.recommended && styles.recommendedText,
+              ]}>{row.cells.result}</Text>
+              <Text style={[
+                styles.cellText,
+                styles.rirColumn,
+                row.recommended && styles.recommendedText,
+              ]}>{row.cells.rir}</Text>
             </View>
-          );
-        })}
-      </ScrollView>
+          ))}
+        </View>
+      ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  comparison: {
-    minHeight: 116,
+  comparison: { gap: spacing.md },
+  selector: {
+    minHeight: 52,
     flexDirection: "row",
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.borderStrong,
-    paddingTop: spacing.sm,
+    alignItems: "center",
+    gap: spacing.md,
   },
-  comparisonProgressive: { minHeight: 160 },
-  rowLabels: { width: 92, flexShrink: 0 },
-  cornerLabel: {
-    height: 24,
-    color: colors.textDim,
-    fontSize: 9,
-    lineHeight: 24,
-    fontWeight: "800",
-    letterSpacing: 0.7,
-    textTransform: "uppercase",
-  },
-  rowLabel: {
-    height: 44,
-    color: colors.textMuted,
-    fontSize: 10,
-    lineHeight: 13,
-    fontWeight: "800",
-    textTransform: "uppercase",
-    textAlignVertical: "center",
-    paddingRight: spacing.sm,
-  },
-  recommendedRowLabel: { color: colors.recommendation },
-  scroll: { flex: 1, minWidth: 0 },
-  scrollContent: { paddingRight: spacing.sm },
-  column: { width: CELL_WIDTH, gap: 0 },
-  columnLabelSlot: {
-    height: 24,
+  selectorLabel: { width: 32, color: colors.textMuted, fontSize: 13, lineHeight: 18 },
+  selectorScroll: { flex: 1, minWidth: 0 },
+  selectorContent: { alignItems: "center", gap: 6, paddingRight: spacing.sm },
+  setButton: {
+    width: 44,
+    minWidth: 44,
+    minHeight: 44,
     alignItems: "center",
     justifyContent: "center",
   },
-  columnLabelMarker: {
-    minWidth: 24,
-    height: 24,
+  setButtonPressed: { opacity: 0.72 },
+  setButtonDisabled: { opacity: 0.48 },
+  setMarker: {
+    width: 34,
+    height: 34,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: spacing.xs,
+    gap: 1,
     borderRadius: radii.pill,
   },
-  columnLabelMarkerActive: { backgroundColor: colors.accent },
-  columnLabel: {
-    color: colors.textDim,
-    fontSize: 10,
-    lineHeight: 14,
-    fontWeight: "800",
-    fontVariant: ["tabular-nums"],
-    textAlign: "center",
-  },
-  columnLabelActive: { color: colors.background },
-  cell: {
-    height: 44,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: spacing.sm,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-    backgroundColor: colors.background,
-  },
-  cellActive: {
+  setMarkerRecorded: {
     borderWidth: 1,
-    borderColor: colors.accent,
-    borderRadius: radii.sm,
-    backgroundColor: colors.accentDark,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
   },
-  recommendedCell: {
-    borderColor: colors.recommendationBorder,
-    backgroundColor: colors.recommendationSurface,
+  setMarkerViewed: {
+    borderWidth: 2,
+    borderColor: colors.text,
+    backgroundColor: colors.surfaceRaised,
   },
-  cellCompleted: { backgroundColor: colors.successSurface },
-  cellSkipped: { backgroundColor: colors.surfaceRaised },
-  cellPressed: { opacity: 0.72 },
+  setMarkerCurrent: { backgroundColor: colors.accent },
+  setNumber: {
+    color: colors.textMuted,
+    fontSize: 13,
+    lineHeight: 16,
+    fontWeight: "500",
+    fontVariant: ["tabular-nums"],
+  },
+  setNumberViewed: { color: colors.text },
+  setNumberCurrent: { color: colors.background, fontWeight: "900" },
+  setStatusGlyph: { color: colors.textMuted, fontSize: 10, lineHeight: 13, fontWeight: "900" },
+  table: {
+    width: "100%",
+  },
+  tableRow: {
+    minHeight: 34,
+    flexDirection: "row",
+    alignItems: "center",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  tableHeader: {
+    minHeight: 28,
+  },
+  tableHeaderText: {
+    color: colors.textDim,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "500",
+    textAlign: "right",
+  },
+  rowLabel: { color: colors.textMuted, fontSize: 13, lineHeight: 18, fontWeight: "400" },
+  recommendedText: { color: colors.text, fontWeight: "500" },
   cellText: {
     color: colors.textMuted,
-    fontSize: 10,
-    lineHeight: 13,
-    fontWeight: "700",
-    textAlign: "center",
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "400",
+    textAlign: "right",
     fontVariant: ["tabular-nums"],
   },
-  cellTextActive: { color: colors.text },
-  cellTextSkipped: { color: colors.textDim },
-  recommendedCellText: { color: colors.recommendation },
+  labelColumn: { width: "36%", paddingRight: spacing.sm, textAlign: "left" },
+  loadColumn: { width: "28%", paddingHorizontal: 2 },
+  resultColumn: { width: "18%", paddingHorizontal: 2 },
+  rirColumn: { width: "18%", paddingLeft: 2 },
 });

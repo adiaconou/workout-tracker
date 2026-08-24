@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   alignPreviousExerciseSets,
+  comparisonLoadPhrase,
+  comparisonLoadHeading,
+  comparisonResultHeading,
+  formatComparisonTableCells,
+  formatComparisonTargetCells,
   formatSetComparisonPerformance,
   liveSetComparisonPerformance,
   type ComparisonPerformance,
@@ -160,4 +165,136 @@ test("uses explicit skipped and missing states and formats live input", () => {
     repsSet,
     liveSetComparisonPerformance(repsSet, "", ""),
   ), "— × —");
+});
+
+test("formats consistent comparison-table headings and split values", () => {
+  assert.equal(comparisonLoadHeading("assistance"), "Assistance");
+  assert.equal(comparisonLoadHeading("added"), "Added weight");
+  assert.equal(comparisonLoadHeading("external"), "Weight");
+  assert.equal(comparisonLoadHeading("bodyweight"), "Load");
+  assert.equal(comparisonResultHeading("reps"), "Reps");
+  assert.equal(comparisonResultHeading("seconds"), "Seconds");
+  assert.equal(comparisonResultHeading("rounds"), "Rounds");
+  assert.equal(comparisonLoadPhrase("assistance", "0 lb"), "0 lb assistance");
+  assert.equal(comparisonLoadPhrase("added", "25 lb"), "25 lb added weight");
+  assert.equal(comparisonLoadPhrase("external", "135 lb"), "135 lb");
+  assert.equal(comparisonLoadPhrase("bodyweight", "BW + 15 lb"), "BW + 15 lb");
+  assert.equal(comparisonLoadPhrase("assistance", "—"), "—");
+
+  assert.deepEqual(formatComparisonTableCells(repsSet, performance()), {
+    load: "135 lb",
+    result: "8",
+    rir: "—",
+  });
+  assert.deepEqual(formatComparisonTableCells(
+    { ...repsSet, loadType: "assistance" },
+    performance({ actualWeight: 0, actualReps: 6 }),
+  ), { load: "0 lb", result: "6", rir: "—" });
+  assert.deepEqual(formatComparisonTableCells(
+    { ...repsSet, loadType: "added" },
+    performance({ actualWeight: 25 }),
+  ), { load: "25 lb", result: "8", rir: "—" });
+  assert.deepEqual(formatComparisonTableCells(
+    { ...repsSet, loadType: "bodyweight" },
+    performance({ actualWeight: 0 }),
+  ), { load: "BW", result: "8", rir: "—" });
+  assert.deepEqual(formatComparisonTableCells(
+    { ...repsSet, loadType: "bodyweight" },
+    performance({ actualWeight: 15 }),
+  ), { load: "BW + 15 lb", result: "8", rir: "—" });
+  assert.deepEqual(formatComparisonTableCells(
+    { ...repsSet, targetUnit: "seconds" },
+    performance({ actualReps: null, actualDurationSec: 30 }),
+  ), { load: "135 lb", result: "30", rir: "—" });
+  assert.deepEqual(formatComparisonTableCells(
+    { ...repsSet, targetUnit: "rounds" },
+    performance({ actualReps: 4, targetType: "rounds" }),
+  ), { load: "135 lb", result: "4", rir: "—" });
+  assert.deepEqual(formatComparisonTableCells(
+    repsSet,
+    performance({ actualWeight: 22.5, weightUnit: "" }),
+  ), { load: "22.5 lb", result: "8", rir: "—" });
+});
+
+test("formats comparison-table missing, skipped, and historical semantics", () => {
+  assert.deepEqual(formatComparisonTableCells(repsSet, undefined), {
+    load: "—",
+    result: "—",
+    rir: "—",
+  });
+  assert.deepEqual(formatComparisonTableCells(
+    repsSet,
+    performance({ status: "Skipped", actualWeight: null, actualReps: null }),
+  ), { load: "—", result: "Skipped", rir: "—" });
+  assert.deepEqual(formatComparisonTableCells(
+    { ...repsSet, loadType: "bodyweight" },
+    performance({ actualWeight: 90, loadType: "external" }),
+  ), { load: "90 lb", result: "8", rir: "—" });
+  assert.deepEqual(formatComparisonTableCells(
+    { ...repsSet, loadType: "bodyweight" },
+    performance({ actualWeight: null }),
+  ), { load: "BW", result: "8", rir: "—" });
+  assert.deepEqual(formatComparisonTableCells(
+    repsSet,
+    performance({ actualWeight: null, actualReps: null }),
+  ), { load: "—", result: "—", rir: "—" });
+});
+
+test("formats target ranges and RIR without repeating table units", () => {
+  assert.deepEqual(formatComparisonTargetCells({
+    ...repsSet,
+    target: "6-8 reps",
+    targetMin: 6,
+    targetMax: 8,
+    targetRirMin: 2,
+    targetRirMax: 2,
+  }), { load: "—", result: "6–8", rir: "2" });
+  assert.deepEqual(formatComparisonTargetCells({
+    ...repsSet,
+    target: "10 reps",
+    targetMin: 10,
+    targetMax: null,
+    targetRirMin: null,
+    targetRirMax: 3,
+  }), { load: "—", result: "10", rir: "3" });
+  assert.deepEqual(formatComparisonTargetCells({
+    ...repsSet,
+    target: "30 seconds",
+    targetMin: null,
+    targetMax: 30,
+    targetRirMin: 1,
+    targetRirMax: null,
+  }), { load: "—", result: "30", rir: "1" });
+  assert.deepEqual(formatComparisonTargetCells({
+    ...repsSet,
+    target: "AMRAP reps",
+    effort: "RIR: 1 - 2",
+  }), { load: "—", result: "AMRAP", rir: "1–2" });
+  assert.deepEqual(formatComparisonTargetCells({
+    ...repsSet,
+    target: "8 reps",
+    effort: "2 RIR",
+  }), { load: "—", result: "8", rir: "2" });
+  assert.deepEqual(formatComparisonTargetCells({
+    ...repsSet,
+    target: "8 reps",
+    effort: "RIR ≈2",
+  }), { load: "—", result: "8", rir: "2" });
+  assert.deepEqual(formatComparisonTargetCells({
+    ...repsSet,
+    target: "Hold",
+    effort: "Controlled",
+  }), { load: "—", result: "Hold", rir: "—" });
+  assert.deepEqual(formatComparisonTargetCells({
+    ...repsSet,
+    target: "",
+  }), { load: "—", result: "—", rir: "—" });
+  assert.deepEqual(formatComparisonTargetCells({
+    ...repsSet,
+    target: "8 reps",
+    targetMin: 8,
+    targetMax: 10,
+    targetRirMin: 1,
+    targetRirMax: 3,
+  }), { load: "—", result: "8–10", rir: "1–3" });
 });
