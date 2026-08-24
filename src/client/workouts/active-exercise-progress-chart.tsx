@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -54,6 +55,16 @@ function trendLabel(progress: ExerciseProgress) {
   const delta = values.at(-1)! - values[0]!;
   if (trend === "equal") return "No change";
   return `${trend === "up" ? "↑ Up" : "↓ Down"} ${valueLabel(Math.abs(delta), progress)}`;
+}
+
+function compactTrendLabel(progress: ExerciseProgress) {
+  const values = progress.points.map((point) => point.value);
+  const trend = progressTrend(values);
+  if (trend === "empty") return "";
+  if (trend === "one") return "Baseline";
+  const delta = values.at(-1)! - values[0]!;
+  if (trend === "equal") return "No change";
+  return `${trend === "up" ? "↑" : "↓"} ${valueLabel(Math.abs(delta), progress)}`;
 }
 
 function LinePlot({ progress }: { progress: ExerciseProgress }) {
@@ -156,6 +167,8 @@ export function ActiveExerciseProgressChart({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [requestVersion, setRequestVersion] = useState(0);
+  const [expanded, setExpanded] = useState(false);
+  const [focused, setFocused] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -186,69 +199,129 @@ export function ActiveExerciseProgressChart({
 
   const points = progress?.points ?? [];
   const latest = points.at(-1);
+  const trend = progress ? compactTrendLabel(progress) : "";
+  const spokenTrend = progress ? trendLabel(progress) : "";
+  const summary = progress && latest
+    ? `${valueLabel(latest.value, progress)}${trend ? ` · ${trend}` : ""}`
+    : loading
+      ? "Loading…"
+      : error
+        ? "Unavailable"
+        : "No data";
+  const accessibilitySummary = progress && latest
+    ? `${valueLabel(latest.value, progress)}${spokenTrend ? `, ${spokenTrend}` : ""}`
+    : summary;
 
   return (
-    <View style={styles.frame}>
-      <View style={styles.headingRow}>
-        <View style={styles.headingCopy}>
+    <View style={styles.disclosure}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${expanded ? "Collapse" : "Expand"} 6-month progress for ${exerciseName}, ${accessibilitySummary}`}
+        accessibilityState={{ expanded }}
+        onBlur={() => setFocused(false)}
+        onFocus={() => setFocused(true)}
+        onPress={() => setExpanded((current) => !current)}
+        style={({ pressed }) => [
+          styles.disclosureToggle,
+          pressed && styles.pressed,
+          focused && Platform.OS === "web" && styles.webFocusRing,
+        ]}
+      >
+        <Text numberOfLines={1} style={styles.disclosureTitle}>6-month progress</Text>
+        <Text numberOfLines={1} style={styles.disclosureSummary}>
+          {progress && latest ? (
+            <>
+              {valueLabel(latest.value, progress)}
+              {trend ? <Text style={styles.disclosureTrend}>{` · ${trend}`}</Text> : null}
+            </>
+          ) : summary}
+        </Text>
+        <Text
+          accessible={false}
+          style={[styles.disclosureChevron, expanded && styles.disclosureChevronExpanded]}
+        >
+          ⌄
+        </Text>
+      </Pressable>
+      {expanded ? (
+        <View style={styles.frame}>
           <Text numberOfLines={1} style={styles.heading}>
             {progress ? metricTitle(progress) : "Exercise trend"}
           </Text>
-          <Text style={styles.range}>Last 6 months</Text>
+          <View style={styles.stateArea}>
+            {loading ? (
+              <View accessibilityLiveRegion="polite" style={styles.centeredState}>
+                <ActivityIndicator color={colors.accent} />
+                <Text style={styles.stateText}>Loading 6 month progress…</Text>
+              </View>
+            ) : error ? (
+              <View accessibilityRole="alert" style={styles.errorState}>
+                <Text numberOfLines={2} style={styles.errorText}>{error}</Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Retry ${exerciseName} progress`}
+                  onPress={() => setRequestVersion((value) => value + 1)}
+                  style={({ pressed }) => [styles.retry, pressed && styles.pressed]}
+                >
+                  <Text style={styles.retryText}>Try again</Text>
+                </Pressable>
+              </View>
+            ) : !progress || !points.length ? (
+              <View accessibilityLiveRegion="polite" style={styles.centeredState}>
+                <Text style={styles.emptyText}>No completed sets in the last 6 months</Text>
+              </View>
+            ) : (
+              <LinePlot progress={progress} />
+            )}
+          </View>
         </View>
-        {progress && latest ? (
-          <View style={styles.latest}>
-            <Text style={styles.latestValue}>{valueLabel(latest.value, progress)}</Text>
-            <Text style={styles.trend}>{trendLabel(progress)}</Text>
-          </View>
-        ) : null}
-      </View>
-      <View style={styles.stateArea}>
-        {loading ? (
-          <View accessibilityLiveRegion="polite" style={styles.centeredState}>
-            <ActivityIndicator color={colors.accent} />
-            <Text style={styles.stateText}>Loading 6 month progress…</Text>
-          </View>
-        ) : error ? (
-          <View accessibilityRole="alert" style={styles.errorState}>
-            <Text numberOfLines={2} style={styles.errorText}>{error}</Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Retry ${exerciseName} progress`}
-              onPress={() => setRequestVersion((value) => value + 1)}
-              style={({ pressed }) => [styles.retry, pressed && styles.pressed]}
-            >
-              <Text style={styles.retryText}>Try again</Text>
-            </Pressable>
-          </View>
-        ) : !progress || !points.length ? (
-          <View accessibilityLiveRegion="polite" style={styles.centeredState}>
-            <Text style={styles.emptyText}>No completed sets in the last 6 months</Text>
-          </View>
-        ) : (
-          <LinePlot progress={progress} />
-        )}
-      </View>
+      ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  frame: {
-    minHeight: FRAME_HEIGHT,
-    gap: spacing.sm,
-    paddingTop: spacing.sm,
+  disclosure: {
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.borderStrong,
   },
-  headingRow: {
-    minHeight: 36,
+  disclosureToggle: {
+    minHeight: 60,
     flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    gap: spacing.md,
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingVertical: spacing.sm,
   },
-  headingCopy: { flex: 1, minWidth: 0 },
+  disclosureTitle: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.text,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "800",
+  },
+  disclosureSummary: {
+    flexShrink: 1,
+    color: colors.text,
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: "800",
+    textAlign: "right",
+  },
+  disclosureTrend: { color: colors.accent },
+  disclosureChevron: {
+    width: 18,
+    color: colors.textMuted,
+    fontSize: 18,
+    lineHeight: 20,
+    textAlign: "center",
+  },
+  disclosureChevronExpanded: { transform: [{ rotateZ: "180deg" }] },
+  frame: {
+    minHeight: FRAME_HEIGHT,
+    gap: spacing.sm,
+    paddingBottom: spacing.sm,
+  },
   heading: {
     color: colors.textMuted,
     fontSize: 10,
@@ -257,10 +330,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
     textTransform: "uppercase",
   },
-  range: { color: colors.textDim, fontSize: 9, lineHeight: 13 },
-  latest: { flex: 1, minWidth: 0, alignItems: "flex-end" },
-  latestValue: { color: colors.text, fontSize: 12, lineHeight: 16, fontWeight: "800" },
-  trend: { color: colors.accent, fontSize: 10, lineHeight: 14, fontWeight: "700" },
   stateArea: { minHeight: STATE_HEIGHT },
   centeredState: {
     height: STATE_HEIGHT,
@@ -291,6 +360,12 @@ const styles = StyleSheet.create({
   },
   retryText: { color: colors.text, fontSize: 12, fontWeight: "800" },
   pressed: { opacity: 0.72 },
+  webFocusRing: {
+    outlineColor: colors.accent,
+    outlineOffset: -2,
+    outlineStyle: "solid",
+    outlineWidth: 2,
+  },
   linePlot: { minHeight: STATE_HEIGHT },
   plot: { height: PLOT_HEIGHT, position: "relative", overflow: "hidden" },
   dateAxis: {

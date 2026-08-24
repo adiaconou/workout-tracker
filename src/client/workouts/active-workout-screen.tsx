@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -86,7 +87,6 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   const [completedSets, setCompletedSets] = useState(0);
   const [skippedSets, setSkippedSets] = useState(0);
   const [restEndsAt, setRestEndsAt] = useState<string | null>(null);
-  const [restDuration, setRestDuration] = useState(0);
   const [secondsRemaining, setSecondsRemaining] = useState(0);
   const [weight, setWeight] = useState("");
   const [result, setResult] = useState("");
@@ -157,7 +157,6 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
       setSkippedSets(next.skippedSets);
       setWorkoutCompleted(next.status === "Completed" || next.status === "Partial");
       setRestEndsAt(next.restEndsAt);
-      setRestDuration(next.currentRestSeconds);
       setSecondsRemaining(
         next.restEndsAt
           ? Math.max(0, Math.ceil((new Date(next.restEndsAt).getTime() - Date.now()) / 1000))
@@ -416,7 +415,6 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
         }
         currentSetElapsedAnchor.current = success.nextSet.elapsedAnchor;
         setSetNavigation(initialSetNavigation(success.nextSet.index, workout.sets.length));
-        setRestDuration(success.nextSet.restSeconds);
         setRestEndsAt(success.restEndsAt);
         setSecondsRemaining(success.nextSet.restSeconds);
       }
@@ -429,7 +427,7 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   }
 
   async function skipRest() {
-    if (!workout || saving) return;
+    if (!workout || saving || isViewingPast || !restEndsAt) return;
     setSaving(true);
     setError("");
     try {
@@ -826,7 +824,16 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
       {error ? <Message>{error}</Message> : null}
 
       {viewedSet ? (
-        <Card style={styles.setCard}>
+        <View style={styles.activeSetStack}>
+          {restEndsAt ? (
+            <RestTimerIsland
+              secondsRemaining={secondsRemaining}
+              viewingPast={isViewingPast}
+              saving={saving}
+              onSkip={() => void skipRest()}
+            />
+          ) : null}
+          <Card style={styles.setCard}>
           {viewedSupersetContext ? (
             <SupersetBanner context={viewedSupersetContext} />
           ) : null}
@@ -847,56 +854,6 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
               ? `${viewedRecordedPerformance?.status === "Skipped" ? "Skipped" : "Logged"} set · Exercise ${exercisePosition} of ${exerciseOrders.length}`
               : `${restEndsAt ? "Next · " : ""}Exercise ${exercisePosition} of ${exerciseOrders.length}`}
             workoutSet={viewedSet}
-          />
-          {restEndsAt ? (
-            <View style={styles.inlineRest}>
-              <View style={styles.inlineRestTopline}>
-                <Eyebrow>{isViewingPast ? "Current rest continues" : "Rest in progress"}</Eyebrow>
-                <Text
-                  accessibilityLabel={`${secondsRemaining} seconds remaining`}
-                  accessibilityLiveRegion="polite"
-                  style={styles.inlineRestTimer}
-                >
-                  {formatTimer(secondsRemaining)}
-                </Text>
-              </View>
-              <View
-                accessibilityRole="progressbar"
-                accessibilityLabel="Rest time remaining"
-                accessibilityValue={{
-                  min: 0,
-                  max: Math.max(1, restDuration),
-                  now: Math.min(Math.max(0, secondsRemaining), Math.max(1, restDuration)),
-                  text: `${secondsRemaining} seconds remaining`,
-                }}
-                style={styles.timerTrack}
-              >
-                <View
-                  style={[
-                    styles.timerValue,
-                    { width: `${restDuration ? (secondsRemaining / restDuration) * 100 : 0}%` },
-                  ]}
-                />
-              </View>
-              {isViewingPast ? (
-                <Text style={styles.pastEditHint}>
-                  Return to the current set to skip rest.
-                </Text>
-              ) : (
-                <Button
-                  title="Skip Rest"
-                  variant="secondary"
-                  compact
-                  loading={saving}
-                  onPress={() => void skipRest()}
-                />
-              )}
-            </View>
-          ) : null}
-          <ActiveExerciseProgressChart
-            key={`progress:${viewedSet.exerciseId}:${viewedSet.exerciseOrder}`}
-            exerciseId={viewedSet.exerciseId}
-            exerciseName={viewedSet.exerciseName}
           />
           <ActiveSetComparison
             sets={currentExerciseSets}
@@ -1029,7 +986,13 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
               ) : null}
             </View>
           ) : null}
-        </Card>
+            <ActiveExerciseProgressChart
+              key={`progress:${workout.id}:${viewedSet.exerciseId}:${viewedSet.exerciseOrder}`}
+              exerciseId={viewedSet.exerciseId}
+              exerciseName={viewedSet.exerciseName}
+            />
+          </Card>
+        </View>
       ) : (
         <Message>There are no remaining sets, but this workout has not been finalized.</Message>
       )}
@@ -1062,6 +1025,62 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
         </Text>
       </View>
     </Screen>
+  );
+}
+
+function RestTimerIsland({
+  secondsRemaining,
+  viewingPast,
+  saving,
+  onSkip,
+}: {
+  secondsRemaining: number;
+  viewingPast: boolean;
+  saving: boolean;
+  onSkip: () => void;
+}) {
+  const [skipFocused, setSkipFocused] = useState(false);
+  return (
+    <View style={styles.restIsland}>
+      <View style={styles.restIslandRail}>
+        <Text accessible={false} style={styles.restIslandLabel}>REST</Text>
+      </View>
+      <Text
+        accessibilityLabel={formatRestAccessibilityLabel(secondsRemaining)}
+        style={styles.restIslandTimer}
+      >
+        {formatTimer(secondsRemaining)}
+      </Text>
+      <View style={styles.restIslandRail}>
+        {viewingPast ? (
+          <Text
+            accessibilityLabel="Current rest continues"
+            style={styles.restIslandPastLabel}
+          >
+            Current rest
+          </Text>
+        ) : (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Skip remaining rest"
+            accessibilityHint="Starts the current set now"
+            accessibilityState={{ disabled: saving, busy: saving }}
+            disabled={saving}
+            onBlur={() => setSkipFocused(false)}
+            onFocus={() => setSkipFocused(true)}
+            onPress={onSkip}
+            style={({ pressed }) => [
+              styles.restIslandSkip,
+              saving && styles.restIslandSkipDisabled,
+              pressed && styles.restIslandSkipPressed,
+              skipFocused && Platform.OS === "web" && styles.restIslandSkipFocused,
+            ]}
+          >
+            <Text style={styles.restIslandSkipText}>Skip</Text>
+          </Pressable>
+        )}
+      </View>
+    </View>
   );
 }
 
@@ -1569,6 +1588,17 @@ function formatTimer(seconds: number) {
   return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
 }
 
+function formatRestAccessibilityLabel(seconds: number) {
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  const parts: string[] = [];
+  if (minutes) parts.push(`${minutes} minute${minutes === 1 ? "" : "s"}`);
+  if (remainder || !minutes) {
+    parts.push(`${remainder} second${remainder === 1 ? "" : "s"}`);
+  }
+  return `Rest, ${parts.join(" ")} remaining`;
+}
+
 function setTypeLabel(type: string) {
   if (type === "emom") return "EMOM";
   if (type === "test") return "Test";
@@ -1904,20 +1934,34 @@ const styles = StyleSheet.create({
     gap: spacing.lg,
   },
   finishEarlyButtons: { gap: spacing.sm },
-  inlineRest: {
-    gap: spacing.sm,
-    paddingTop: spacing.md,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.borderStrong,
-  },
-  inlineRestTopline: {
-    minHeight: 38,
+  activeSetStack: { width: "100%", gap: spacing.md },
+  restIsland: {
+    width: "100%",
+    maxWidth: 280,
+    minHeight: 58,
+    alignSelf: "center",
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderRadius: radii.lg,
+    backgroundColor: colors.surface,
   },
-  inlineRestTimer: {
+  restIslandRail: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  restIslandLabel: {
+    color: colors.textMuted,
+    fontSize: 10,
+    lineHeight: 14,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+  },
+  restIslandTimer: {
     color: colors.text,
     fontSize: 30,
     lineHeight: 36,
@@ -1925,13 +1969,29 @@ const styles = StyleSheet.create({
     fontVariant: ["tabular-nums"],
     letterSpacing: -1,
   },
-  timerTrack: {
-    height: 6,
-    borderRadius: radii.pill,
-    backgroundColor: colors.background,
-    overflow: "hidden",
+  restIslandPastLabel: {
+    color: colors.textDim,
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: "700",
+    textAlign: "center",
   },
-  timerValue: { height: "100%", borderRadius: radii.pill, backgroundColor: colors.accent },
+  restIslandSkip: {
+    minWidth: 64,
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.md,
+  },
+  restIslandSkipDisabled: { opacity: 0.45 },
+  restIslandSkipPressed: { opacity: 0.72 },
+  restIslandSkipFocused: {
+    outlineColor: colors.accent,
+    outlineOffset: -2,
+    outlineStyle: "solid",
+    outlineWidth: 2,
+  },
+  restIslandSkipText: { color: colors.textMuted, fontSize: 12, lineHeight: 16, fontWeight: "800" },
   setCard: { backgroundColor: colors.surfaceRaised, gap: spacing.md },
   supersetBanner: {
     gap: spacing.sm,
