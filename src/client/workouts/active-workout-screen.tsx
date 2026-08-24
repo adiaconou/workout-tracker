@@ -35,6 +35,11 @@ import { colors, radii, spacing } from "../ui/tokens";
 import { ActiveExerciseProgressChart } from "./active-exercise-progress-chart";
 import { ActiveSetComparison } from "./active-set-comparison";
 import {
+  activeSetPrescription,
+  specialSetTypeLabel,
+} from "./active-set-prescription";
+import { buildCompactSetDetails } from "./set-guidance";
+import {
   buildWorkoutExerciseProgress,
   type ExerciseProgress,
 } from "./workout-progress";
@@ -247,9 +252,6 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   const liveWorkoutElapsedSeconds = workoutCompleted
     ? workoutElapsedAnchor.current.seconds
     : elapsedFromAnchor(workoutElapsedAnchor.current, timingNow);
-  const liveCurrentSetElapsedSeconds = workoutCompleted
-    ? currentSetElapsedAnchor.current.seconds
-    : elapsedFromAnchor(currentSetElapsedAnchor.current, timingNow);
 
   useEffect(() => {
     if (!viewedSet) return;
@@ -764,22 +766,12 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
           <Text style={styles.exit}>← Exit workout</Text>
         </Pressable>
         <Text numberOfLines={1} style={styles.routineLabel}>
-          Routine {workout.routineCode} · Elapsed {formatElapsedDuration(liveWorkoutElapsedSeconds)}
+          Routine {workout.routineCode} · {formatElapsedDuration(liveWorkoutElapsedSeconds)} elapsed
         </Text>
-        <Text style={styles.setCounter}>{completedOrSkipped}/{workout.totalSets}</Text>
-      </View>
-      <View
-        accessibilityRole="progressbar"
-        accessibilityValue={{ min: 0, max: workout.totalSets, now: completedOrSkipped }}
-        style={styles.progressTrack}
-      >
-        <View style={[styles.progressValue, { width: `${progress * 100}%` }]} />
       </View>
       <View style={styles.progressActions}>
         <Text style={styles.progressCaption}>
-          {exerciseProgress.filter((exercise) => exercise.status === "completed").length} of{" "}
-          {exerciseProgress.length} exercises done
-          {!restEndsAt ? ` · Set ${formatElapsedDuration(liveCurrentSetElapsedSeconds)}` : ""}
+          {completedOrSkipped} of {workout.totalSets} sets
         </Text>
         <Pressable
           accessibilityRole="button"
@@ -789,6 +781,13 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
         >
           <Text style={styles.progressLink}>View full workout →</Text>
         </Pressable>
+      </View>
+      <View
+        accessibilityRole="progressbar"
+        accessibilityValue={{ min: 0, max: workout.totalSets, now: completedOrSkipped }}
+        style={styles.progressTrack}
+      >
+        <View style={[styles.progressValue, { width: `${progress * 100}%` }]} />
       </View>
 
       <WorkoutProgressModal
@@ -834,41 +833,43 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
             />
           ) : null}
           <Card style={styles.setCard}>
-          {viewedSupersetContext ? (
-            <SupersetBanner context={viewedSupersetContext} />
-          ) : null}
-          <SetNavigator
-            navigation={setNavigation}
-            sets={workout.sets}
-            status={isViewingPast ? viewedRecordedPerformance?.status ?? "Completed" : "Current"}
-            disabled={saving || stopwatchStartedAt !== null}
-            onPrevious={() => moveSetView(-1)}
-            onNext={() => moveSetView(1)}
-            onReturn={returnToCurrentSet}
-          />
-          {stopwatchStartedAt !== null ? (
-            <Text style={styles.navigationHint}>Pause the stopwatch to review another set.</Text>
-          ) : null}
-          <CompactSetOverview
-            eyebrow={isViewingPast
-              ? `${viewedRecordedPerformance?.status === "Skipped" ? "Skipped" : "Logged"} set · Exercise ${exercisePosition} of ${exerciseOrders.length}`
-              : `${restEndsAt ? "Next · " : ""}Exercise ${exercisePosition} of ${exerciseOrders.length}`}
-            workoutSet={viewedSet}
-          />
-          <ActiveSetComparison
-            sets={currentExerciseSets}
-            previousSets={previousExerciseSets}
-            recordedPerformanceBySetId={workout.recordedPerformanceBySetId ?? {}}
-            selectedSetId={viewedSet.id}
-            activeSetIndex={currentIndex}
-            navigationDisabled={saving || stopwatchStartedAt !== null}
-            onSelectSet={viewSet}
-            weight={weight}
-            result={result}
-            progressiveTrainingEnabled={Boolean(
-              user?.trainingProfile.progressiveTrainingEnabled,
-            )}
-          />
+            {viewedSupersetContext ? (
+              <SupersetBanner context={viewedSupersetContext} />
+            ) : null}
+            <SetNavigator
+              navigation={setNavigation}
+              sets={workout.sets}
+              status={isViewingPast ? viewedRecordedPerformance?.status ?? "Completed" : "Current"}
+              disabled={saving || stopwatchStartedAt !== null}
+              onPrevious={() => moveSetView(-1)}
+              onNext={() => moveSetView(1)}
+              onReturn={returnToCurrentSet}
+            />
+            {stopwatchStartedAt !== null ? (
+              <Text style={styles.navigationHint}>Pause the stopwatch to review another set.</Text>
+            ) : null}
+            <CompactSetOverview
+              eyebrow={[
+                restEndsAt && !isViewingPast ? "Next" : null,
+                `Exercise ${exercisePosition} of ${exerciseOrders.length}`,
+                specialSetTypeLabel(viewedSet.setType),
+              ].filter(Boolean).join(" · ")}
+              workoutSet={viewedSet}
+            />
+            <ActiveSetComparison
+              sets={currentExerciseSets}
+              previousSets={previousExerciseSets}
+              recordedPerformanceBySetId={workout.recordedPerformanceBySetId ?? {}}
+              selectedSetId={viewedSet.id}
+              activeSetIndex={currentIndex}
+              navigationDisabled={saving || stopwatchStartedAt !== null}
+              onSelectSet={viewSet}
+              weight={weight}
+              result={result}
+              progressiveTrainingEnabled={Boolean(
+                user?.trainingProfile.progressiveTrainingEnabled,
+              )}
+            />
           {isViewingPast || !restEndsAt ? (
             <View style={styles.logControls}>
               {viewedSet.targetUnit === "seconds" && !isViewingPast ? (
@@ -1232,24 +1233,48 @@ function CompactSetOverview({
   eyebrow: string;
   workoutSet: WorkoutView["sets"][number];
 }) {
+  const prescription = activeSetPrescription(workoutSet);
+  const guidance = buildCompactSetDetails({
+    primaryValues: [
+      prescription.target,
+      ...prescription.metadata.map((item) => item.text),
+    ],
+    details: [
+      { id: "load", label: "Load", value: workoutSet.loadInstruction },
+      { id: "cue", label: "Cue", value: workoutSet.exerciseInstructions },
+      { id: "set-note", label: "Set note", value: workoutSet.notes },
+    ],
+  });
   return (
     <>
       <Eyebrow>{eyebrow}</Eyebrow>
-      <View style={styles.setHeadingRow}>
-        <View style={styles.setHeadingCopy}>
-          <Heading size="medium">{workoutSet.exerciseName}</Heading>
+      <Heading size="medium">{workoutSet.exerciseName}</Heading>
+      <View
+        accessible
+        accessibilityLabel={prescription.accessibilityLabel}
+        style={styles.setSummary}
+      >
+        <Text style={styles.setMetricLabel}>Target</Text>
+        <View style={styles.setPrescription}>
+          <Text style={styles.setMetricValue}>{prescription.target}</Text>
+          {prescription.metadata.map((item) => (
+            <View key={item.text} style={styles.setPrescriptionMetadata}>
+              <Text aria-hidden style={styles.setMetricSeparator}>·</Text>
+              <Text style={styles.setMetricMeta}>{item.text}</Text>
+            </View>
+          ))}
         </View>
-        <Text style={styles.setMeta}>
-          {setTypeLabel(workoutSet.setType)} · Set {workoutSet.exerciseSetNumber} of{" "}
-          {workoutSet.exerciseSetTotal}
-        </Text>
       </View>
-      <View style={styles.setSummary}>
-        <View style={styles.setMetric}>
-          <Text style={styles.setMetricLabel}>Target</Text>
-          <Text style={styles.setMetricValue}>{workoutSet.target}</Text>
+      {guidance.length ? (
+        <View style={styles.setGuidance}>
+          {guidance.map((detail) => (
+            <Text key={detail.id} style={styles.setGuidanceText}>
+              <Text style={styles.setGuidanceLabel}>{detail.label}: </Text>
+              {detail.value}
+            </Text>
+          ))}
         </View>
-      </View>
+      ) : null}
     </>
   );
 }
@@ -1298,6 +1323,7 @@ function SetNavigator({
   onReturn: () => void;
 }) {
   const previousSet = sets[navigation.viewedIndex - 1];
+  const viewedSet = sets[navigation.viewedIndex];
   const nextSet = sets[navigation.viewedIndex + 1];
   const viewingPast = viewedSetPosition(navigation) === "past";
   const statusLabel = status === "Current"
@@ -1311,7 +1337,7 @@ function SetNavigator({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={previousSet
-            ? `Previous set, ${previousSet.exerciseName}, set ${previousSet.exerciseSetNumber}`
+            ? `Previous set, ${previousSet.exerciseName}, exercise set ${previousSet.exerciseSetNumber} of ${previousSet.exerciseSetTotal}`
             : "No previous logged set"}
           accessibilityState={{ disabled: disabled || !previousSet }}
           disabled={disabled || !previousSet}
@@ -1326,19 +1352,23 @@ function SetNavigator({
         </Pressable>
         <View
           accessible
-          accessibilityLabel={`${statusLabel}, set ${navigation.viewedIndex + 1} of ${navigation.activeIndex + 1} available`}
+          accessibilityLabel={viewedSet
+            ? `${statusLabel}, ${viewedSet.exerciseName}, exercise set ${viewedSet.exerciseSetNumber} of ${viewedSet.exerciseSetTotal}`
+            : statusLabel}
           accessibilityLiveRegion="polite"
           style={styles.setNavigatorStatus}
         >
           <Text style={styles.setNavigatorStatusLabel}>{statusLabel}</Text>
           <Text style={styles.setNavigatorPosition}>
-            {navigation.viewedIndex + 1} of {navigation.activeIndex + 1}
+            {viewedSet
+              ? `${viewedSet.exerciseSetNumber} of ${viewedSet.exerciseSetTotal}`
+              : "—"}
           </Text>
         </View>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={nextSet && navigation.viewedIndex < navigation.activeIndex
-            ? `Next set, ${nextSet.exerciseName}, set ${nextSet.exerciseSetNumber}`
+            ? `Next set, ${nextSet.exerciseName}, exercise set ${nextSet.exerciseSetNumber} of ${nextSet.exerciseSetTotal}`
             : "Already at the current set"}
           accessibilityState={{
             disabled: disabled || navigation.viewedIndex >= navigation.activeIndex,
@@ -1599,15 +1629,6 @@ function formatRestAccessibilityLabel(seconds: number) {
   return `Rest, ${parts.join(" ")} remaining`;
 }
 
-function setTypeLabel(type: string) {
-  if (type === "emom") return "EMOM";
-  if (type === "test") return "Test";
-  if (type === "warmup") return "Warm-up";
-  if (type === "failure") return "Failure";
-  if (type === "drop") return "Drop";
-  return "Working";
-}
-
 function loadLabel(type: string, unit: string) {
   if (type === "assistance") return `Assistance (${unit})`;
   if (type === "bodyweight" || type === "added") return `Added weight (${unit})`;
@@ -1697,10 +1718,9 @@ const styles = StyleSheet.create({
   completionSetStatus: { color: colors.text, fontSize: 12, fontWeight: "700" },
   completionSetRest: { color: colors.textDim, fontSize: 10 },
   completionActions: { gap: spacing.sm, paddingTop: spacing.sm },
-  topline: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.sm },
+  topline: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   exit: { color: colors.textMuted, fontSize: 12, fontWeight: "700" },
-  routineLabel: { color: colors.textDim, fontSize: 11, flex: 1, textAlign: "center" },
-  setCounter: { color: colors.text, fontSize: 12, fontWeight: "800", fontVariant: ["tabular-nums"] },
+  routineLabel: { color: colors.textDim, fontSize: 11, flex: 1, textAlign: "right" },
   progressTrack: { height: 5, borderRadius: radii.pill, backgroundColor: colors.surfaceRaised, overflow: "hidden" },
   progressValue: { height: "100%", backgroundColor: colors.accent, borderRadius: radii.pill },
   progressActions: {
@@ -2096,30 +2116,17 @@ const styles = StyleSheet.create({
   },
   returnToCurrentText: { color: colors.accent, fontSize: 12, fontWeight: "800" },
   navigationHint: { color: colors.textDim, fontSize: 11, lineHeight: 16, textAlign: "center" },
-  setHeadingRow: {
+  setSummary: {
+    minHeight: 44,
     flexDirection: "row",
     flexWrap: "wrap",
     alignItems: "center",
     justifyContent: "space-between",
     gap: spacing.sm,
+    paddingTop: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.borderStrong,
   },
-  setHeadingCopy: { flexGrow: 1, flexShrink: 1, minWidth: 180 },
-  setMeta: {
-    color: colors.textMuted,
-    fontSize: 11,
-    lineHeight: 16,
-    fontWeight: "800",
-    fontVariant: ["tabular-nums"],
-  },
-  setSummary: {
-    minHeight: 48,
-    justifyContent: "center",
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: radii.md,
-    backgroundColor: colors.background,
-  },
-  setMetric: { gap: 2 },
   setMetricLabel: {
     color: colors.textDim,
     fontSize: 9,
@@ -2128,7 +2135,39 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
     textTransform: "uppercase",
   },
-  setMetricValue: { color: colors.text, fontSize: 15, lineHeight: 20, fontWeight: "800" },
+  setMetricValue: {
+    color: colors.text,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: "800",
+    flexShrink: 1,
+  },
+  setPrescription: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: spacing.xs,
+  },
+  setPrescriptionMetadata: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    flexShrink: 1,
+  },
+  setMetricSeparator: { color: colors.textDim, fontSize: 12, lineHeight: 18 },
+  setMetricMeta: {
+    color: colors.textMuted,
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: "700",
+    flexShrink: 1,
+  },
+  setGuidance: { gap: spacing.xs },
+  setGuidanceText: { color: colors.textMuted, fontSize: 11, lineHeight: 16 },
+  setGuidanceLabel: { color: colors.textDim, fontWeight: "800" },
   logControls: {
     gap: spacing.md,
     paddingTop: spacing.md,
