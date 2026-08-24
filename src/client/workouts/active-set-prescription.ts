@@ -45,7 +45,7 @@ function rangeAccessibilityText(minimum: number | null, maximum: number | null) 
 function legacyRirAmount(effort: string) {
   const normalized = effort.trim();
   const amountPattern = "(?:≈\\s*)?\\d+(?:\\.\\d+)?(?:\\s*[–-]\\s*\\d+(?:\\.\\d+)?)?";
-  const prefixMatch = normalized.match(new RegExp(`^RIR\\s+(${amountPattern})$`, "iu"));
+  const prefixMatch = normalized.match(new RegExp(`^RIR\\s*:?\\s*(${amountPattern})$`, "iu"));
   const suffixMatch = normalized.match(new RegExp(`^(${amountPattern})\\s+RIR$`, "iu"));
   return (prefixMatch?.[1] ?? suffixMatch?.[1] ?? null)?.replace(/\s+/gu, "") ?? null;
 }

@@ -68,3 +68,47 @@ test("does not hide similar but distinct coaching cues", () => {
 
   assert.equal(details.length, 2);
 });
+
+test("removes a standalone legacy RIR cue when RIR is already in the target row", () => {
+  for (const value of ["≈2 RIR", "≈ 2 RIR", "RIR: 2", "1-2 RIR.", "RIR 1–2"]) {
+    assert.deepEqual(buildCompactSetDetails({
+      primaryValues: ["6–8 reps", "RIR 2"],
+      details: [{ id: "cue", label: "Cue", value }],
+    }), []);
+  }
+});
+
+test("removes only repeated RIR clauses from mixed guidance", () => {
+  assert.deepEqual(buildCompactSetDetails({
+    primaryValues: ["6–8 reps", "RIR 2"],
+    details: [
+      { id: "cue", label: "Cue", value: "≈2 RIR · Keep ribs down; pause at the top" },
+    ],
+  }), [{
+    id: "cue",
+    label: "Cue",
+    value: "Keep ribs down · pause at the top",
+  }]);
+});
+
+test("keeps real coaching prose that happens to mention RIR", () => {
+  const values = [
+    "Stop if form breaks before 2 RIR",
+    "2 RIR with a slow eccentric",
+  ];
+  assert.deepEqual(buildCompactSetDetails({
+    primaryValues: ["6–8 reps", "RIR 2"],
+    details: values.map((value, index) => ({
+      id: `cue-${index}`,
+      label: "Cue",
+      value,
+    })),
+  }).map((detail) => detail.value), values);
+});
+
+test("keeps RIR guidance when the target row has no RIR metadata", () => {
+  assert.deepEqual(buildCompactSetDetails({
+    primaryValues: ["6–8 reps"],
+    details: [{ id: "cue", label: "Cue", value: "≈2 RIR" }],
+  }), [{ id: "cue", label: "Cue", value: "≈2 RIR" }]);
+});

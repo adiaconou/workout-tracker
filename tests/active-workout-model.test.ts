@@ -7,6 +7,7 @@ import {
   elapsedFromAnchor,
   finishEarlySuccessState,
   initialSetNavigation,
+  moveViewedExercise,
   moveViewedSet,
   pendingFinishError,
   prepareSetRecord,
@@ -246,7 +247,7 @@ test("set navigation starts at the authoritative active set", () => {
   });
 });
 
-test("browsing is limited to logged sets and the current active set", () => {
+test("browsing can preview every set without changing the active set", () => {
   const navigation = initialSetNavigation(3, 6);
   assert.deepEqual(viewSetAtIndex(navigation, 1.9, 6), {
     activeIndex: 3,
@@ -258,7 +259,7 @@ test("browsing is limited to logged sets and the current active set", () => {
   });
   assert.deepEqual(viewSetAtIndex(navigation, 5, 6), {
     activeIndex: 3,
-    viewedIndex: 3,
+    viewedIndex: 5,
   });
   assert.deepEqual(viewSetAtIndex(navigation, Number.POSITIVE_INFINITY, 6), {
     activeIndex: 3,
@@ -268,12 +269,89 @@ test("browsing is limited to logged sets and the current active set", () => {
     activeIndex: 3,
     viewedIndex: 1,
   });
-  assert.deepEqual(moveViewedSet(navigation, 1, 6), navigation);
+  assert.deepEqual(moveViewedSet(navigation, 1, 6), {
+    activeIndex: 3,
+    viewedIndex: 4,
+  });
 });
 
-test("navigation distinguishes past results from the actionable current set", () => {
+test("navigation distinguishes past, actionable current, and future preview sets", () => {
   assert.equal(viewedSetPosition({ activeIndex: 3, viewedIndex: 2 }), "past");
   assert.equal(viewedSetPosition({ activeIndex: 3, viewedIndex: 3 }), "current");
+  assert.equal(viewedSetPosition({ activeIndex: 3, viewedIndex: 4 }), "future");
+});
+
+test("exercise navigation opens the first set in unique exercise order", () => {
+  const sets = [
+    { exerciseOrder: 1 },
+    { exerciseOrder: 2 },
+    { exerciseOrder: 1 },
+    { exerciseOrder: 2 },
+    { exerciseOrder: 3 },
+  ];
+  const current = { activeIndex: 2, viewedIndex: 2 };
+
+  assert.deepEqual(moveViewedExercise(current, sets, 1), {
+    activeIndex: 2,
+    viewedIndex: 1,
+  });
+  assert.deepEqual(moveViewedExercise(current, sets, 2), {
+    activeIndex: 2,
+    viewedIndex: 4,
+  });
+  assert.deepEqual(moveViewedExercise(
+    { activeIndex: 2, viewedIndex: 3 },
+    sets,
+    -1,
+  ), current);
+});
+
+test("exercise navigation opens a future exercise at set one", () => {
+  const sets = [
+    { exerciseOrder: 1 },
+    { exerciseOrder: 1 },
+    { exerciseOrder: 1 },
+    { exerciseOrder: 2 },
+    { exerciseOrder: 2 },
+  ];
+
+  assert.deepEqual(moveViewedExercise(
+    { activeIndex: 2, viewedIndex: 2 },
+    sets,
+    1,
+  ), {
+    activeIndex: 2,
+    viewedIndex: 3,
+  });
+});
+
+test("exercise navigation selects the authoritative set when returning to its exercise", () => {
+  const sets = [
+    { exerciseOrder: 1 },
+    { exerciseOrder: 2 },
+    { exerciseOrder: 1 },
+    { exerciseOrder: 2 },
+  ];
+
+  assert.deepEqual(moveViewedExercise(
+    { activeIndex: 2, viewedIndex: 3 },
+    sets,
+    -1,
+  ), {
+    activeIndex: 2,
+    viewedIndex: 2,
+  });
+});
+
+test("exercise navigation keeps bounds and invalid input unchanged", () => {
+  const sets = [{ exerciseOrder: 1 }, { exerciseOrder: 2 }];
+  const first = { activeIndex: 0, viewedIndex: 0 };
+  const last = { activeIndex: 0, viewedIndex: 1 };
+
+  assert.equal(moveViewedExercise(first, sets, -1), first);
+  assert.equal(moveViewedExercise(last, sets, 1), last);
+  assert.equal(moveViewedExercise(first, sets, Number.NaN), first);
+  assert.equal(moveViewedExercise(first, [], 1), first);
 });
 
 test("refresh follows an advancing current set", () => {
@@ -297,6 +375,18 @@ test("refresh preserves a browsed past set by identity", () => {
   }), {
     activeIndex: 3,
     viewedIndex: 2,
+  });
+});
+
+test("refresh preserves a future preview by identity", () => {
+  assert.deepEqual(reconcileSetNavigation({
+    navigation: { activeIndex: 1, viewedIndex: 3 },
+    previousSetIds: ["a", "b", "c", "d"],
+    nextSetIds: ["a", "d", "b", "c", "e"],
+    nextActiveIndex: 2,
+  }), {
+    activeIndex: 2,
+    viewedIndex: 1,
   });
 });
 

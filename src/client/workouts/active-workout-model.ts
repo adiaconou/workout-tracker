@@ -36,7 +36,11 @@ export type WorkoutSetNavigation = {
   viewedIndex: number;
 };
 
-export type WorkoutSetNavigationPosition = "past" | "current";
+export type WorkoutSetNavigationPosition = "past" | "current" | "future";
+
+export type ExerciseNavigationSet = {
+  exerciseOrder: number;
+};
 
 export type SupersetContextSet = {
   supersetGroup?: string | null;
@@ -177,10 +181,6 @@ function clampIndex(index: number, maximum: number) {
   return Math.min(Math.max(0, Math.trunc(index)), maximum);
 }
 
-function accessibleSetIndex(index: number, activeIndex: number, setCount: number) {
-  return clampIndex(index, Math.min(activeIndex, lastSetIndex(setCount)));
-}
-
 export function initialSetNavigation(
   activeIndex: number,
   setCount: number,
@@ -199,11 +199,7 @@ export function viewSetAtIndex(
 ): WorkoutSetNavigation {
   return {
     ...navigation,
-    viewedIndex: accessibleSetIndex(
-      requestedIndex,
-      navigation.activeIndex,
-      setCount,
-    ),
+    viewedIndex: clampIndex(requestedIndex, lastSetIndex(setCount)),
   };
 }
 
@@ -219,10 +215,43 @@ export function moveViewedSet(
   );
 }
 
+export function moveViewedExercise(
+  navigation: WorkoutSetNavigation,
+  sets: readonly ExerciseNavigationSet[],
+  offset: number,
+): WorkoutSetNavigation {
+  const viewedSet = sets[navigation.viewedIndex];
+  const normalizedOffset = Number.isFinite(offset) ? Math.trunc(offset) : 0;
+  if (!viewedSet || normalizedOffset === 0) return navigation;
+
+  const exerciseOrders = Array.from(new Set(sets.map((set) => set.exerciseOrder)));
+  const currentExercisePosition = exerciseOrders.indexOf(viewedSet.exerciseOrder);
+  const targetExercisePosition = currentExercisePosition + normalizedOffset;
+  if (
+    currentExercisePosition < 0
+    || targetExercisePosition < 0
+    || targetExercisePosition >= exerciseOrders.length
+  ) return navigation;
+
+  const targetExerciseOrder = exerciseOrders[targetExercisePosition];
+  const targetIndexes = sets.reduce<number[]>((indexes, set, index) => {
+    if (set.exerciseOrder === targetExerciseOrder) indexes.push(index);
+    return indexes;
+  }, []);
+  if (targetIndexes.includes(navigation.activeIndex)) {
+    return { ...navigation, viewedIndex: navigation.activeIndex };
+  }
+  return {
+    ...navigation,
+    viewedIndex: targetIndexes[0],
+  };
+}
+
 export function viewedSetPosition(
   navigation: WorkoutSetNavigation,
 ): WorkoutSetNavigationPosition {
-  return navigation.viewedIndex < navigation.activeIndex ? "past" : "current";
+  if (navigation.viewedIndex < navigation.activeIndex) return "past";
+  return navigation.viewedIndex > navigation.activeIndex ? "future" : "current";
 }
 
 export function reconcileSetNavigation(input: {

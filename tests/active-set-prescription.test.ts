@@ -64,6 +64,10 @@ test("structured RIR wins over legacy effort while legacy RIR remains visible", 
     "RIR 1–2",
   );
   assert.equal(
+    activeSetPrescription(prescription({ effort: "RIR: 2" })).metadata[0]?.text,
+    "RIR 2",
+  );
+  assert.equal(
     activeSetPrescription(prescription({ effort: "Controlled reps" })).metadata.length,
     0,
   );

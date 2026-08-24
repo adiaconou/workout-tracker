@@ -67,7 +67,7 @@ import {
   elapsedFromAnchor,
   finishEarlySuccessState,
   initialSetNavigation,
-  moveViewedSet,
+  moveViewedExercise,
   pendingFinishError,
   prepareSetRecord,
   reconcileSetNavigation,
@@ -213,7 +213,15 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
 
   const currentSet = workout?.sets[currentIndex];
   const viewedSet = workout?.sets[viewedIndex];
-  const isViewingPast = viewedSetPosition(setNavigation) === "past";
+  const viewedPosition = viewedSetPosition(setNavigation);
+  const isViewingPast = viewedPosition === "past";
+  const isViewingCurrent = viewedPosition === "current";
+  const isViewingFuture = viewedPosition === "future";
+  const returnToCurrentLabel = isViewingCurrent
+    ? null
+    : viewedSet?.exerciseOrder === currentSet?.exerciseOrder
+      ? "Return to current set"
+      : "Return to current exercise";
   const viewedRecordedPerformance = viewedSet
     ? workout?.recordedPerformanceBySetId[viewedSet.id]
     : undefined;
@@ -225,9 +233,6 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
     () => Array.from(new Set(workout?.sets.map((set) => set.exerciseOrder) ?? [])),
     [workout?.sets],
   );
-  const exercisePosition = viewedSet
-    ? exerciseOrders.indexOf(viewedSet.exerciseOrder) + 1
-    : exerciseOrders.length;
   const previousExerciseSets = viewedSet
     ? workout?.previousPerformanceByExercise[viewedSet.exerciseOrder]?.sets ?? []
     : [];
@@ -322,7 +327,7 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   }, [restEndsAt]);
 
   async function recordSet(status: "Completed" | "Skipped") {
-    if (!workout || !currentSet || isViewingPast || saving) return;
+    if (!workout || !currentSet || !isViewingCurrent || saving) return;
     setSaving(true);
     setError("");
     setSaveState("");
@@ -429,7 +434,7 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   }
 
   async function skipRest() {
-    if (!workout || saving || isViewingPast || !restEndsAt) return;
+    if (!workout || saving || !isViewingCurrent || !restEndsAt) return;
     setSaving(true);
     setError("");
     try {
@@ -466,6 +471,7 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   }
 
   function startStopwatch() {
+    if (!isViewingCurrent) return;
     setStopwatchStartedAt(Date.now() - stopwatchElapsedMs);
   }
 
@@ -727,9 +733,9 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
     }
   }
 
-  function moveSetView(offset: number) {
+  function moveExerciseView(offset: number) {
     if (!workout || saving || stopwatchStartedAt !== null) return;
-    setSetNavigation((current) => moveViewedSet(current, offset, workout.sets.length));
+    setSetNavigation((current) => moveViewedExercise(current, workout.sets, offset));
   }
 
   function viewSet(globalIndex: number) {
@@ -827,7 +833,7 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
           {restEndsAt ? (
             <RestTimerIsland
               secondsRemaining={secondsRemaining}
-              viewingPast={isViewingPast}
+              viewingCurrent={isViewingCurrent}
               saving={saving}
               onSkip={() => void skipRest()}
             />
@@ -836,24 +842,27 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
             {viewedSupersetContext ? (
               <SupersetBanner context={viewedSupersetContext} />
             ) : null}
-            <SetNavigator
+            <ExerciseNavigator
               navigation={setNavigation}
               sets={workout.sets}
-              status={isViewingPast ? viewedRecordedPerformance?.status ?? "Completed" : "Current"}
               disabled={saving || stopwatchStartedAt !== null}
-              onPrevious={() => moveSetView(-1)}
-              onNext={() => moveSetView(1)}
-              onReturn={returnToCurrentSet}
+              onPrevious={() => moveExerciseView(-1)}
+              onNext={() => moveExerciseView(1)}
             />
             {stopwatchStartedAt !== null ? (
-              <Text style={styles.navigationHint}>Pause the stopwatch to review another set.</Text>
+              <Text style={styles.navigationHint}>
+                Pause the stopwatch to review another exercise or set.
+              </Text>
             ) : null}
             <CompactSetOverview
-              eyebrow={[
-                restEndsAt && !isViewingPast ? "Next" : null,
-                `Exercise ${exercisePosition} of ${exerciseOrders.length}`,
+              qualifier={[
+                restEndsAt && isViewingCurrent ? "Next" : null,
                 specialSetTypeLabel(viewedSet.setType),
               ].filter(Boolean).join(" · ")}
+              returnLabel={returnToCurrentLabel}
+              returnAccessibilityLabel={`${returnToCurrentLabel ?? "Return to current exercise"}, ${currentSet?.exerciseName ?? "current workout position"}`}
+              returnDisabled={saving || stopwatchStartedAt !== null}
+              onReturn={returnToCurrentSet}
               workoutSet={viewedSet}
             />
             <ActiveSetComparison
@@ -870,9 +879,9 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
                 user?.trainingProfile.progressiveTrainingEnabled,
               )}
             />
-          {isViewingPast || !restEndsAt ? (
+          {!isViewingFuture && (isViewingPast || !restEndsAt) ? (
             <View style={styles.logControls}>
-              {viewedSet.targetUnit === "seconds" && !isViewingPast ? (
+              {viewedSet.targetUnit === "seconds" && isViewingCurrent ? (
                 <SetStopwatch
                   elapsedMs={stopwatchElapsedMs}
                   running={stopwatchStartedAt !== null}
@@ -1031,12 +1040,12 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
 
 function RestTimerIsland({
   secondsRemaining,
-  viewingPast,
+  viewingCurrent,
   saving,
   onSkip,
 }: {
   secondsRemaining: number;
-  viewingPast: boolean;
+  viewingCurrent: boolean;
   saving: boolean;
   onSkip: () => void;
 }) {
@@ -1053,7 +1062,7 @@ function RestTimerIsland({
         {formatTimer(secondsRemaining)}
       </Text>
       <View style={styles.restIslandRail}>
-        {viewingPast ? (
+        {!viewingCurrent ? (
           <Text
             accessibilityLabel="Current rest continues"
             style={styles.restIslandPastLabel}
@@ -1227,10 +1236,18 @@ function CompletionExerciseTimingCard({
 }
 
 function CompactSetOverview({
-  eyebrow,
+  qualifier,
+  returnLabel,
+  returnAccessibilityLabel,
+  returnDisabled,
+  onReturn,
   workoutSet,
 }: {
-  eyebrow: string;
+  qualifier: string;
+  returnLabel: string | null;
+  returnAccessibilityLabel: string;
+  returnDisabled: boolean;
+  onReturn: () => void;
   workoutSet: WorkoutView["sets"][number];
 }) {
   const prescription = activeSetPrescription(workoutSet);
@@ -1247,8 +1264,27 @@ function CompactSetOverview({
   });
   return (
     <>
-      <Eyebrow>{eyebrow}</Eyebrow>
-      <Heading size="medium">{workoutSet.exerciseName}</Heading>
+      {qualifier ? <Eyebrow>{qualifier}</Eyebrow> : null}
+      <View style={styles.setHeadingBlock}>
+        <Heading size="medium">{workoutSet.exerciseName}</Heading>
+        {returnLabel ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={returnAccessibilityLabel}
+            accessibilityState={{ disabled: returnDisabled }}
+            disabled={returnDisabled}
+            hitSlop={8}
+            onPress={onReturn}
+            style={({ pressed }) => [
+              styles.returnToCurrentInline,
+              returnDisabled && styles.setNavigatorButtonDisabled,
+              pressed && styles.setNavigatorButtonPressed,
+            ]}
+          >
+            <Text style={styles.returnToCurrentText}>{returnLabel} →</Text>
+          </Pressable>
+        ) : null}
+      </View>
       <View
         accessible
         accessibilityLabel={prescription.accessibilityLabel}
@@ -1305,46 +1341,44 @@ function SupersetBanner({ context }: { context: SupersetContext }) {
   );
 }
 
-function SetNavigator({
+function ExerciseNavigator({
   navigation,
   sets,
-  status,
   disabled,
   onPrevious,
   onNext,
-  onReturn,
 }: {
   navigation: WorkoutSetNavigation;
   sets: WorkoutView["sets"];
-  status: "Completed" | "Skipped" | "Current";
   disabled: boolean;
   onPrevious: () => void;
   onNext: () => void;
-  onReturn: () => void;
 }) {
-  const previousSet = sets[navigation.viewedIndex - 1];
   const viewedSet = sets[navigation.viewedIndex];
-  const nextSet = sets[navigation.viewedIndex + 1];
-  const viewingPast = viewedSetPosition(navigation) === "past";
-  const statusLabel = status === "Current"
-    ? "Current set"
-    : status === "Skipped"
-      ? "Skipped set"
-      : "Logged set";
+  const exerciseOrders = Array.from(new Set(sets.map((set) => set.exerciseOrder)));
+  const exercisePosition = viewedSet
+    ? exerciseOrders.indexOf(viewedSet.exerciseOrder)
+    : -1;
+  const previousExerciseOrder = exerciseOrders[exercisePosition - 1];
+  const nextExerciseOrder = exerciseOrders[exercisePosition + 1];
+  const previousExercise = sets.find(
+    (set) => set.exerciseOrder === previousExerciseOrder,
+  );
+  const nextExercise = sets.find((set) => set.exerciseOrder === nextExerciseOrder);
   return (
     <View style={styles.setNavigator}>
       <View style={styles.setNavigatorRow}>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={previousSet
-            ? `Previous set, ${previousSet.exerciseName}, exercise set ${previousSet.exerciseSetNumber} of ${previousSet.exerciseSetTotal}`
-            : "No previous logged set"}
-          accessibilityState={{ disabled: disabled || !previousSet }}
-          disabled={disabled || !previousSet}
+          accessibilityLabel={previousExercise
+            ? `Previous exercise, ${previousExercise.exerciseName}`
+            : "No previous exercise"}
+          accessibilityState={{ disabled: disabled || !previousExercise }}
+          disabled={disabled || !previousExercise}
           onPress={onPrevious}
           style={({ pressed }) => [
             styles.setNavigatorButton,
-            (disabled || !previousSet) && styles.setNavigatorButtonDisabled,
+            (disabled || !previousExercise) && styles.setNavigatorButtonDisabled,
             pressed && styles.setNavigatorButtonPressed,
           ]}
         >
@@ -1353,53 +1387,35 @@ function SetNavigator({
         <View
           accessible
           accessibilityLabel={viewedSet
-            ? `${statusLabel}, ${viewedSet.exerciseName}, exercise set ${viewedSet.exerciseSetNumber} of ${viewedSet.exerciseSetTotal}`
-            : statusLabel}
+            ? `Exercise ${exercisePosition + 1} of ${exerciseOrders.length}, ${viewedSet.exerciseName}`
+            : "Exercise"}
           accessibilityLiveRegion="polite"
           style={styles.setNavigatorStatus}
         >
-          <Text style={styles.setNavigatorStatusLabel}>{statusLabel}</Text>
+          <Text style={styles.setNavigatorStatusLabel}>Exercise</Text>
           <Text style={styles.setNavigatorPosition}>
             {viewedSet
-              ? `${viewedSet.exerciseSetNumber} of ${viewedSet.exerciseSetTotal}`
+              ? `${exercisePosition + 1} of ${exerciseOrders.length}`
               : "—"}
           </Text>
         </View>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={nextSet && navigation.viewedIndex < navigation.activeIndex
-            ? `Next set, ${nextSet.exerciseName}, exercise set ${nextSet.exerciseSetNumber} of ${nextSet.exerciseSetTotal}`
-            : "Already at the current set"}
-          accessibilityState={{
-            disabled: disabled || navigation.viewedIndex >= navigation.activeIndex,
-          }}
-          disabled={disabled || navigation.viewedIndex >= navigation.activeIndex}
+          accessibilityLabel={nextExercise
+            ? `Next exercise, ${nextExercise.exerciseName}`
+            : "No next exercise"}
+          accessibilityState={{ disabled: disabled || !nextExercise }}
+          disabled={disabled || !nextExercise}
           onPress={onNext}
           style={({ pressed }) => [
             styles.setNavigatorButton,
-            (disabled || navigation.viewedIndex >= navigation.activeIndex)
-              && styles.setNavigatorButtonDisabled,
+            (disabled || !nextExercise) && styles.setNavigatorButtonDisabled,
             pressed && styles.setNavigatorButtonPressed,
           ]}
         >
           <Text style={styles.setNavigatorButtonText}>Next ›</Text>
         </Pressable>
       </View>
-      {viewingPast ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Return to the current set"
-          disabled={disabled}
-          onPress={onReturn}
-          style={({ pressed }) => [
-            styles.returnToCurrent,
-            disabled && styles.setNavigatorButtonDisabled,
-            pressed && styles.setNavigatorButtonPressed,
-          ]}
-        >
-          <Text style={styles.returnToCurrentText}>Return to current set →</Text>
-        </Pressable>
-      ) : null}
     </View>
   );
 }
@@ -2106,16 +2122,13 @@ const styles = StyleSheet.create({
     fontVariant: ["tabular-nums"],
     textAlign: "center",
   },
-  returnToCurrent: {
-    minHeight: 42,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: spacing.md,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.borderStrong,
+  returnToCurrentInline: {
+    alignSelf: "flex-start",
+    paddingVertical: spacing.xs,
   },
   returnToCurrentText: { color: colors.accent, fontSize: 12, fontWeight: "800" },
   navigationHint: { color: colors.textDim, fontSize: 11, lineHeight: 16, textAlign: "center" },
+  setHeadingBlock: { gap: spacing.xs },
   setSummary: {
     minHeight: 44,
     flexDirection: "row",

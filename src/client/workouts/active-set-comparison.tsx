@@ -49,12 +49,12 @@ export function ActiveSetComparison({
   const currentValues = useMemo(() => sets.map((set) => {
     const recorded = recordedPerformanceBySetId[set.id];
     if (recorded) return formatSetComparisonPerformance(set, recorded);
-    if (set.id !== selectedSetId) return "—";
+    if (set.id !== selectedSetId || set.globalIndex !== activeSetIndex) return "—";
     return formatSetComparisonPerformance(
       set,
       liveSetComparisonPerformance(set, weight, result),
     );
-  }), [recordedPerformanceBySetId, result, selectedSetId, sets, weight]);
+  }), [activeSetIndex, recordedPerformanceBySetId, result, selectedSetId, sets, weight]);
 
   const alignedPreviousSets = useMemo(() => alignPreviousExerciseSets(
     sets.map((set) => ({
@@ -117,10 +117,18 @@ export function ActiveSetComparison({
       >
         {sets.map((set, index) => {
           const active = set.id === selectedSetId;
-          const selectable = set.globalIndex <= activeSetIndex;
           const recorded = recordedPerformanceBySetId[set.id];
           const skipped = recorded?.status === "Skipped";
           const completed = recorded?.status === "Completed";
+          const setState = skipped
+            ? "skipped"
+            : completed
+              ? "logged"
+              : set.globalIndex === activeSetIndex
+                ? "current"
+                : set.globalIndex > activeSetIndex
+                  ? "upcoming"
+                  : "not logged";
           return (
             <View key={set.id} style={styles.column}>
               <Text style={[styles.columnLabel, active && styles.columnLabelActive]}>
@@ -128,9 +136,9 @@ export function ActiveSetComparison({
               </Text>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel={`View this workout, set ${index + 1}${active ? ", selected" : ""}, ${currentValues[index]}`}
-                accessibilityState={{ disabled: !selectable || navigationDisabled, selected: active }}
-                disabled={!selectable || navigationDisabled}
+                accessibilityLabel={`View ${set.exerciseName}, set ${index + 1} of ${sets.length}, ${setState}${active ? ", selected" : ""}, ${currentValues[index]}`}
+                accessibilityState={{ disabled: navigationDisabled, selected: active }}
+                disabled={navigationDisabled}
                 onPress={() => onSelectSet(set.globalIndex)}
                 style={({ pressed }) => [
                   styles.cell,
@@ -138,7 +146,6 @@ export function ActiveSetComparison({
                   completed && styles.cellCompleted,
                   skipped && styles.cellSkipped,
                   pressed && styles.cellPressed,
-                  !selectable && styles.cellUnavailable,
                 ]}
               >
                 <Text
@@ -248,7 +255,6 @@ const styles = StyleSheet.create({
   cellCompleted: { backgroundColor: colors.successSurface },
   cellSkipped: { backgroundColor: colors.surfaceRaised },
   cellPressed: { opacity: 0.72 },
-  cellUnavailable: { opacity: 0.45 },
   cellText: {
     color: colors.textMuted,
     fontSize: 10,
