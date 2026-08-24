@@ -72,6 +72,13 @@ function rirMetadata(set: PrescriptionSet): PrescriptionMetadata | null {
   };
 }
 
+function setTypeMetadata(set: PrescriptionSet): PrescriptionMetadata | null {
+  const targetAlreadyNamesWarmup = /\bwarm[\s\p{Pd}]*up\b/iu.test(set.target);
+  return set.setType === "warmup" && !targetAlreadyNamesWarmup
+    ? { text: specialSetTypeLabels.warmup, accessibilityText: "Warm-up set" }
+    : null;
+}
+
 function sideModeMetadata(set: PrescriptionSet): PrescriptionMetadata | null {
   const target = set.target.toLowerCase();
   if (set.sideMode === "per_side") {
@@ -108,6 +115,7 @@ function tempoMetadata(tempo: string | null | undefined): PrescriptionMetadata |
 export function activeSetPrescription(set: PrescriptionSet): ActiveSetPrescription {
   const target = set.target.trim();
   const metadata = [
+    setTypeMetadata(set),
     rirMetadata(set),
     sideModeMetadata(set),
     tempoMetadata(set.tempo),
@@ -124,5 +132,7 @@ export function activeSetPrescription(set: PrescriptionSet): ActiveSetPrescripti
 }
 
 export function specialSetTypeLabel(setType: SetType) {
-  return setType === "regular" ? null : specialSetTypeLabels[setType];
+  return setType === "regular" || setType === "warmup"
+    ? null
+    : specialSetTypeLabels[setType];
 }

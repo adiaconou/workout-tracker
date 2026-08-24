@@ -1250,6 +1250,10 @@ function CompactSetOverview({
   onReturn: () => void;
   workoutSet: WorkoutView["sets"][number];
 }) {
+  const [returnFocused, setReturnFocused] = useState(false);
+  useEffect(() => {
+    setReturnFocused(false);
+  }, [returnLabel]);
   const prescription = activeSetPrescription(workoutSet);
   const guidance = buildCompactSetDetails({
     primaryValues: [
@@ -1273,12 +1277,15 @@ function CompactSetOverview({
             accessibilityLabel={returnAccessibilityLabel}
             accessibilityState={{ disabled: returnDisabled }}
             disabled={returnDisabled}
-            hitSlop={8}
+            hitSlop={10}
+            onBlur={() => setReturnFocused(false)}
+            onFocus={() => setReturnFocused(true)}
             onPress={onReturn}
             style={({ pressed }) => [
               styles.returnToCurrentInline,
               returnDisabled && styles.setNavigatorButtonDisabled,
               pressed && styles.setNavigatorButtonPressed,
+              returnFocused && Platform.OS === "web" && styles.returnToCurrentFocused,
             ]}
           >
             <Text style={styles.returnToCurrentText}>{returnLabel} →</Text>
@@ -2124,9 +2131,22 @@ const styles = StyleSheet.create({
   },
   returnToCurrentInline: {
     alignSelf: "flex-start",
+    minHeight: 44,
+    justifyContent: "center",
     paddingVertical: spacing.xs,
   },
-  returnToCurrentText: { color: colors.accent, fontSize: 12, fontWeight: "800" },
+  returnToCurrentText: {
+    color: colors.textMuted,
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: "700",
+  },
+  returnToCurrentFocused: {
+    outlineColor: colors.accent,
+    outlineOffset: 2,
+    outlineStyle: "solid",
+    outlineWidth: 2,
+  },
   navigationHint: { color: colors.textDim, fontSize: 11, lineHeight: 16, textAlign: "center" },
   setHeadingBlock: { gap: spacing.xs },
   setSummary: {

@@ -73,8 +73,8 @@ test("structured RIR wins over legacy effort while legacy RIR remains visible", 
   );
   assert.equal(activeSetPrescription(prescription({ effort: "No RIR" })).metadata.length, 0);
   assert.equal(
-    activeSetPrescription(prescription({ effort: "2 RIR", setType: "warmup" })).metadata.length,
-    0,
+    activeSetPrescription(prescription({ effort: "2 RIR", setType: "warmup" })).metadata[0]?.text,
+    "Warm-up",
   );
   assert.equal(
     activeSetPrescription(prescription({ effort: "2 RIR", setType: "emom" })).metadata[0]?.text,
@@ -139,11 +139,36 @@ test("tempo joins the compact metadata without repeating its label", () => {
   });
 });
 
-test("only non-default set types receive a visible qualifier", () => {
+test("warm-up moves into metadata while other special set types remain qualifiers", () => {
   assert.equal(specialSetTypeLabel("regular"), null);
-  assert.equal(specialSetTypeLabel("warmup"), "Warm-up");
+  assert.equal(specialSetTypeLabel("warmup"), null);
   assert.equal(specialSetTypeLabel("failure"), "Failure");
   assert.equal(specialSetTypeLabel("drop"), "Drop");
   assert.equal(specialSetTypeLabel("emom"), "EMOM");
   assert.equal(specialSetTypeLabel("test"), "Test");
+  assert.deepEqual(activeSetPrescription(prescription({ setType: "warmup" })), {
+    target: "6–8 reps",
+    metadata: [{
+      text: "Warm-up",
+      accessibilityText: "Warm-up set",
+    }],
+    accessibilityLabel: "Target, 6–8 reps, Warm-up set",
+  });
+  assert.deepEqual(
+    activeSetPrescription(prescription({
+      setType: "warmup",
+      targetRirMin: 2,
+      targetRirMax: 2,
+      tempo: "3-1-1",
+    })).metadata.map((item) => item.text),
+    ["Warm-up", "RIR 2", "Tempo 3-1-1"],
+  );
+  assert.deepEqual(activeSetPrescription(prescription({
+    setType: "warmup",
+    target: "Warm-up · 10 reps",
+  })), {
+    target: "Warm-up · 10 reps",
+    metadata: [],
+    accessibilityLabel: "Target, Warm-up · 10 reps",
+  });
 });
