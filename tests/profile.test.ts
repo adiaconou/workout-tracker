@@ -78,7 +78,12 @@ test("runtime schema upgrade adds profile and workout weight-source columns", as
       .all<{ name: string }>()).results.map((column) => column.name);
     const workoutColumns = (await d1.prepare("PRAGMA table_info(workout_sessions)")
       .all<{ name: string }>()).results.map((column) => column.name);
-    for (const column of ["height_cm", "body_weight_kg", "measurement_system"]) {
+    for (const column of [
+      "height_cm",
+      "body_weight_kg",
+      "measurement_system",
+      "progressive_training_enabled",
+    ]) {
       assert.ok(appUserColumns.includes(column));
     }
     assert.ok(workoutColumns.includes("body_weight_source"));

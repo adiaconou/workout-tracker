@@ -40,15 +40,19 @@ export const equipmentOptions: ReadonlyArray<{
 export type TrainingProfile = {
   equipment: EquipmentId[];
   sessionDurationMin: WorkoutDurationMinutes;
+  progressiveTrainingEnabled: boolean;
   onboardingCompletedAt: string | null;
   onboardingCompleted: boolean;
 };
 
-export type TrainingProfileInput = Pick<TrainingProfile, "equipment" | "sessionDurationMin">;
+export type TrainingProfileInput = Pick<TrainingProfile, "equipment" | "sessionDurationMin"> & {
+  progressiveTrainingEnabled?: boolean;
+};
 
 export type StoredTrainingProfile = {
   equipmentPreferencesJson?: unknown;
   preferredWorkoutDurationMin?: unknown;
+  progressiveTrainingEnabled?: unknown;
   onboardingVersion?: unknown;
   onboardingCompletedAt?: unknown;
 };
@@ -116,6 +120,7 @@ export function trainingProfileFromStored(input: StoredTrainingProfile): Trainin
     sessionDurationMin: durationSet.has(preferredDuration)
       ? preferredDuration as WorkoutDurationMinutes
       : legacyWorkoutDurationMinutes,
+    progressiveTrainingEnabled: Number(input.progressiveTrainingEnabled) === 1,
     onboardingCompletedAt: typeof input.onboardingCompletedAt === "string" && input.onboardingCompletedAt
       ? input.onboardingCompletedAt
       : null,
@@ -136,7 +141,11 @@ export function validateTrainingProfileInput(input: unknown): TrainingProfileInp
     throw new Error("Training preferences must be a JSON object.");
   }
   const record = input as Record<string, unknown>;
-  const allowedFields = new Set(["equipment", "sessionDurationMin"]);
+  const allowedFields = new Set([
+    "equipment",
+    "sessionDurationMin",
+    "progressiveTrainingEnabled",
+  ]);
   const unsupported = Object.keys(record).find((key) => !allowedFields.has(key));
   if (unsupported) throw new Error(`Training preference field \"${unsupported}\" is unsupported.`);
   if (!Array.isArray(record.equipment) || record.equipment.length === 0) {
@@ -153,9 +162,18 @@ export function validateTrainingProfileInput(input: unknown): TrainingProfileInp
   if (!durationSet.has(duration)) {
     throw new Error("Workout duration must be 30, 45, 60, 75, or 90 minutes.");
   }
+  if (
+    Object.hasOwn(record, "progressiveTrainingEnabled")
+    && typeof record.progressiveTrainingEnabled !== "boolean"
+  ) {
+    throw new Error("Progressive training must be enabled or disabled.");
+  }
   return {
     equipment: normalizedEquipment,
     sessionDurationMin: duration as WorkoutDurationMinutes,
+    ...(typeof record.progressiveTrainingEnabled === "boolean"
+      ? { progressiveTrainingEnabled: record.progressiveTrainingEnabled }
+      : {}),
   };
 }
 

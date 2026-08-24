@@ -30,7 +30,10 @@ export async function handleOnboardingRequest(
     const firstCompletion = !isTrainingProfileComplete(user.trainingProfile);
     const now = new Date().toISOString();
     const trainingProfile: TrainingProfile = {
-      ...input,
+      equipment: input.equipment,
+      sessionDurationMin: input.sessionDurationMin,
+      progressiveTrainingEnabled: input.progressiveTrainingEnabled
+        ?? user.trainingProfile.progressiveTrainingEnabled,
       onboardingCompletedAt: firstCompletion
         ? now
         : user.trainingProfile.onboardingCompletedAt ?? now,
@@ -40,11 +43,13 @@ export async function handleOnboardingRequest(
     const equipment = equipmentDescription(trainingProfile.equipment);
     const results = await env.DB.batch([
       env.DB.prepare(`UPDATE app_users SET equipment_preferences_json = ?,
-        preferred_workout_duration_min = ?, onboarding_version = ?,
+        preferred_workout_duration_min = ?, progressive_training_enabled = ?,
+        onboarding_version = ?,
         onboarding_completed_at = COALESCE(onboarding_completed_at, ?), updated_at = ?
         WHERE id = ? AND owner_email = ?`).bind(
         JSON.stringify(trainingProfile.equipment),
         trainingProfile.sessionDurationMin,
+        trainingProfile.progressiveTrainingEnabled ? 1 : 0,
         currentOnboardingVersion,
         trainingProfile.onboardingCompletedAt,
         now,

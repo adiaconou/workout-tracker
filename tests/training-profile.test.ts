@@ -13,9 +13,18 @@ test("validates and normalizes onboarding training preferences", () => {
   assert.deepEqual(validateTrainingProfileInput({
     equipment: ["bench", "dumbbells", "bench"],
     sessionDurationMin: 45,
+    progressiveTrainingEnabled: true,
   }), {
     equipment: ["dumbbells", "bench"],
     sessionDurationMin: 45,
+    progressiveTrainingEnabled: true,
+  });
+  assert.deepEqual(validateTrainingProfileInput({
+    equipment: ["bodyweight"],
+    sessionDurationMin: 30,
+  }), {
+    equipment: ["bodyweight"],
+    sessionDurationMin: 30,
   });
   assert.throws(
     () => validateTrainingProfileInput({ equipment: [], sessionDurationMin: 45 }),
@@ -28,6 +37,14 @@ test("validates and normalizes onboarding training preferences", () => {
   assert.throws(
     () => validateTrainingProfileInput({ equipment: ["bodyweight"], sessionDurationMin: 50 }),
     /30, 45, 60, 75, or 90/i,
+  );
+  assert.throws(
+    () => validateTrainingProfileInput({
+      equipment: ["bodyweight"],
+      sessionDurationMin: 45,
+      progressiveTrainingEnabled: "yes",
+    }),
+    /enabled or disabled/i,
   );
 });
 
@@ -43,9 +60,13 @@ test("preserves legacy users while keeping explicit empty new-user preferences i
   }), {
     equipment: [],
     sessionDurationMin: 45,
+    progressiveTrainingEnabled: false,
     onboardingCompletedAt: null,
     onboardingCompleted: false,
   });
+  assert.equal(trainingProfileFromStored({
+    progressiveTrainingEnabled: 1,
+  }).progressiveTrainingEnabled, true);
 });
 
 test("checks compound equipment requirements and leaves unknown custom equipment visible", () => {

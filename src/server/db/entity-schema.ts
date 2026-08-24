@@ -25,6 +25,7 @@ const createStatements = [
     measurement_system TEXT NOT NULL DEFAULT 'imperial',
     equipment_preferences_json TEXT NOT NULL DEFAULT '${legacyAllEquipmentJson}',
     preferred_workout_duration_min INTEGER NOT NULL DEFAULT ${legacyWorkoutDurationMinutes},
+    progressive_training_enabled INTEGER NOT NULL DEFAULT 0,
     onboarding_version INTEGER NOT NULL DEFAULT ${currentOnboardingVersion},
     onboarding_completed_at TEXT,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -269,6 +270,7 @@ const additiveColumns: Record<string, Record<string, string>> = {
     measurement_system: "TEXT NOT NULL DEFAULT 'imperial'",
     equipment_preferences_json: `TEXT NOT NULL DEFAULT '${legacyAllEquipmentJson}'`,
     preferred_workout_duration_min: `INTEGER NOT NULL DEFAULT ${legacyWorkoutDurationMinutes}`,
+    progressive_training_enabled: "INTEGER NOT NULL DEFAULT 0",
     onboarding_version: `INTEGER NOT NULL DEFAULT ${currentOnboardingVersion}`,
     onboarding_completed_at: "TEXT",
   },

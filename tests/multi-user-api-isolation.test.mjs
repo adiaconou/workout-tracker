@@ -158,6 +158,8 @@ test("allowed ChatGPT users start empty and have isolated resources, workouts, a
   assert.notEqual(firstSession.user.id, secondSession.user.id);
   assert.equal(firstSession.user.trainingProfile.onboardingCompleted, false);
   assert.equal(secondSession.user.trainingProfile.onboardingCompleted, false);
+  assert.equal(firstSession.user.trainingProfile.progressiveTrainingEnabled, false);
+  assert.equal(secondSession.user.trainingProfile.progressiveTrainingEnabled, false);
   assert.equal(
     await database.prepare("SELECT id FROM app_users WHERE owner_email = ?")
       .bind(unapprovedEmail)
@@ -170,7 +172,11 @@ test("allowed ChatGPT users start empty and have isolated resources, workouts, a
   assert.equal(gatedBootstrap.error.code, "onboarding_required");
   const firstSetup = expectStatus(await request(firstEmail, "/api/v1/onboarding", {
     method: "PUT",
-    body: { equipment: allEquipment, sessionDurationMin: 60 },
+    body: {
+      equipment: allEquipment,
+      sessionDurationMin: 60,
+      progressiveTrainingEnabled: true,
+    },
   }), 200);
   const secondSetup = expectStatus(await request(secondEmail, "/api/v1/onboarding", {
     method: "PUT",
@@ -179,11 +185,15 @@ test("allowed ChatGPT users start empty and have isolated resources, workouts, a
   assert.equal(firstSetup.firstCompletion, true);
   assert.equal(secondSetup.firstCompletion, true);
   assert.equal(firstSetup.user.trainingProfile.onboardingCompleted, true);
+  assert.equal(firstSetup.user.trainingProfile.progressiveTrainingEnabled, true);
+  assert.equal(secondSetup.user.trainingProfile.progressiveTrainingEnabled, false);
   assert.equal(secondSetup.user.trainingProfile.sessionDurationMin, 45);
-  assert.equal(expectStatus(await request(firstEmail, "/api/v1/onboarding", {
+  const repeatedFirstSetup = expectStatus(await request(firstEmail, "/api/v1/onboarding", {
     method: "PUT",
     body: { equipment: allEquipment, sessionDurationMin: 60 },
-  }), 200).firstCompletion, false);
+  }), 200);
+  assert.equal(repeatedFirstSetup.firstCompletion, false);
+  assert.equal(repeatedFirstSetup.user.trainingProfile.progressiveTrainingEnabled, true);
 
   expectStatus(await request(firstEmail, "/api/v1/onboarding", {
     method: "PUT",

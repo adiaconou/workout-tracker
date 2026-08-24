@@ -25,12 +25,14 @@ type UserRow = {
 type StoredUserRow = Omit<UserRow, "trainingProfile"> & {
   equipmentPreferencesJson: string;
   preferredWorkoutDurationMin: number;
+  progressiveTrainingEnabled: number;
   onboardingVersion: number;
   onboardingCompletedAt: string | null;
 };
 
 const storedTrainingProfileSelect = `equipment_preferences_json AS equipmentPreferencesJson,
   preferred_workout_duration_min AS preferredWorkoutDurationMin,
+  progressive_training_enabled AS progressiveTrainingEnabled,
   onboarding_version AS onboardingVersion,
   onboarding_completed_at AS onboardingCompletedAt`;
 
@@ -111,15 +113,17 @@ export async function ensureAppUser(
     trainingProfile: trainingProfileFromStored({
       equipmentPreferencesJson: [],
       preferredWorkoutDurationMin: defaultWorkoutDurationMinutes,
+      progressiveTrainingEnabled: 0,
       onboardingVersion: 0,
       onboardingCompletedAt: null,
     }),
   };
   await env.DB.prepare(`INSERT INTO app_users (
     id, owner_email, display_name, photo_url, equipment_preferences_json,
-    preferred_workout_duration_min, onboarding_version, onboarding_completed_at,
+    preferred_workout_duration_min, progressive_training_enabled,
+    onboarding_version, onboarding_completed_at,
     created_at, updated_at
-  ) VALUES (?, ?, ?, ?, '[]', ?, 0, NULL, ?, ?)`)
+  ) VALUES (?, ?, ?, ?, '[]', ?, 0, 0, NULL, ?, ?)`)
     .bind(
       user.id,
       user.ownerEmail,
@@ -137,6 +141,7 @@ export async function authenticateRequest(
   request: Request,
   env: WorkerEnv,
 ): Promise<ApiUser | null> {
+  await ensureEntitySchema(env.DB);
   const authorization = request.headers.get("authorization");
   if (authorization?.startsWith("Bearer ")) {
     try {
@@ -275,6 +280,7 @@ export async function createNativeSession(
 }
 
 export async function rotateNativeSession(env: WorkerEnv, refreshToken: string) {
+  await ensureEntitySchema(env.DB);
   const oldHash = await hashRefreshToken(refreshToken);
   const now = new Date().toISOString();
   const session = await env.DB.prepare(`SELECT s.id AS sessionId, u.id,

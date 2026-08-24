@@ -453,11 +453,13 @@ test("profile and training-profile helpers cover stored, validation, and equipme
   assert.deepEqual(trainingProfileFromStored({
     equipmentPreferencesJson: "[\"bodyweight\"]",
     preferredWorkoutDurationMin: "30",
+    progressiveTrainingEnabled: 1,
     onboardingVersion: 1,
     onboardingCompletedAt: "2026-08-01T00:00:00.000Z",
   }), {
     equipment: ["bodyweight"],
     sessionDurationMin: 30,
+    progressiveTrainingEnabled: true,
     onboardingCompletedAt: "2026-08-01T00:00:00.000Z",
     onboardingCompleted: true,
   });
@@ -469,6 +471,7 @@ test("profile and training-profile helpers cover stored, validation, and equipme
   }), {
     equipment: ["bodyweight"],
     sessionDurationMin: 60,
+    progressiveTrainingEnabled: false,
     onboardingCompletedAt: null,
     onboardingCompleted: true,
   });
@@ -478,8 +481,8 @@ test("profile and training-profile helpers cover stored, validation, and equipme
     onboardingVersion: 0,
     onboardingCompletedAt: 123,
   }).onboardingCompleted, false);
-  assert.equal(isTrainingProfileComplete({ equipment: ["bodyweight"], sessionDurationMin: 45, onboardingCompletedAt: null, onboardingCompleted: true }), true);
-  assert.equal(isTrainingProfileComplete({ equipment: [], sessionDurationMin: 45, onboardingCompletedAt: null, onboardingCompleted: false }), false);
+  assert.equal(isTrainingProfileComplete({ equipment: ["bodyweight"], sessionDurationMin: 45, progressiveTrainingEnabled: true, onboardingCompletedAt: null, onboardingCompleted: true }), true);
+  assert.equal(isTrainingProfileComplete({ equipment: [], sessionDurationMin: 45, progressiveTrainingEnabled: false, onboardingCompletedAt: null, onboardingCompleted: false }), false);
 
   for (const invalid of [null, "preferences", []]) {
     assert.throws(() => validateTrainingProfileInput(invalid), /JSON object/);
@@ -487,6 +490,7 @@ test("profile and training-profile helpers cover stored, validation, and equipme
   assert.throws(() => validateTrainingProfileInput({ equipment: ["bodyweight"], sessionDurationMin: 45, surprise: true }), /unsupported/);
   assert.throws(() => validateTrainingProfileInput({ equipment: "bodyweight", sessionDurationMin: 45 }), /at least one/);
   assert.throws(() => validateTrainingProfileInput({ equipment: [1], sessionDurationMin: 45 }), /selection is invalid/);
+  assert.throws(() => validateTrainingProfileInput({ equipment: ["bodyweight"], sessionDurationMin: 45, progressiveTrainingEnabled: 1 }), /enabled or disabled/);
   assert.deepEqual(validateTrainingProfileInput({ equipment: ["bench", "bodyweight", "bench"], sessionDurationMin: "90" }), {
     equipment: ["bodyweight", "bench"],
     sessionDurationMin: 90,

@@ -1,0 +1,1 @@
+ALTER TABLE `app_users` ADD `progressive_training_enabled` integer DEFAULT 0 NOT NULL;

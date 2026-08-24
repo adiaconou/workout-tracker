@@ -804,6 +804,9 @@ test("auth lifecycle covers hosted, bearer, Google, rotation, and revocation bra
 
     const compareAndSwapSession = await createNativeSession(env, owner, "race");
     const noChangeDatabase = {
+      async batch(statements: SqliteStatement[]) {
+        return Promise.all(statements.map((statement) => statement.run()));
+      },
       prepare(sql: string) {
         if (sql.includes("UPDATE auth_sessions SET refresh_token_hash")) {
           return {
@@ -902,11 +905,13 @@ test("onboarding handles reads, methods, invalid input, first completion, repeat
     });
     const completed = await handleOnboardingRequest(put({
       equipment: ["bodyweight", "dumbbells"], sessionDurationMin: 45,
+      progressiveTrainingEnabled: true,
     }), env, user);
     assert.equal(completed.status, 200);
     const completedBody = await responseJson(completed);
     assert.equal(completedBody.firstCompletion, true);
     assert.equal(completedBody.user.trainingProfile.onboardingCompleted, true);
+    assert.equal(completedBody.user.trainingProfile.progressiveTrainingEnabled, true);
     user = { ...user, trainingProfile: completedBody.user.trainingProfile };
     const firstCompletedAt = user.trainingProfile.onboardingCompletedAt;
     const repeated = await handleOnboardingRequest(put({
@@ -915,6 +920,15 @@ test("onboarding handles reads, methods, invalid input, first completion, repeat
     const repeatedBody = await responseJson(repeated);
     assert.equal(repeatedBody.firstCompletion, false);
     assert.equal(repeatedBody.user.trainingProfile.onboardingCompletedAt, firstCompletedAt);
+    assert.equal(repeatedBody.user.trainingProfile.progressiveTrainingEnabled, true);
+    assert.equal((await d1.prepare(`SELECT progressive_training_enabled AS enabled
+      FROM app_users WHERE id = ?`).bind(user.id).first<{ enabled: number }>())?.enabled, 1);
+    const disabled = await handleOnboardingRequest(put({
+      equipment: ["bodyweight"],
+      sessionDurationMin: 60,
+      progressiveTrainingEnabled: false,
+    }), env, user);
+    assert.equal((await responseJson(disabled)).user.trainingProfile.progressiveTrainingEnabled, false);
     assert.deepEqual(sessionUser(user), {
       id: user.id,
       email: user.email,

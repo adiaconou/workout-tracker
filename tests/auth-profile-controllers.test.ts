@@ -21,6 +21,7 @@ function user(id = "user-one"): SessionUser {
     trainingProfile: {
       equipment: ["bodyweight"],
       sessionDurationMin: 45,
+      progressiveTrainingEnabled: false,
       onboardingCompletedAt: null,
       onboardingCompleted: false,
     },
@@ -370,9 +371,13 @@ test("auth training setup updates the user and returns first-completion state", 
     user: user("onboarded"),
     firstCompletion: true,
   });
-  const input: Pick<TrainingProfile, "equipment" | "sessionDurationMin"> = {
+  const input: Pick<
+    TrainingProfile,
+    "equipment" | "sessionDurationMin" | "progressiveTrainingEnabled"
+  > = {
     equipment: ["bodyweight"],
     sessionDurationMin: 45,
+    progressiveTrainingEnabled: true,
   };
   assert.deepEqual(await harness.controller.completeTrainingSetup(input), { firstCompletion: true });
   assert.equal(harness.calls.requests[0]?.path, "/api/v1/onboarding");

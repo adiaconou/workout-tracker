@@ -94,6 +94,9 @@ export function OnboardingScreen() {
   const [sessionDurationMin, setSessionDurationMin] = useState<WorkoutDurationMinutes | null>(
     () => trainingProfile?.sessionDurationMin ?? null,
   );
+  const [progressiveTrainingEnabled, setProgressiveTrainingEnabled] = useState(
+    () => trainingProfile?.progressiveTrainingEnabled ?? false,
+  );
   const [focusedOption, setFocusedOption] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -144,7 +147,11 @@ export function OnboardingScreen() {
     setSaving(true);
     setError("");
     try {
-      const result = await completeTrainingSetup({ equipment, sessionDurationMin });
+      const result = await completeTrainingSetup({
+        equipment,
+        sessionDurationMin,
+        progressiveTrainingEnabled,
+      });
       if (result.firstCompletion) {
         setRouteAfterSave("coach");
       } else if (router.canGoBack()) {
@@ -163,11 +170,11 @@ export function OnboardingScreen() {
     <Screen safeTop={false} contentStyle={styles.screen}>
       <View accessibilityLiveRegion="polite" style={styles.intro}>
         <Eyebrow>{firstSetup ? `Step ${step} of 2` : "Training setup"}</Eyebrow>
-        <Heading>{step === 1 ? "What can you train with?" : "How long should workouts be?"}</Heading>
+        <Heading>{step === 1 ? "What can you train with?" : "Set your training preferences"}</Heading>
         <Body muted>
           {step === 1
             ? "Choose everything you have access to. We’ll build a focused exercise library from it, then Coach can design custom routines around your equipment."
-            : "Choose the length you want most workouts to fit. Coach will use it as the target when designing your routines."}
+            : "Choose the length Coach should plan around, then decide whether you want small progressive targets during workouts."}
         </Body>
       </View>
 
@@ -281,6 +288,45 @@ export function OnboardingScreen() {
               );
             })}
           </View>
+
+          <Pressable
+            accessibilityRole="switch"
+            accessibilityLabel="Progressive training"
+            accessibilityHint="Shows a recommended target for each set based on your latest comparable workout."
+            accessibilityState={{ checked: progressiveTrainingEnabled }}
+            onBlur={() => setFocusedOption(null)}
+            onFocus={() => setFocusedOption("progressive-training")}
+            onPress={() => setProgressiveTrainingEnabled((current) => !current)}
+            style={({ pressed }) => [
+              styles.progressiveOption,
+              progressiveTrainingEnabled && styles.progressiveOptionEnabled,
+              pressed && styles.optionPressed,
+              focusedOption === "progressive-training"
+                && Platform.OS === "web"
+                && styles.webFocusRing,
+            ]}
+          >
+            <View style={styles.progressiveCopy}>
+              <Text style={styles.progressiveTitle}>Progressive training</Text>
+              <Text style={styles.optionDescription}>
+                Suggest a small next target from your latest comparable workout. It adapts when you repeat or fall short.
+              </Text>
+            </View>
+            <View
+              accessible={false}
+              style={[
+                styles.progressiveSwitch,
+                progressiveTrainingEnabled && styles.progressiveSwitchEnabled,
+              ]}
+            >
+              <View
+                style={[
+                  styles.progressiveSwitchThumb,
+                  progressiveTrainingEnabled && styles.progressiveSwitchThumbEnabled,
+                ]}
+              />
+            </View>
+          </Pressable>
 
           <Card style={styles.promiseCard}>
             <Heading level={2} size="small">A target, not a stopwatch</Heading>
@@ -407,6 +453,49 @@ const styles = StyleSheet.create({
   durationNumber: { color: colors.text, fontSize: 28, lineHeight: 32, fontWeight: "900" },
   durationNumberSelected: { color: colors.accent },
   durationUnit: { color: colors.textMuted, fontSize: 12, lineHeight: 17 },
+  progressiveOption: {
+    minHeight: 92,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.lg,
+    padding: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.lg,
+    backgroundColor: colors.surface,
+  },
+  progressiveOptionEnabled: {
+    borderColor: colors.recommendationBorder,
+    backgroundColor: colors.recommendationSurface,
+  },
+  progressiveCopy: { flex: 1, gap: spacing.xs },
+  progressiveTitle: { color: colors.text, fontSize: 15, lineHeight: 20, fontWeight: "800" },
+  progressiveSwitch: {
+    width: 46,
+    height: 26,
+    flexShrink: 0,
+    justifyContent: "center",
+    paddingHorizontal: 3,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: radii.pill,
+    backgroundColor: colors.background,
+  },
+  progressiveSwitchEnabled: {
+    borderColor: colors.recommendationBorder,
+    backgroundColor: colors.recommendation,
+  },
+  progressiveSwitchThumb: {
+    width: 18,
+    height: 18,
+    borderRadius: radii.pill,
+    backgroundColor: colors.textMuted,
+  },
+  progressiveSwitchThumbEnabled: {
+    alignSelf: "flex-end",
+    backgroundColor: colors.background,
+  },
   actions: { flexDirection: "row", alignItems: "stretch", gap: spacing.md },
   actionsCompact: { flexDirection: "column" },
   primaryAction: { flex: 1 },

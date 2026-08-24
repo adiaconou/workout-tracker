@@ -23,6 +23,7 @@ const entityMigrationFilenames = [
   "drizzle/0013_outstanding_jean_grey.sql",
   "drizzle/0014_program_generation_jobs.sql",
   "drizzle/0015_material_rockslide.sql",
+  "drizzle/0016_needy_phantom_reporter.sql",
 ];
 
 test("applies the complete migration chain and creates the normalized entity model", async () => {
@@ -76,6 +77,7 @@ test("applies the complete migration chain and creates the normalized entity mod
     assert.match(inspected, /body_weight_source/);
     assert.match(inspected, /equipment_preferences_json/);
     assert.match(inspected, /preferred_workout_duration_min/);
+    assert.match(inspected, /progressive_training_enabled/);
     assert.match(inspected, /onboarding_version/);
     assert.match(inspected, /onboarding_completed_at/);
     assert.match(inspected, /origin/);
@@ -98,6 +100,11 @@ test("applies the complete migration chain and creates the normalized entity mod
     );
     const originColumn = exerciseCatalogColumns.find((column) => column.name === "origin");
     assert.equal(originColumn.notnull, 1);
+    const progressiveTrainingColumn = appUserColumns.find(
+      (column) => column.name === "progressive_training_enabled",
+    );
+    assert.equal(progressiveTrainingColumn.notnull, 1);
+    assert.equal(progressiveTrainingColumn.dflt_value, "0");
     assert.equal(originColumn.dflt_value, "'custom'");
     assert.ok(exerciseCatalogIndexes.some(
       (index) => index.name === "exercise_catalog_owner_template_idx" && index.unique === 1,

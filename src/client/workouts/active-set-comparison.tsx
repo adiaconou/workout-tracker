@@ -8,6 +8,7 @@ import {
   liveSetComparisonPerformance,
   type ComparisonPerformance,
 } from "./set-comparison";
+import { recommendProgressiveTarget } from "./progressive-target";
 
 const CELL_WIDTH = 132;
 
@@ -21,6 +22,7 @@ export function ActiveSetComparison({
   onSelectSet,
   weight,
   result,
+  progressiveTrainingEnabled,
 }: {
   sets: WorkoutView["sets"];
   previousSets: NonNullable<WorkoutView["previousPerformanceByExercise"][number]>["sets"];
@@ -31,6 +33,7 @@ export function ActiveSetComparison({
   onSelectSet: (globalIndex: number) => void;
   weight: string;
   result: string;
+  progressiveTrainingEnabled: boolean;
 }) {
   const scrollRef = useRef<ScrollView>(null);
   const currentOccurrenceIndex = sets.findIndex((set) => set.id === selectedSetId);
@@ -53,17 +56,18 @@ export function ActiveSetComparison({
     );
   }), [recordedPerformanceBySetId, result, selectedSetId, sets, weight]);
 
+  const alignedPreviousSets = useMemo(() => alignPreviousExerciseSets(
+    sets.map((set) => ({
+      sourceRoutineSetId: set.sourceRoutineSetId,
+      setType: set.setType,
+      targetType: set.targetType ?? (set.targetUnit === "seconds"
+        ? "duration"
+        : set.targetUnit),
+    })),
+    previousSets,
+  ), [previousSets, sets]);
+
   const previousValues = useMemo(() => {
-    const alignedPreviousSets = alignPreviousExerciseSets(
-      sets.map((set) => ({
-        sourceRoutineSetId: set.sourceRoutineSetId,
-        setType: set.setType,
-        targetType: set.targetType ?? (set.targetUnit === "seconds"
-          ? "duration"
-          : set.targetUnit),
-      })),
-      previousSets,
-    );
     return sets.map((set, index) => {
       const previous = alignedPreviousSets[index];
       if (!previous) return "—";
@@ -78,13 +82,26 @@ export function ActiveSetComparison({
       };
       return formatSetComparisonPerformance(set, performance);
     });
-  }, [previousSets, sets]);
+  }, [alignedPreviousSets, sets]);
+
+  const recommendedValues = useMemo(() => sets.map((set, index) => (
+    formatSetComparisonPerformance(
+      set,
+      recommendProgressiveTarget(set, alignedPreviousSets[index]),
+    )
+  )), [alignedPreviousSets, sets]);
 
   return (
-    <View style={styles.comparison}>
+    <View style={[
+      styles.comparison,
+      progressiveTrainingEnabled && styles.comparisonProgressive,
+    ]}>
       <View style={styles.rowLabels}>
         <Text style={styles.cornerLabel}>Set</Text>
         <Text style={styles.rowLabel}>This workout</Text>
+        {progressiveTrainingEnabled ? (
+          <Text style={[styles.rowLabel, styles.recommendedRowLabel]}>Recommended</Text>
+        ) : null}
         <Text style={styles.rowLabel}>Last time</Text>
       </View>
       <ScrollView
@@ -135,6 +152,21 @@ export function ActiveSetComparison({
                   {currentValues[index]}
                 </Text>
               </Pressable>
+              {progressiveTrainingEnabled ? (
+                <View
+                  accessible
+                  accessibilityLabel={`Recommended target, set ${index + 1}, ${
+                    recommendedValues[index] === "—"
+                      ? "no baseline"
+                      : recommendedValues[index]
+                  }`}
+                  style={[styles.cell, styles.recommendedCell]}
+                >
+                  <Text numberOfLines={2} style={[styles.cellText, styles.recommendedCellText]}>
+                    {recommendedValues[index]}
+                  </Text>
+                </View>
+              ) : null}
               <View
                 accessible
                 accessibilityLabel={`Last time, set ${index + 1}, ${previousValues[index]}`}
@@ -160,6 +192,7 @@ const styles = StyleSheet.create({
     borderTopColor: colors.borderStrong,
     paddingTop: spacing.sm,
   },
+  comparisonProgressive: { minHeight: 160 },
   rowLabels: { width: 92, flexShrink: 0 },
   cornerLabel: {
     height: 24,
@@ -180,6 +213,7 @@ const styles = StyleSheet.create({
     textAlignVertical: "center",
     paddingRight: spacing.sm,
   },
+  recommendedRowLabel: { color: colors.recommendation },
   scroll: { flex: 1, minWidth: 0 },
   scrollContent: { paddingRight: spacing.sm },
   column: { width: CELL_WIDTH, gap: 0 },
@@ -207,6 +241,10 @@ const styles = StyleSheet.create({
     borderRadius: radii.sm,
     backgroundColor: colors.accentDark,
   },
+  recommendedCell: {
+    borderColor: colors.recommendationBorder,
+    backgroundColor: colors.recommendationSurface,
+  },
   cellCompleted: { backgroundColor: colors.successSurface },
   cellSkipped: { backgroundColor: colors.surfaceRaised },
   cellPressed: { opacity: 0.72 },
@@ -221,4 +259,5 @@ const styles = StyleSheet.create({
   },
   cellTextActive: { color: colors.text },
   cellTextSkipped: { color: colors.textDim },
+  recommendedCellText: { color: colors.recommendation },
 });

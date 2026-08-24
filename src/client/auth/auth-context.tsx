@@ -33,7 +33,10 @@ type AuthContextValue = {
   signOut: () => Promise<void>;
   retry: () => Promise<void>;
   completeTrainingSetup: (
-    input: Pick<TrainingProfile, "equipment" | "sessionDurationMin">,
+    input: Pick<
+      TrainingProfile,
+      "equipment" | "sessionDurationMin" | "progressiveTrainingEnabled"
+    >,
   ) => Promise<{ firstCompletion: boolean }>;
 };
 

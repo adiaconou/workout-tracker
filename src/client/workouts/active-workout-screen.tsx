@@ -10,6 +10,7 @@ import {
 } from "react-native";
 import { router } from "expo-router";
 import { apiRequest } from "../api/client";
+import { useAuth } from "../auth/public";
 import {
   countPendingSetWrites,
   enqueueSetWrite,
@@ -77,6 +78,7 @@ import {
 } from "./active-workout-model";
 
 export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
+  const { user } = useAuth();
   const [workout, setWorkout] = useState<WorkoutView | null>(null);
   const [setNavigation, setSetNavigation] = useState<WorkoutSetNavigation>(() =>
     initialSetNavigation(0, 0)
@@ -906,6 +908,9 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
             onSelectSet={viewSet}
             weight={weight}
             result={result}
+            progressiveTrainingEnabled={Boolean(
+              user?.trainingProfile.progressiveTrainingEnabled,
+            )}
           />
           {isViewingPast || !restEndsAt ? (
             <View style={styles.logControls}>

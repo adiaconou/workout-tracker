@@ -140,7 +140,10 @@ export function createAuthController(dependencies: AuthControllerDependencies) {
   }
 
   async function completeTrainingSetup(
-    input: Pick<TrainingProfile, "equipment" | "sessionDurationMin">,
+    input: Pick<
+      TrainingProfile,
+      "equipment" | "sessionDurationMin" | "progressiveTrainingEnabled"
+    >,
   ) {
     const payload = await dependencies.request<{
       user: SessionUser;

@@ -87,6 +87,14 @@ test("dim text and strong control boundaries meet contrast targets", () => {
     contrastRatio(colors.borderStrong, colors.background) >= 3,
     "Strong interactive boundaries should meet non-text contrast on page backgrounds",
   );
+  assert.ok(
+    contrastRatio(colors.recommendation, colors.recommendationSurface) >= 4.5,
+    "Recommended targets should meet WCAG AA text contrast",
+  );
+  assert.ok(
+    contrastRatio(colors.recommendationBorder, colors.recommendationSurface) >= 3,
+    "Recommended target boundaries should meet non-text contrast",
+  );
 });
 
 function contrastRatio(left: string, right: string) {

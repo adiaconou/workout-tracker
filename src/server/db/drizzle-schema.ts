@@ -22,6 +22,9 @@ export const appUsers = sqliteTable(
     preferredWorkoutDurationMin: integer("preferred_workout_duration_min")
       .notNull()
       .default(legacyWorkoutDurationMinutes),
+    progressiveTrainingEnabled: integer("progressive_training_enabled")
+      .notNull()
+      .default(0),
     onboardingVersion: integer("onboarding_version")
       .notNull()
       .default(currentOnboardingVersion),

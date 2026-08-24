@@ -15,6 +15,9 @@ export const colors = {
   warningSurface: "#2a2312",
   success: "#72dfaa",
   successSurface: "#10251c",
+  recommendation: "#cbd8ff",
+  recommendationSurface: "#202d4d",
+  recommendationBorder: "#8caeff",
   overlay: "rgba(3, 6, 11, 0.82)",
 } as const;
 
