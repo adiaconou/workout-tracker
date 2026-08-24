@@ -131,9 +131,19 @@ export function ActiveSetComparison({
                   : "not logged";
           return (
             <View key={set.id} style={styles.column}>
-              <Text style={[styles.columnLabel, active && styles.columnLabelActive]}>
-                {index + 1}
-              </Text>
+              <View style={styles.columnLabelSlot}>
+                <View style={[
+                  styles.columnLabelMarker,
+                  active && styles.columnLabelMarkerActive,
+                ]}>
+                  <Text style={[
+                    styles.columnLabel,
+                    active && styles.columnLabelActive,
+                  ]}>
+                    {index + 1}
+                  </Text>
+                </View>
+              </View>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`View ${set.exerciseName}, set ${index + 1} of ${sets.length}, ${setState}${active ? ", selected" : ""}, ${currentValues[index]}`}
@@ -224,15 +234,29 @@ const styles = StyleSheet.create({
   scroll: { flex: 1, minWidth: 0 },
   scrollContent: { paddingRight: spacing.sm },
   column: { width: CELL_WIDTH, gap: 0 },
-  columnLabel: {
+  columnLabelSlot: {
     height: 24,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  columnLabelMarker: {
+    minWidth: 24,
+    height: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: spacing.xs,
+    borderRadius: radii.pill,
+  },
+  columnLabelMarkerActive: { backgroundColor: colors.accent },
+  columnLabel: {
     color: colors.textDim,
     fontSize: 10,
-    lineHeight: 24,
+    lineHeight: 14,
     fontWeight: "800",
+    fontVariant: ["tabular-nums"],
     textAlign: "center",
   },
-  columnLabelActive: { color: colors.accent },
+  columnLabelActive: { color: colors.background },
   cell: {
     height: 44,
     alignItems: "center",
