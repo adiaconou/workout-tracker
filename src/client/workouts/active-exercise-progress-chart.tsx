@@ -229,7 +229,7 @@ export function ActiveExerciseProgressChart({
           styles.disclosureToggle,
           quietDisclosure && styles.quietDisclosureToggle,
           pressed && styles.pressed,
-          focused && Platform.OS === "web" && styles.webFocusRing,
+          focused && Platform.OS === "web" && !quietDisclosure && styles.webFocusRing,
         ]}
       >
         <Text
