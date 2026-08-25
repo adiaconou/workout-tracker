@@ -15,6 +15,7 @@ import {
   recordSetSuccessState,
   reconcileSetNavigation,
   resultUnitName,
+  setEntryMode,
   supersetContext,
   viewedSetPosition,
   viewSetAtIndex,
@@ -279,6 +280,15 @@ test("navigation distinguishes past, actionable current, and future preview sets
   assert.equal(viewedSetPosition({ activeIndex: 3, viewedIndex: 2 }), "past");
   assert.equal(viewedSetPosition({ activeIndex: 3, viewedIndex: 3 }), "current");
   assert.equal(viewedSetPosition({ activeIndex: 3, viewedIndex: 4 }), "future");
+});
+
+test("set entry mode keeps completed results read-only until correction starts", () => {
+  assert.equal(setEntryMode("past", false), "past-readonly");
+  assert.equal(setEntryMode("past", true), "past-editing");
+  assert.equal(setEntryMode("current", false), "current");
+  assert.equal(setEntryMode("current", true), "current");
+  assert.equal(setEntryMode("future", false), "future");
+  assert.equal(setEntryMode("future", true), "future");
 });
 
 test("exercise navigation opens the first set in unique exercise order", () => {

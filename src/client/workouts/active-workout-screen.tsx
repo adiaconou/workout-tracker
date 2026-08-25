@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Keyboard,
   Modal,
   Platform,
   Pressable,
@@ -34,10 +35,6 @@ import {
 import { colors, radii, spacing } from "../ui/tokens";
 import { ActiveExerciseProgressChart } from "./active-exercise-progress-chart";
 import { ActiveSetComparison } from "./active-set-comparison";
-import {
-  comparisonLoadPhrase,
-  formatComparisonTableCells,
-} from "./set-comparison";
 import {
   activeSetPrescription,
   specialSetTypeLabel,
@@ -78,6 +75,7 @@ import {
   recordedSetPerformance,
   recordSetSuccessState,
   resultUnitName,
+  setEntryMode,
   supersetContext,
   viewedSetPosition,
   viewSetAtIndex,
@@ -222,11 +220,14 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   const isViewingPast = viewedPosition === "past";
   const isViewingCurrent = viewedPosition === "current";
   const isViewingFuture = viewedPosition === "future";
-  const returnToCurrentLabel = isViewingCurrent
-    ? null
-    : viewedSet?.exerciseOrder === currentSet?.exerciseOrder && currentSet
-      ? `Return to set ${currentSet.exerciseSetNumber}`
-      : "Return to current set";
+  const entryMode = setEntryMode(viewedPosition, replacingPastSet);
+  const setInputsEditable = entryMode === "current" || entryMode === "past-editing";
+  const overviewSet = isViewingPast
+    && viewedSet?.exerciseOrder === currentSet?.exerciseOrder
+    && currentSet
+    ? currentSet
+    : viewedSet;
+  const overviewIndex = overviewSet?.id === currentSet?.id ? currentIndex : viewedIndex;
   const viewedRecordedPerformance = viewedSet
     ? workout?.recordedPerformanceBySetId[viewedSet.id]
     : undefined;
@@ -247,9 +248,9 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
       : [],
     [viewedSet?.exerciseOrder, workout?.sets],
   );
-  const viewedSupersetContext = useMemo(
-    () => supersetContext(workout?.sets ?? [], viewedIndex),
-    [viewedIndex, workout?.sets],
+  const overviewSupersetContext = useMemo(
+    () => supersetContext(workout?.sets ?? [], overviewIndex),
+    [overviewIndex, workout?.sets],
   );
   const exerciseProgress = useMemo(
     () => buildWorkoutExerciseProgress(workout?.sets ?? [], currentIndex),
@@ -265,11 +266,15 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
 
   useEffect(() => {
     if (!viewedSet) return;
-    const recordedInputs = isViewingPast && viewedRecordedPerformance
-      ? getRecordedSetInputValues(viewedSet, viewedRecordedPerformance)
+    const recordedInputs = isViewingPast
+      ? viewedRecordedPerformance
+        ? getRecordedSetInputValues(viewedSet, viewedRecordedPerformance)
+        : { weight: "", result: "" }
       : getSetInputDefaults(viewedSet);
-    const draft = setInputDrafts.current[viewedSet.id] ?? recordedInputs;
-    setInputDrafts.current[viewedSet.id] = draft;
+    const draft = isViewingPast
+      ? recordedInputs
+      : setInputDrafts.current[viewedSet.id] ?? recordedInputs;
+    if (!isViewingPast) setInputDrafts.current[viewedSet.id] = draft;
     setWeight(draft.weight);
     setResult(draft.result);
     setStopwatchStartedAt(null);
@@ -739,7 +744,8 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   }
 
   function viewExercise(exerciseOrder: number) {
-    if (!workout || saving || stopwatchStartedAt !== null) return;
+    if (!workout || saving || replacingPastSet || stopwatchStartedAt !== null) return;
+    Keyboard.dismiss();
     setSetNavigation((current) => {
       const activeExerciseOrder = workout.sets[current.activeIndex]?.exerciseOrder;
       if (exerciseOrder === activeExerciseOrder) {
@@ -755,12 +761,14 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
   }
 
   function viewSet(globalIndex: number) {
-    if (!workout || saving || stopwatchStartedAt !== null) return;
+    if (!workout || saving || replacingPastSet || stopwatchStartedAt !== null) return;
+    Keyboard.dismiss();
     setSetNavigation((current) => viewSetAtIndex(current, globalIndex, workout.sets.length));
   }
 
   function returnToCurrentSet() {
-    if (!workout || saving || stopwatchStartedAt !== null) return;
+    if (!workout || saving || replacingPastSet || stopwatchStartedAt !== null) return;
+    Keyboard.dismiss();
     setSetNavigation((current) => viewSetAtIndex(
       current,
       current.activeIndex,
@@ -770,6 +778,7 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
 
   function beginPastSetEdit() {
     if (!viewedSet || !viewedRecordedPerformance || !isViewingPast || saving) return;
+    Keyboard.dismiss();
     const defaults = getRecordedSetInputValues(viewedSet, viewedRecordedPerformance);
     setReplacingPastSet(true);
     setStopwatchStartedAt(null);
@@ -805,8 +814,14 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
           <Pressable
             accessibilityRole="link"
             accessibilityLabel={`Back to Routine ${workout.routineCode}`}
+            accessibilityState={{ disabled: replacingPastSet }}
+            disabled={replacingPastSet}
             onPress={() => router.replace(`/routines/${workout.routineCode}`)}
-            style={({ pressed }) => [styles.headerBack, pressed && styles.headerActionPressed]}
+            style={({ pressed }) => [
+              styles.headerBack,
+              pressed && styles.headerActionPressed,
+              replacingPastSet && styles.headerActionDisabled,
+            ]}
           >
             <View accessibilityElementsHidden style={styles.headerBackChevron} />
             <Text style={styles.headerBackText}>Back</Text>
@@ -820,12 +835,12 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
             accessibilityRole="button"
             accessibilityLabel="More workout actions"
             accessibilityState={{ expanded: showWorkoutMenu }}
-            disabled={saving}
+            disabled={saving || replacingPastSet}
             onPress={() => setShowWorkoutMenu(true)}
             style={({ pressed }) => [
               styles.moreAction,
               pressed && styles.headerActionPressed,
-              saving && styles.headerActionDisabled,
+              (saving || replacingPastSet) && styles.headerActionDisabled,
             ]}
           >
             <View accessibilityElementsHidden style={styles.moreDots}>
@@ -871,13 +886,13 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
         completedSets={completedOrSkipped}
         totalSets={workout.totalSets}
         exercises={exerciseProgress}
-        navigationDisabled={saving || stopwatchStartedAt !== null}
+        navigationDisabled={saving || replacingPastSet || stopwatchStartedAt !== null}
         onClose={() => setShowFullProgress(false)}
         onSelectExercise={viewExercise}
       />
       <WorkoutMenu
         visible={showWorkoutMenu}
-        saving={saving}
+        saving={saving || replacingPastSet}
         onClose={() => setShowWorkoutMenu(false)}
         onFinishEarly={() => {
           setShowWorkoutMenu(false);
@@ -923,8 +938,8 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
             />
           ) : null}
           <View style={styles.setCard}>
-            {viewedSupersetContext ? (
-              <SupersetBanner context={viewedSupersetContext} />
+            {overviewSupersetContext ? (
+              <SupersetBanner context={overviewSupersetContext} />
             ) : null}
             {stopwatchStartedAt !== null ? (
               <Text style={styles.navigationHint}>
@@ -933,12 +948,14 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
             ) : null}
             <CompactSetOverview
               qualifier={[
-                restEndsAt && isViewingCurrent ? "Next" : null,
-                specialSetTypeLabel(viewedSet.setType),
+                restEndsAt && overviewSet?.id === currentSet?.id ? "Next" : null,
+                overviewSet ? specialSetTypeLabel(overviewSet.setType) : null,
               ].filter(Boolean).join(" · ")}
-              exercisePosition={exerciseOrders.indexOf(viewedSet.exerciseOrder) + 1}
+              exercisePosition={overviewSet
+                ? exerciseOrders.indexOf(overviewSet.exerciseOrder) + 1
+                : 0}
               exerciseTotal={exerciseOrders.length}
-              workoutSet={viewedSet}
+              workoutSet={overviewSet ?? viewedSet}
             />
             <ActiveSetComparison
               sets={currentExerciseSets}
@@ -946,75 +963,12 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
               recordedPerformanceBySetId={workout.recordedPerformanceBySetId ?? {}}
               selectedSetId={viewedSet.id}
               activeSetIndex={currentIndex}
-              navigationDisabled={saving || stopwatchStartedAt !== null}
+              navigationDisabled={saving || replacingPastSet || stopwatchStartedAt !== null}
               onSelectSet={viewSet}
               progressiveTrainingEnabled={Boolean(
                 user?.trainingProfile.progressiveTrainingEnabled,
               )}
-              showSummaryTable={!isViewingPast}
             />
-
-            {isViewingCurrent && !restEndsAt ? (
-              <View style={styles.skipSetRow}>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`Skip current set ${viewedSet.exerciseSetNumber}`}
-                  disabled={saving}
-                  onPress={() => void recordSet("Skipped")}
-                  style={({ pressed }) => [
-                    styles.skipSetAction,
-                    pressed && styles.skipSetActionPressed,
-                    saving && styles.headerActionDisabled,
-                  ]}
-                >
-                  <Text style={styles.skipSetText}>Skip this set</Text>
-                </Pressable>
-              </View>
-            ) : null}
-
-            {isViewingPast && !replacingPastSet ? (
-              <View style={styles.pastSetSummary}>
-                <View style={styles.pastSetHeading}>
-                  <Text style={styles.pastSetTitle}>
-                    {viewedRecordedPerformance?.status === "Skipped" ? "Skipped" : "Completed"}{" "}
-                    set {viewedSet.exerciseSetNumber}
-                  </Text>
-                  {returnToCurrentLabel ? (
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`${returnToCurrentLabel}, ${currentSet?.exerciseName ?? "current workout position"}`}
-                      disabled={saving || stopwatchStartedAt !== null}
-                      onPress={returnToCurrentSet}
-                      style={({ pressed }) => [
-                        styles.returnToCurrentInline,
-                        pressed && styles.headerActionPressed,
-                      ]}
-                    >
-                      <Text style={styles.returnToCurrentText}>{returnToCurrentLabel}</Text>
-                      <View accessibilityElementsHidden style={styles.inlineChevron} />
-                    </Pressable>
-                  ) : null}
-                </View>
-                <View style={styles.recordedResult}>
-                  <Text style={styles.recordedResultLabel}>Recorded result</Text>
-                  <Text style={styles.recordedResultValue}>
-                    {formatRecordedResult(viewedSet, viewedRecordedPerformance)}
-                  </Text>
-                  <Text style={styles.recordedResultHint}>
-                    Your current workout remains on {currentSet?.exerciseName ?? "the current exercise"},
-                    {" "}set {currentSet?.exerciseSetNumber ?? currentIndex + 1}.
-                  </Text>
-                </View>
-                <Button
-                  title={viewedRecordedPerformance?.status === "Skipped"
-                    ? "Complete skipped set"
-                    : "Edit recorded result"}
-                  variant="secondary"
-                  disabled={saving || pendingCount > 0}
-                  onPress={beginPastSetEdit}
-                />
-              </View>
-            ) : null}
 
             {isViewingFuture ? (
               <View style={styles.futureSetNotice}>
@@ -1028,9 +982,11 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
               </View>
             ) : null}
 
-          {(isViewingCurrent && !restEndsAt) || (isViewingPast && replacingPastSet) ? (
+          {(entryMode === "current" && !restEndsAt)
+            || entryMode === "past-readonly"
+            || entryMode === "past-editing" ? (
             <View style={styles.logControls}>
-              {viewedSet.targetUnit === "seconds" && isViewingCurrent ? (
+              {viewedSet.targetUnit === "seconds" && entryMode === "current" ? (
                 <SetStopwatch
                   elapsedMs={stopwatchElapsedMs}
                   running={stopwatchStartedAt !== null}
@@ -1041,60 +997,64 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
               ) : null}
               <View style={styles.logFields}>
                 <View style={styles.logField}>
-                   <StepperField
-                     label={loadLabel(viewedSet.loadType, viewedSet.weightUnit)}
-                     variant="segmented"
-                     value={weight}
+                  <StepperField
+                    label={loadLabel(viewedSet.loadType, viewedSet.weightUnit)}
+                    variant="segmented"
+                    value={weight}
                     onChangeText={updateSetWeight}
                     keyboardType="decimal-pad"
-                    placeholder="0"
-                    selectTextOnFocus
+                    placeholder={entryMode === "past-readonly" ? "—" : "0"}
+                    selectTextOnFocus={setInputsEditable}
+                    editable={setInputsEditable}
+                    accessibilityLabel={entryMode === "past-readonly"
+                      ? `Recorded ${loadLabel(viewedSet.loadType, viewedSet.weightUnit)}, ${weight || "not recorded"}, read only`
+                      : undefined}
+                    accessibilityHint={entryMode === "past-readonly"
+                      ? `Use Edit result to correct completed set ${viewedSet.exerciseSetNumber}`
+                      : undefined}
                   />
                 </View>
                 <View style={styles.logField}>
-                   <StepperField
-                     label={`${resultUnitName(viewedSet.targetUnit, true)} completed`}
-                     variant="segmented"
-                     value={result}
+                  <StepperField
+                    label={`${resultUnitName(viewedSet.targetUnit, true)} completed`}
+                    variant="segmented"
+                    value={result}
                     onChangeText={
                       viewedSet.targetUnit === "seconds"
                         ? updateDurationResult
                         : updateSetResult
                     }
                     keyboardType="number-pad"
-                    placeholder="0"
-                    selectTextOnFocus
-                    editable={viewedSet.targetUnit !== "seconds" || stopwatchStartedAt === null}
+                    placeholder={entryMode === "past-readonly" ? "—" : "0"}
+                    selectTextOnFocus={setInputsEditable}
+                    editable={setInputsEditable && (
+                      viewedSet.targetUnit !== "seconds"
+                      || entryMode !== "current"
+                      || stopwatchStartedAt === null
+                    )}
+                    accessibilityLabel={entryMode === "past-readonly"
+                      ? `Recorded ${resultUnitName(viewedSet.targetUnit, true)}, ${viewedRecordedPerformance?.status === "Skipped" ? "skipped" : result || "not recorded"}, read only`
+                      : undefined}
+                    accessibilityHint={entryMode === "past-readonly"
+                      ? `Use Edit result to correct completed set ${viewedSet.exerciseSetNumber}`
+                      : undefined}
                   />
                 </View>
               </View>
-              {isViewingPast ? (
-                <Text style={styles.pastEditHint}>
-                  This replaces the recorded result. It does not advance the workout
-                  {restEndsAt ? " or change the rest timer" : " or start rest"}.
-                </Text>
-              ) : null}
-              {isViewingPast ? (
-                <View style={styles.setActions}>
-                  <View style={styles.setAction}>
-                    <Button
-                      title={saving ? "Saving…" : "Save correction"}
-                      compact
-                      loading={saving}
-                      disabled={pendingCount > 0}
-                      onPress={() => void savePastSet()}
-                    />
-                  </View>
-                  <View style={styles.setAction}>
-                    <Button
-                      title="Cancel"
-                      variant="secondary"
-                      compact
-                      disabled={saving}
-                      onPress={cancelPastSetEdit}
-                    />
-                  </View>
-                </View>
+              {entryMode === "past-editing" ? (
+                <Button
+                  title={saving ? "Saving…" : "Save correction"}
+                  loading={saving}
+                  disabled={pendingCount > 0}
+                  onPress={() => void savePastSet()}
+                />
+              ) : entryMode === "past-readonly" ? (
+                <Button
+                  title="Edit result"
+                  variant="secondary"
+                  disabled={saving || pendingCount > 0 || !viewedRecordedPerformance}
+                  onPress={beginPastSetEdit}
+                />
               ) : (
                 <Button
                   title={saving ? "Saving…" : "Complete set"}
@@ -1102,6 +1062,37 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
                   onPress={() => void recordSet("Completed")}
                 />
               )}
+              <View style={styles.skipSetRow}>
+                {entryMode === "current" ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Skip current set ${viewedSet.exerciseSetNumber}`}
+                    disabled={saving}
+                    onPress={() => void recordSet("Skipped")}
+                    style={({ pressed }) => [
+                      styles.skipSetAction,
+                      pressed && styles.skipSetActionPressed,
+                      saving && styles.headerActionDisabled,
+                    ]}
+                  >
+                    <Text style={styles.skipSetText}>Skip this set</Text>
+                  </Pressable>
+                ) : entryMode === "past-editing" ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Cancel result correction"
+                    disabled={saving}
+                    onPress={cancelPastSetEdit}
+                    style={({ pressed }) => [
+                      styles.skipSetAction,
+                      pressed && styles.skipSetActionPressed,
+                      saving && styles.headerActionDisabled,
+                    ]}
+                  >
+                    <Text style={styles.skipSetText}>Cancel</Text>
+                  </Pressable>
+                ) : null}
+              </View>
             </View>
           ) : null}
             {saveState ? (
@@ -1332,23 +1323,6 @@ function CompletionExerciseTimingCard({
       ) : null}
     </Card>
   );
-}
-
-function formatRecordedResult(
-  workoutSet: WorkoutView["sets"][number],
-  performance: WorkoutView["recordedPerformanceBySetId"][string] | undefined,
-) {
-  if (!performance) return "Recorded result unavailable";
-  if (performance.status === "Skipped") return "Skipped";
-  const cells = formatComparisonTableCells(workoutSet, performance);
-  const load = comparisonLoadPhrase(workoutSet.loadType, cells.load);
-  const singular = Number(cells.result) === 1;
-  const unit = workoutSet.targetUnit === "seconds"
-    ? singular ? "second" : "seconds"
-    : workoutSet.targetUnit === "rounds"
-      ? singular ? "round" : "rounds"
-      : singular ? "rep" : "reps";
-  return `${load} × ${cells.result} ${unit}`;
 }
 
 function CompactSetOverview({
@@ -2322,26 +2296,6 @@ const styles = StyleSheet.create({
     fontVariant: ["tabular-nums"],
     textAlign: "center",
   },
-  returnToCurrentInline: {
-    minHeight: 44,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: spacing.sm,
-    paddingVertical: spacing.xs,
-  },
-  returnToCurrentText: {
-    color: colors.textMuted,
-    fontSize: 11,
-    lineHeight: 16,
-    fontWeight: "700",
-  },
-  returnToCurrentFocused: {
-    outlineColor: colors.accent,
-    outlineOffset: 2,
-    outlineStyle: "solid",
-    outlineWidth: 2,
-  },
   navigationHint: { color: colors.textDim, fontSize: 11, lineHeight: 16, textAlign: "center" },
   exerciseQualifier: {
     color: colors.accent,
@@ -2434,34 +2388,6 @@ const styles = StyleSheet.create({
   },
   skipSetActionPressed: { opacity: 0.66 },
   skipSetText: { color: colors.textMuted, fontSize: 12, lineHeight: 16, fontWeight: "700" },
-  pastSetSummary: { gap: spacing.md },
-  pastSetHeading: {
-    minHeight: 44,
-    flexDirection: "row",
-    flexWrap: "wrap",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.sm,
-  },
-  pastSetTitle: { color: colors.text, fontSize: 17, lineHeight: 22, fontWeight: "800" },
-  recordedResult: {
-    gap: spacing.xs,
-    padding: spacing.lg,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-  },
-  recordedResultLabel: {
-    color: colors.textDim,
-    fontSize: 9,
-    lineHeight: 13,
-    fontWeight: "800",
-    letterSpacing: 0.7,
-    textTransform: "uppercase",
-  },
-  recordedResultValue: { color: colors.text, fontSize: 18, lineHeight: 24, fontWeight: "800" },
-  recordedResultHint: { color: colors.textMuted, fontSize: 11, lineHeight: 16 },
   futureSetNotice: {
     gap: spacing.md,
     padding: spacing.lg,
@@ -2476,9 +2402,6 @@ const styles = StyleSheet.create({
   },
   logFields: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
   logField: { flexGrow: 1, flexBasis: 150, minWidth: 0 },
-  pastEditHint: { color: colors.textMuted, fontSize: 11, lineHeight: 16 },
-  setActions: { flexDirection: "row", alignItems: "stretch", gap: spacing.sm },
-  setAction: { flex: 1, minWidth: 0 },
   saveState: { textAlign: "center", color: colors.success, fontSize: 12, fontWeight: "700" },
   saveFailed: { color: colors.danger },
 });

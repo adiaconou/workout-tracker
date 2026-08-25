@@ -38,6 +38,12 @@ export type WorkoutSetNavigation = {
 
 export type WorkoutSetNavigationPosition = "past" | "current" | "future";
 
+export type SetEntryMode =
+  | "past-readonly"
+  | "past-editing"
+  | "current"
+  | "future";
+
 export type ExerciseNavigationSet = {
   exerciseOrder: number;
 };
@@ -252,6 +258,16 @@ export function viewedSetPosition(
 ): WorkoutSetNavigationPosition {
   if (navigation.viewedIndex < navigation.activeIndex) return "past";
   return navigation.viewedIndex > navigation.activeIndex ? "future" : "current";
+}
+
+export function setEntryMode(
+  position: WorkoutSetNavigationPosition,
+  replacingPastSet: boolean,
+): SetEntryMode {
+  if (position === "past") {
+    return replacingPastSet ? "past-editing" : "past-readonly";
+  }
+  return position;
 }
 
 export function reconcileSetNavigation(input: {
