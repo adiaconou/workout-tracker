@@ -59,6 +59,20 @@ export type ExerciseChangePlan = ChangePlanBase & {
 
 export type ChangePlan = RoutineChangePlan | ExerciseChangePlan;
 
+export type PlanReviewSection = {
+  key: string;
+  title: string;
+  summary: string;
+  preview: string | null;
+  details: string[];
+};
+
+export type PlanReviewPresentation = {
+  metadata: string | null;
+  detailCount: number;
+  sections: PlanReviewSection[];
+};
+
 export type ModelOption = {
   id: string;
   label: string;
@@ -228,6 +242,128 @@ function decodeLegacyJsonStrings(change: string) {
   });
 }
 
+type MutablePlanReviewSection = PlanReviewSection & {
+  action: "added" | "removed" | null;
+  setLabels: Set<string>;
+};
+
+const exercisePlacementPattern = /^(.* \(position \d+\)) · (.+)$/u;
+const exerciseActionPattern = /^(Add|Remove) exercise: (.* \(position \d+\)) (?:—|-) /u;
+const setChangePattern = /^(?:(?:Add|Remove) set|Set) (\d+)\b/u;
+
+export function planReviewPresentation(plan: ChangePlan): PlanReviewPresentation {
+  const sections: MutablePlanReviewSection[] = [];
+  const sectionsByKey = new Map<string, MutablePlanReviewSection>();
+
+  for (const rawChange of plan.diff) {
+    const change = readablePlanDiff(rawChange);
+    const actionMatch = exerciseActionPattern.exec(change);
+    const placementMatch = exercisePlacementPattern.exec(change);
+
+    if (actionMatch) {
+      const action = actionMatch[1] === "Add" ? "added" : "removed";
+      const section = ensureReviewSection(sections, sectionsByKey, {
+        key: `placement:${actionMatch[2]!}`,
+        title: actionMatch[2]!,
+      });
+      section.action = action;
+      section.details.push(change);
+      continue;
+    }
+
+    if (placementMatch) {
+      const placement = placementMatch[1]!;
+      const detail = placementMatch[2]!;
+      const section = ensureReviewSection(sections, sectionsByKey, {
+        key: `placement:${placement}`,
+        title: placement,
+      });
+      section.details.push(change);
+      const setMatch = setChangePattern.exec(detail);
+      if (setMatch) section.setLabels.add(`Set ${setMatch[1]!}`);
+      if (!section.preview && isCompactPlanPreview(detail)) section.preview = detail;
+      continue;
+    }
+
+    const key = plan.kind === "exercise"
+      ? "exercise"
+      : isRoutinePlanDetail(change)
+        ? "routine"
+        : "other";
+    const section = ensureReviewSection(sections, sectionsByKey, {
+      key,
+      title: key === "exercise"
+        ? "Exercise details"
+        : key === "routine"
+          ? "Routine"
+          : "Other details",
+    });
+    section.details.push(change);
+    if (!section.preview && isCompactPlanPreview(change)) section.preview = change;
+  }
+
+  return {
+    metadata: plan.kind === "routine" ? routinePlanMetadata(plan) : null,
+    detailCount: plan.diff.length,
+    sections: sections.map(({ action, setLabels, ...section }) => ({
+      ...section,
+      summary: reviewSectionSummary(action, setLabels.size, section.details.length),
+    })),
+  };
+}
+
+function ensureReviewSection(
+  sections: MutablePlanReviewSection[],
+  sectionsByKey: Map<string, MutablePlanReviewSection>,
+  input: Pick<PlanReviewSection, "key" | "title">,
+) {
+  const existing = sectionsByKey.get(input.key);
+  if (existing) return existing;
+  const section: MutablePlanReviewSection = {
+    ...input,
+    summary: "",
+    preview: null,
+    details: [],
+    action: null,
+    setLabels: new Set(),
+  };
+  sections.push(section);
+  sectionsByKey.set(section.key, section);
+  return section;
+}
+
+function isRoutinePlanDetail(change: string) {
+  return /^(?:Create routine with code|Routine name:|Routine summary:|Estimated duration:)/u.test(change);
+}
+
+function isCompactPlanPreview(change: string) {
+  return change.length <= 140 && !/^(?:Instructions|Notes|Routine summary):/u.test(change);
+}
+
+function routinePlanMetadata(plan: RoutineChangePlan) {
+  const exerciseCount = plan.proposedRoutine.exercises.length;
+  return `${plan.proposedRoutine.focus} · ${plan.proposedRoutine.durationMin} min · ${exerciseCount} ${
+    exerciseCount === 1 ? "exercise" : "exercises"
+  }`;
+}
+
+function reviewSectionSummary(
+  action: MutablePlanReviewSection["action"],
+  setCount: number,
+  detailCount: number,
+) {
+  if (action) {
+    const label = action === "added" ? "Added" : "Removed";
+    return setCount ? `${label} · ${countLabel(setCount, "set")}` : label;
+  }
+  if (setCount) return `${countLabel(setCount, "set")} · ${countLabel(detailCount, "change")}`;
+  return countLabel(detailCount, "change");
+}
+
+function countLabel(count: number, singular: string) {
+  return `${count} ${count === 1 ? singular : `${singular}s`}`;
+}
+
 export function coachToolActivityRows(activities: readonly CoachToolActivity[] | undefined) {
   const seen = new Set<string>();
   const rows: CoachToolActivityRow[] = [];
@@ -387,6 +523,31 @@ export function sendFailureState(content: string, caught: unknown) {
     composer: content,
     error: caught instanceof Error ? caught.message : "The coach could not respond.",
   };
+}
+
+export function reconcileFailedSend(
+  before: CoachBootstrap,
+  refreshed: CoachBootstrap,
+  content: string,
+): "completed" | "partial" | "none" {
+  if (before.thread.id !== refreshed.thread.id) return "none";
+
+  const existingMessageIds = new Set(before.messages.map((message) => message.id));
+  const newMessages = refreshed.messages.filter((message) => !existingMessageIds.has(message.id));
+  const matchingUserIndex = newMessages.findIndex((message) => (
+    message.role === "user" && message.content === content
+  ));
+  if (matchingUserIndex < 0) return "none";
+
+  const hasAssistantResponse = newMessages
+    .slice(matchingUserIndex + 1)
+    .some((message) => message.role === "assistant");
+  if (hasAssistantResponse) return "completed";
+
+  const existingPlanIds = new Set(before.plans.map((plan) => plan.id));
+  const hasNewStagedPlan = reviewablePlans(refreshed.plans)
+    .some((plan) => !existingPlanIds.has(plan.id));
+  return hasNewStagedPlan ? "partial" : "none";
 }
 
 export function reviewablePlans(plans: readonly ChangePlan[] | undefined) {

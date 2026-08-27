@@ -288,9 +288,12 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
       summary: `Create ${focus}`,
       rationale: "Create a complete routine from active exercises after the user reviews every field.",
     });
-    enqueueText("The new-routine review card is ready. Nothing has changed yet.");
     const payload = assertStatus(await sendMessage(thread.id, `Create a new ${focus} routine.`), 201);
     assert.equal(queuedResponses.length, 0, "Every queued model response should be consumed");
+    assert.equal(
+      payload.assistantMessage.content,
+      "I prepared a new routine for review. Nothing has changed yet.",
+    );
     assert.equal(
       await count("SELECT COUNT(*) AS count FROM assistant_change_plans WHERE owner_email = ?", ownerEmail),
       plansBefore + 1,
@@ -473,8 +476,11 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
       summary: "Keep the legacy cable placement",
       rationale: "Preserve existing data while changing only the routine summary.",
     });
-    enqueueText("The review card is ready. Nothing has changed yet.");
     const preserved = assertStatus(await sendMessage(preservedThread.id, "Update only the routine summary."), 201);
+    assert.equal(
+      preserved.assistantMessage.content,
+      "I prepared a routine change for review. Nothing has changed yet.",
+    );
     const preservedPlan = preserved.plans.find((candidate) => candidate.kind === "routine" && candidate.routineCode === "LEGACY-CABLE");
     assert.ok(preservedPlan);
     assertStatus(await request(`/api/v1/assistant/plans/${preservedPlan.id}/apply`, { method: "POST", body: {} }), 200);
@@ -508,6 +514,133 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
     );
 
     await setEquipment(allEquipment);
+  });
+
+  await context.test("identical pending routine creation reuses the nullable-base proposal", async () => {
+    const exercise = await createExercise("Coach Reusable New Routine Carry");
+    const staged = await stageRoutineCreation({
+      code: "COACH-REUSE-NEW",
+      exercise,
+      focus: "Reusable new routine",
+    });
+
+    enqueueTool("get_coaching_context", {});
+    enqueueTool("search_exercises", { query: exercise.name, includeArchived: false });
+    enqueueTool("propose_new_routine", {
+      routineCode: "COACH-REUSE-NEW",
+      proposedRoutine: staged.proposedRoutine,
+      summary: "Phrase the same new routine differently",
+      rationale: "The normalized routine itself is unchanged.",
+    });
+    const replay = assertStatus(
+      await sendMessage(staged.thread.id, "Prepare that exact new routine again."),
+      201,
+    );
+    const replayPlan = replay.plans.find((candidate) => (
+      candidate.kind === "routine"
+      && candidate.action === "create"
+      && candidate.routineCode === "COACH-REUSE-NEW"
+    ));
+
+    assert.ok(replayPlan);
+    assert.equal(replayPlan.id, staged.plan.id);
+    assert.equal(
+      await count(`SELECT COUNT(*) AS count FROM assistant_change_plans
+        WHERE owner_email = ? AND thread_id = ? AND routine_code = ?
+          AND base_version_id IS NULL AND status = 'pending'`,
+      ownerEmail, staged.thread.id, "COACH-REUSE-NEW"),
+      1,
+    );
+  });
+
+  await context.test("routine update reuse requires exact proposed input and thread", async () => {
+    const exercise = await createExercise("Coach Exact Proposal Carry");
+    const created = assertStatus(await request("/api/v1/routines", {
+      method: "POST",
+      body: { code: "COACH-REUSE", version: singleSetRoutine(exercise.id, "Proposal reuse") },
+    }), 201).routine;
+    const thread = await createThread();
+    const firstProposal = routineProposalFromCurrent(created.currentVersion, {
+      summary: "First exact proposed routine summary.",
+    });
+
+    async function sendRoutineProposal(targetThread, proposedRoutine, summary) {
+      enqueueTool("get_routine", { routineId: created.id });
+      enqueueTool("propose_routine_change", {
+        routineId: created.id,
+        baseVersionId: created.currentVersionId,
+        proposedRoutine,
+        summary,
+        rationale: "Exact pending routine-proposal reuse coverage.",
+      });
+      return assertStatus(
+        await sendMessage(targetThread.id, "Prepare this routine proposal for review."),
+        201,
+      );
+    }
+
+    const firstPayload = await sendRoutineProposal(
+      thread,
+      firstProposal,
+      "Prepare the first exact routine change",
+    );
+    const firstPlan = firstPayload.plans.find((candidate) => (
+      candidate.kind === "routine" && candidate.routineCode === "COACH-REUSE"
+    ));
+    assert.ok(firstPlan);
+
+    const replayPayload = await sendRoutineProposal(
+      thread,
+      firstProposal,
+      "Describe the same exact routine change differently",
+    );
+    const replayPlan = replayPayload.plans.find((candidate) => (
+      candidate.kind === "routine" && candidate.routineCode === "COACH-REUSE"
+    ));
+    assert.ok(replayPlan);
+    assert.equal(replayPlan.id, firstPlan.id);
+    assert.equal(
+      await count(`SELECT COUNT(*) AS count FROM assistant_change_plans
+        WHERE owner_email = ? AND thread_id = ? AND routine_code = ?
+          AND status = 'pending'`,
+      ownerEmail, thread.id, "COACH-REUSE"),
+      1,
+    );
+
+    const distinctProposal = {
+      ...firstProposal,
+      summary: "A materially different proposed routine summary.",
+    };
+    const distinctPayload = await sendRoutineProposal(
+      thread,
+      distinctProposal,
+      "Prepare a materially different routine change",
+    );
+    const distinctPlan = distinctPayload.plans.find((candidate) => (
+      candidate.kind === "routine"
+      && candidate.routineCode === "COACH-REUSE"
+      && candidate.id !== firstPlan.id
+    ));
+    assert.ok(distinctPlan, "Different normalized routine input must create another plan");
+    assert.equal(
+      await count(`SELECT COUNT(*) AS count FROM assistant_change_plans
+        WHERE owner_email = ? AND thread_id = ? AND routine_code = ?
+          AND status = 'pending'`,
+      ownerEmail, thread.id, "COACH-REUSE"),
+      2,
+    );
+
+    const otherThread = await createThread();
+    const otherThreadPayload = await sendRoutineProposal(
+      otherThread,
+      firstProposal,
+      "Prepare the same routine change in another conversation",
+    );
+    const otherThreadPlan = otherThreadPayload.plans.find((candidate) => (
+      candidate.kind === "routine" && candidate.routineCode === "COACH-REUSE"
+    ));
+    assert.ok(otherThreadPlan);
+    assert.notEqual(otherThreadPlan.id, firstPlan.id);
   });
 
   await context.test("proposal does not mutate, owner isolation holds, and concurrent Apply is single-use", async () => {
@@ -738,8 +871,11 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
       summary: "Update the detailed set prescription",
       rationale: "Make every requested field visible before the user chooses an action.",
     });
-    enqueueText("The review card is ready. Nothing has changed yet.");
     const staged = assertStatus(await sendMessage(thread.id, "Update this routine exactly as requested."), 201);
+    assert.equal(
+      staged.assistantMessage.content,
+      "I prepared a routine change for review. Nothing has changed yet.",
+    );
     const plan = staged.plans.find((candidate) => candidate.kind === "routine" && candidate.routineCode === "COACH-REVIEW");
     assert.ok(plan);
     assert.equal(plan.status, "pending");

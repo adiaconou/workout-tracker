@@ -16,7 +16,9 @@ import {
   planApplyBusyLabel,
   planApplyFailure,
   planApplySuccess,
+  planReviewPresentation,
   readablePlanDiff,
+  reconcileFailedSend,
   refreshedModelSelection,
   reviewablePlans,
   selectedModelOption,
@@ -292,6 +294,197 @@ test("legacy stored plan diffs become readable without changing new plan text", 
   );
 });
 
+test("routine proposal presentation groups modern details by exact placement", () => {
+  const diff = [
+    "Routine name: Strength → Hypertrophy.",
+    "Barbell Bench Press (position 1) · Position: 2 → 1.",
+    "Barbell Bench Press (position 1) · Set 1 · Rest after set: 90 seconds → 120 seconds.",
+    "Barbell Bench Press (position 1) · Set 2 · Notes: Old cue → New cue.",
+    "Cable Row (position 2) · Instructions: Keep the elbows close.",
+  ];
+  const presentation = planReviewPresentation(plan("routine-modern", {
+    kind: "routine",
+    action: "update",
+    routineCode: "A",
+    proposedRoutine: {
+      focus: "Hypertrophy",
+      durationMin: 60,
+      exercises: [{}, {}],
+    },
+    diff,
+  }));
+
+  assert.equal(presentation.metadata, "Hypertrophy · 60 min · 2 exercises");
+  assert.equal(presentation.detailCount, diff.length);
+  assert.deepEqual(presentation.sections, [
+    {
+      key: "routine",
+      title: "Routine",
+      summary: "1 change",
+      preview: diff[0],
+      details: [diff[0]],
+    },
+    {
+      key: "placement:Barbell Bench Press (position 1)",
+      title: "Barbell Bench Press (position 1)",
+      summary: "2 sets · 3 changes",
+      preview: "Position: 2 → 1.",
+      details: diff.slice(1, 4),
+    },
+    {
+      key: "placement:Cable Row (position 2)",
+      title: "Cable Row (position 2)",
+      summary: "1 change",
+      preview: null,
+      details: [diff[4]],
+    },
+  ]);
+});
+
+test("proposal presentation distinguishes added, removed, and duplicate-name placements", () => {
+  const diff = [
+    "Add exercise: Squat (position 1) — Superset group: Not set.",
+    "Squat (position 1) · Add set 1 — Target type: Reps.",
+    "Remove exercise: Squat (position 2) — Superset group: Not set.",
+    "Squat (position 2) · Remove set 1 — Target type: Reps.",
+    "Squat (position 2) · Remove set 2 — Target type: Reps.",
+    "Add exercise: Farmer Carry (position 3) — Superset group: Not set.",
+  ];
+  const presentation = planReviewPresentation(plan("routine-structure", {
+    kind: "routine",
+    action: "update",
+    routineCode: "A",
+    proposedRoutine: {
+      focus: "Strength",
+      durationMin: 45,
+      exercises: [{}, {}, {}],
+    },
+    diff,
+  }));
+
+  assert.deepEqual(
+    presentation.sections.map(({ key, title, summary, preview }) => ({
+      key,
+      title,
+      summary,
+      preview,
+    })),
+    [
+      {
+        key: "placement:Squat (position 1)",
+        title: "Squat (position 1)",
+        summary: "Added · 1 set",
+        preview: "Add set 1 — Target type: Reps.",
+      },
+      {
+        key: "placement:Squat (position 2)",
+        title: "Squat (position 2)",
+        summary: "Removed · 2 sets",
+        preview: "Remove set 1 — Target type: Reps.",
+      },
+      {
+        key: "placement:Farmer Carry (position 3)",
+        title: "Farmer Carry (position 3)",
+        summary: "Added",
+        preview: null,
+      },
+    ],
+  );
+  assert.deepEqual(
+    presentation.sections.flatMap(({ details }) => details),
+    diff,
+  );
+});
+
+test("proposal presentation normalizes legacy details and preserves unknown ordering", () => {
+  const longUnknown = `Custom detail: ${"x".repeat(150)}`;
+  const diff = [
+    longUnknown,
+    'Routine summary: none -> "Keep the brace steady.".',
+    '"Split Squat" placement at position 2 · set 1 · rest rule: "standard" -> "after_both_sides".',
+    'Add "Deadlift": position=3; superset group=none; instructions="Stay tight."; notes="".',
+  ];
+  const normalized = diff.map(readablePlanDiff);
+  const presentation = planReviewPresentation(plan("routine-legacy", {
+    kind: "routine",
+    action: "create",
+    routineCode: "LEGACY",
+    proposedRoutine: {
+      focus: "Strength",
+      durationMin: 45,
+      exercises: [{}],
+    },
+    diff,
+  }));
+
+  assert.equal(presentation.metadata, "Strength · 45 min · 1 exercise");
+  assert.deepEqual(
+    presentation.sections.map(({ key, title, summary, preview }) => ({
+      key,
+      title,
+      summary,
+      preview,
+    })),
+    [
+      {
+        key: "other",
+        title: "Other details",
+        summary: "1 change",
+        preview: null,
+      },
+      {
+        key: "routine",
+        title: "Routine",
+        summary: "1 change",
+        preview: null,
+      },
+      {
+        key: "placement:Split Squat (position 2)",
+        title: "Split Squat (position 2)",
+        summary: "1 set · 1 change",
+        preview: "Set 1 · Rest timing: Standard → After both sides.",
+      },
+      {
+        key: "placement:Deadlift (position 3)",
+        title: "Deadlift (position 3)",
+        summary: "Added",
+        preview: null,
+      },
+    ],
+  );
+  assert.deepEqual(
+    presentation.sections.flatMap(({ details }) => details),
+    normalized,
+  );
+});
+
+test("exercise and empty proposal presentations remain compact", () => {
+  const exerciseDiff = [
+    "Archive Old Squat from the exercise library.",
+    "Existing routine versions and workout history remain unchanged.",
+  ];
+  assert.deepEqual(planReviewPresentation(plan("exercise-archive", {
+    action: "archive",
+    exerciseName: "Old Squat",
+    diff: exerciseDiff,
+  })), {
+    metadata: null,
+    detailCount: 2,
+    sections: [{
+      key: "exercise",
+      title: "Exercise details",
+      summary: "2 changes",
+      preview: exerciseDiff[0],
+      details: exerciseDiff,
+    }],
+  });
+  assert.deepEqual(planReviewPresentation(plan("empty", { diff: [] })), {
+    metadata: null,
+    detailCount: 0,
+    sections: [],
+  });
+});
+
 test("optimistic messages append with exact local metadata", () => {
   const optimistic = optimisticUserMessage({
     id: "local-1",
@@ -374,6 +567,85 @@ test("failed sends remove optimistic state and restore the composer", () => {
     composer: "Try again",
     error: "The coach could not respond.",
   });
+});
+
+test("failed-send reconciliation recognizes a completed persisted response", () => {
+  const before = bootstrap({
+    messages: [message("existing")],
+    plans: [plan("existing-plan")],
+  });
+  const matchingUser = {
+    ...message("server-user"),
+    content: "Build routines",
+  };
+  const assistant = message("server-assistant", "assistant");
+  const refreshed = bootstrap({
+    messages: [...before.messages, matchingUser, assistant],
+    plans: before.plans,
+  });
+
+  assert.equal(reconcileFailedSend(before, refreshed, matchingUser.content), "completed");
+});
+
+test("failed-send reconciliation recognizes persisted users with staged plans", () => {
+  const before = bootstrap({
+    messages: [message("existing")],
+    plans: [plan("existing-plan")],
+  });
+  const matchingUser = {
+    ...message("server-user"),
+    content: "Build routines",
+  };
+  const pending = plan("new-pending");
+  const interruptedCreation = plan("new-applying", {
+    kind: "routine",
+    action: "create",
+    routineCode: "B",
+    proposedRoutine: { focus: "Pull", durationMin: 45, exercises: [] },
+    status: "applying",
+  });
+
+  assert.equal(reconcileFailedSend(before, bootstrap({
+    messages: [...before.messages, matchingUser],
+    plans: [...before.plans, pending],
+  }), matchingUser.content), "partial");
+  assert.equal(reconcileFailedSend(before, bootstrap({
+    messages: [...before.messages, matchingUser],
+    plans: [...before.plans, interruptedCreation],
+  }), matchingUser.content), "partial");
+});
+
+test("failed-send reconciliation rejects wrong threads and unrelated state", () => {
+  const before = bootstrap({
+    messages: [message("existing")],
+    plans: [plan("existing-plan")],
+  });
+  const matchingUser = {
+    ...message("server-user"),
+    content: "Build routines",
+  };
+  const assistant = message("server-assistant", "assistant");
+
+  assert.equal(reconcileFailedSend(before, bootstrap({
+    thread: otherThread,
+    messages: [...before.messages, matchingUser, assistant],
+  }), matchingUser.content), "none");
+  assert.equal(reconcileFailedSend(before, bootstrap({
+    messages: [
+      ...before.messages,
+      assistant,
+      { ...matchingUser, content: "Different request" },
+    ],
+    plans: [...before.plans, plan("new-pending")],
+  }), matchingUser.content), "none");
+  assert.equal(reconcileFailedSend(before, bootstrap({
+    messages: [...before.messages, assistant, matchingUser],
+    plans: before.plans,
+  }), matchingUser.content), "none");
+  assert.equal(reconcileFailedSend(before, bootstrap({
+    messages: [...before.messages, matchingUser],
+    plans: [...before.plans, plan("already-applied", { status: "applied" })],
+  }), matchingUser.content), "none");
 });
 
 test("review cards retain pending plans and interrupted routine creation only", () => {

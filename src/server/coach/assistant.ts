@@ -1436,12 +1436,23 @@ async function runCoach(input: {
       ),
       formatError: errorMessage,
       isProposalTool: (name) => ["propose_new_routine", "propose_routine_change", "propose_exercise_change"].includes(name),
+      proposalCompletionText,
       reportAuditError: (error) => console.error("Coach tool-call audit failed", error),
     });
   } catch (error) {
     if (error instanceof CoachToolLoopError) throw new OpenAIRequestError(error.message);
     throw error;
   }
+}
+
+function proposalCompletionText(name: string) {
+  if (name === "propose_new_routine") {
+    return "I prepared a new routine for review. Nothing has changed yet.";
+  }
+  if (name === "propose_routine_change") {
+    return "I prepared a routine change for review. Nothing has changed yet.";
+  }
+  return null;
 }
 
 async function createOpenAIResponse(
@@ -1600,6 +1611,44 @@ async function executeCoachTool(input: {
   }
 }
 
+type PendingRoutineProposalResult = Pick<
+  ChangePlanRow,
+  "id" | "routineCode" | "summary" | "rationale" | "diffJson"
+>;
+
+function routineProposalToolResult(
+  plan: PendingRoutineProposalResult,
+  instruction: string,
+) {
+  return {
+    planId: plan.id,
+    status: "ready_for_review",
+    routineCode: plan.routineCode,
+    summary: plan.summary,
+    rationale: plan.rationale,
+    diff: JSON.parse(plan.diffJson) as string[],
+    instruction,
+  };
+}
+
+async function findExactPendingRoutineProposal(
+  env: WorkerEnv,
+  ownerEmail: string,
+  threadId: string,
+  routineCode: string,
+  baseVersionId: string | null,
+  proposedInputJson: string,
+) {
+  return env.DB.prepare(`SELECT id, routine_code AS routineCode,
+    summary, rationale, diff_json AS diffJson
+    FROM assistant_change_plans
+    WHERE owner_email = ? AND thread_id = ? AND routine_code = ?
+      AND base_version_id IS ? AND proposed_input_json = ? AND status = 'pending'
+    ORDER BY created_at DESC LIMIT 1`)
+    .bind(ownerEmail, threadId, routineCode, baseVersionId, proposedInputJson)
+    .first<PendingRoutineProposalResult>();
+}
+
 async function proposeNewRoutine(input: {
   env: WorkerEnv;
   user: ApiUser;
@@ -1623,6 +1672,17 @@ async function proposeNewRoutine(input: {
   const summary = cleanRequiredText(input.argumentsValue.summary, "Plan summary", 500);
   const rationale = cleanRequiredText(input.argumentsValue.rationale, "Plan rationale", 2_000);
   const diff = buildRoutineCreationDiff(routineCode, completed.proposal, exerciseLibrary);
+  const proposedInputJson = JSON.stringify(proposed);
+  const existing = await findExactPendingRoutineProposal(
+    input.env,
+    input.user.email,
+    input.thread.id,
+    routineCode,
+    null,
+    proposedInputJson,
+  );
+  const instruction = "Tell the user the new-routine review card is ready and nothing has changed yet. Do not ask for verbal approval.";
+  if (existing) return routineProposalToolResult(existing, instruction);
   const now = new Date().toISOString();
   const planId = crypto.randomUUID();
   await input.env.DB.prepare(`INSERT INTO assistant_change_plans (
@@ -1636,7 +1696,7 @@ async function proposeNewRoutine(input: {
       input.thread.id,
       planId,
       routineCode,
-      JSON.stringify(proposed),
+      proposedInputJson,
       summary,
       rationale,
       JSON.stringify(diff),
@@ -1644,15 +1704,13 @@ async function proposeNewRoutine(input: {
       now,
     )
     .run();
-  return {
-    planId,
-    status: "ready_for_review",
+  return routineProposalToolResult({
+    id: planId,
     routineCode,
     summary,
     rationale,
-    diff,
-    instruction: "Tell the user the new-routine review card is ready and nothing has changed yet. Do not ask for verbal approval.",
-  };
+    diffJson: JSON.stringify(diff),
+  }, instruction);
 }
 
 async function proposeRoutineChange(input: {
@@ -1698,6 +1756,17 @@ async function proposeRoutineChange(input: {
   const rationale = cleanRequiredText(input.argumentsValue.rationale, "Plan rationale", 2_000);
   const diff = buildRoutineChangeDiff(routine, completed.proposal, exerciseLibrary);
   if (!diff.length) throw new Error("The proposed routine update does not change anything.");
+  const proposedInputJson = JSON.stringify(proposed);
+  const existing = await findExactPendingRoutineProposal(
+    input.env,
+    input.user.email,
+    input.thread.id,
+    routine.code,
+    baseVersionId,
+    proposedInputJson,
+  );
+  const instruction = "Tell the user the review card is ready and nothing has changed yet. Do not ask for verbal approval.";
+  if (existing) return routineProposalToolResult(existing, instruction);
   const now = new Date().toISOString();
   const planId = crypto.randomUUID();
   await input.env.DB.prepare(`INSERT INTO assistant_change_plans (
@@ -1705,17 +1774,15 @@ async function proposeRoutineChange(input: {
     proposed_input_json, summary, rationale, diff_json, status,
     applied_version_id, created_at, updated_at
   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)`)
-    .bind(planId, input.user.email, input.thread.id, routine.id, routine.code, baseVersionId, JSON.stringify(proposed), summary, rationale, JSON.stringify(diff), now, now)
+    .bind(planId, input.user.email, input.thread.id, routine.id, routine.code, baseVersionId, proposedInputJson, summary, rationale, JSON.stringify(diff), now, now)
     .run();
-  return {
-    planId,
-    status: "ready_for_review",
+  return routineProposalToolResult({
+    id: planId,
     routineCode: routine.code,
     summary,
     rationale,
-    diff,
-    instruction: "Tell the user the review card is ready and nothing has changed yet. Do not ask for verbal approval.",
-  };
+    diffJson: JSON.stringify(diff),
+  }, instruction);
 }
 
 async function proposeExerciseChange(input: {

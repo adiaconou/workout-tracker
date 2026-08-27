@@ -43,6 +43,7 @@ export async function runCoachToolLoop(input: {
   recordToolCall: (record: CoachToolCallRecord) => Promise<void>;
   formatError: (error: unknown, fallback: string) => string;
   isProposalTool?: (name: string) => boolean;
+  proposalCompletionText?: (name: string) => string | null;
   maxRunDurationMs?: number;
   now?: () => number;
   reportAuditError?: (error: unknown) => void;
@@ -56,6 +57,7 @@ export async function runCoachToolLoop(input: {
   const activities: CoachToolActivity[] = [];
   let forceFinalResponse = false;
   let proposalStaged = false;
+  let stagedProposalCompletionText: string | null = null;
 
   while (true) {
     if (!forceFinalResponse && now() - startedAt >= maxRunDurationMs) forceFinalResponse = true;
@@ -121,7 +123,8 @@ export async function runCoachToolLoop(input: {
           toolOutput = await input.executeTool({ name, argumentsValue });
           if (input.isProposalTool?.(name)) {
             proposalStaged = true;
-            forceFinalResponse = true;
+            stagedProposalCompletionText = input.proposalCompletionText?.(name) ?? null;
+            if (!stagedProposalCompletionText) forceFinalResponse = true;
           }
         } catch (error) {
           status = "failed";
@@ -136,6 +139,13 @@ export async function runCoachToolLoop(input: {
         input.reportAuditError?.(error);
       }
       conversation.push({ type: "function_call_output", call_id: callId, output: JSON.stringify(toolOutput) });
+    }
+    if (stagedProposalCompletionText) {
+      return {
+        text: stagedProposalCompletionText,
+        responseId,
+        activities: withoutRepairedFailures(activities),
+      };
     }
   }
 }

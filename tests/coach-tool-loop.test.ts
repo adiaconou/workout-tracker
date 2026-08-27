@@ -230,7 +230,7 @@ test("forces a final response when the same tool call repeats without progress",
     .some((item) => item.type === "function_call_output" && item.call_id === "call-3"));
 });
 
-test("a successful proposal ends tool use and forces final synthesis", async (context) => {
+test("a successful proposal can finish without another model response", async (context) => {
   const proposalTools = ["propose_new_routine", "propose_routine_change", "propose_exercise_change"];
   for (const toolName of proposalTools) {
     await context.test(toolName, async () => {
@@ -244,11 +244,6 @@ test("a successful proposal ends tool use and forces final synthesis", async (co
           arguments: '{"target":"item-a"}',
         }],
       }];
-      responses.push({
-        id: "response-final",
-        status: "completed",
-        output: [{ type: "message", content: [{ type: "output_text", text: "The plan is ready." }] }],
-      });
       let executions = 0;
       const statuses: string[] = [];
       const choices: string[] = [];
@@ -269,13 +264,15 @@ test("a successful proposal ends tool use and forces final synthesis", async (co
         },
         formatError,
         isProposalTool: (name) => proposalTools.includes(name),
+        proposalCompletionText: () => "The review card is ready.",
       });
 
-      assert.equal(result.text, "The plan is ready.");
+      assert.equal(result.text, "The review card is ready.");
       assert.deepEqual(result.activities, [{ name: toolName, status: "succeeded" }]);
       assert.equal(executions, 1);
       assert.deepEqual(statuses, ["succeeded"]);
-      assert.deepEqual(choices, ["auto", "none"]);
+      assert.deepEqual(choices, ["auto"]);
+      assert.equal(responses.length, 0);
     });
   }
 });

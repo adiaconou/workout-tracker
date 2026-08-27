@@ -32,7 +32,9 @@ import {
   planApplyBusyLabel,
   planApplyFailure,
   planApplySuccess,
+  planReviewPresentation,
   readablePlanDiff,
+  reconcileFailedSend,
   refreshedModelSelection,
   reviewablePlans,
   selectedModelOption,
@@ -40,6 +42,7 @@ import {
   sendFailureState,
   type AssistantMessage,
   type AssistantThread,
+  type ChangePlan,
   type CoachBootstrap,
   type CoachProfile,
   type ExerciseChangePlan,
@@ -61,6 +64,7 @@ export function CoachScreen() {
   const { starter } = useLocalSearchParams<{ starter?: string }>();
   const messageListRef = useRef<ScrollView | null>(null);
   const starterAppliedRef = useRef(false);
+  const activeThreadIdRef = useRef<string | null>(null);
   const [data, setData] = useState<CoachBootstrap | null>(null);
   const [selection, setSelection] = useState<ModelSelection | null>(null);
   const [loading, setLoading] = useState(true);
@@ -71,6 +75,10 @@ export function CoachScreen() {
   const [planFeedback, setPlanFeedback] = useState<{
     threadId: string;
     feedback: PlanActionFeedback;
+  } | null>(null);
+  const [sendNotice, setSendNotice] = useState<{
+    threadId: string;
+    message: string;
   } | null>(null);
   const [composer, setComposer] = useState("");
   const [error, setError] = useState("");
@@ -86,6 +94,7 @@ export function CoachScreen() {
       );
       setData((current) => bootstrapWithPreservedActivities(current, payload));
       setPlanFeedback((current) => current?.threadId === payload.thread.id ? current : null);
+      setSendNotice((current) => current?.threadId === payload.thread.id ? current : null);
       setSelection(selectionFromProfile(payload.profile));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "The coach could not be loaded.");
@@ -119,6 +128,7 @@ export function CoachScreen() {
   );
   const reasoningEfforts = selectedModel?.reasoningEfforts ?? ["auto"];
   const reviewPlans = reviewablePlans(data?.plans);
+  activeThreadIdRef.current = data?.thread.id ?? null;
 
   async function persistModelSettings(next: ModelSelection) {
     if (!data || !selection) return;
@@ -199,6 +209,7 @@ export function CoachScreen() {
     setSending(true);
     setError("");
     setPlanFeedback(null);
+    setSendNotice(null);
     setComposer("");
     setData((current) => bootstrapWithOptimisticMessage(current, optimisticMessage));
     try {
@@ -220,9 +231,35 @@ export function CoachScreen() {
       ));
     } catch (caught) {
       const failure = sendFailureState(content, caught);
-      setData((current) => bootstrapWithoutOptimisticMessage(current, optimisticMessage.id));
-      setComposer(failure.composer);
-      setError(failure.error);
+      let reconciliation: ReturnType<typeof reconcileFailedSend> = "none";
+      try {
+        const refreshed = await apiRequest<CoachBootstrap>(
+          `/api/v1/assistant?threadId=${encodeURIComponent(activeThreadId)}`,
+        );
+        reconciliation = reconcileFailedSend(data, refreshed, content);
+        if (reconciliation !== "none") {
+          setData((current) => current?.thread.id === activeThreadId
+            ? bootstrapWithPreservedActivities(current, refreshed)
+            : current);
+        }
+      } catch {
+        // Fall back to the original send error when reconciliation is unavailable.
+      }
+
+      if (activeThreadIdRef.current === activeThreadId && reconciliation !== "none") {
+        setComposer("");
+        setError("");
+        setSendNotice({
+          threadId: activeThreadId,
+          message: reconciliation === "completed"
+            ? "The connection dropped, but your request and Coach's reply were saved."
+            : "Your request was saved and the proposed update is ready to review.",
+        });
+      } else if (activeThreadIdRef.current === activeThreadId) {
+        setData((current) => bootstrapWithoutOptimisticMessage(current, optimisticMessage.id));
+        setComposer(failure.composer);
+        setError(failure.error);
+      }
     } finally {
       setSending(false);
     }
@@ -252,6 +289,7 @@ export function CoachScreen() {
     setPlanBusy(transition.busyKey);
     setError("");
     setPlanFeedback(null);
+    setSendNotice(null);
     try {
       const payload = await apiRequest<PlanApplyResponse | { rejected: true; planId: string }>(
         `/api/v1/assistant/plans/${encodeURIComponent(planId)}/${action}`,
@@ -302,7 +340,11 @@ export function CoachScreen() {
   }
 
   const activePlanFeedback = planFeedback?.threadId === data.thread.id ? planFeedback.feedback : null;
-  const hasConversation = data.messages.length > 0 || reviewPlans.length > 0 || Boolean(activePlanFeedback);
+  const activeSendNotice = sendNotice?.threadId === data.thread.id ? sendNotice.message : null;
+  const hasConversation = data.messages.length > 0
+    || reviewPlans.length > 0
+    || Boolean(activePlanFeedback)
+    || Boolean(activeSendNotice);
 
   return (
     <Screen scroll={false} safeTop={false} contentStyle={styles.screen}>
@@ -378,72 +420,24 @@ export function CoachScreen() {
               ))}
 
               {reviewPlans.map((plan) => (
-                <View key={plan.id} style={styles.planCard}>
-                  <View style={styles.planHeader}>
-                    <View style={styles.planBadge}>
-                      <Text style={styles.planBadgeText}>
-                        {plan.kind === "routine"
-                          ? plan.action === "create" ? "Review new routine" : "Review routine change"
-                          : `Review exercise ${exerciseActionLabel(plan.action).toLowerCase()}`}
-                      </Text>
-                    </View>
-                    <Text style={styles.planTitle}>
-                      {plan.kind === "exercise"
-                        ? `${plan.exerciseName}: ${plan.summary}`
-                        : `${plan.action === "create" ? "New routine" : "Routine"} ${plan.routineCode}: ${plan.summary}`}
-                    </Text>
+                <PlanReviewCard
+                  key={plan.id}
+                  plan={plan}
+                  planBusy={planBusy}
+                  onPlan={handlePlan}
+                />
+              ))}
+
+              {activeSendNotice ? (
+                <View style={styles.assistantRow}>
+                  <View style={styles.assistantAvatar}>
+                    <Text style={styles.assistantAvatarText}>C</Text>
                   </View>
-                  <Text style={styles.planRationale}>{plan.rationale}</Text>
-                  <Text style={styles.planSafety}>
-                    {plan.kind === "routine" && plan.action === "create" && plan.status === "applying"
-                      ? "Creation was interrupted or is still finishing. Retry shortly; the same routine will not be created twice."
-                      : "Nothing changes until you choose an action."}
-                  </Text>
-                  <View style={styles.planDiff}>
-                    {plan.diff.map((change, index) => (
-                      <Text key={`${plan.id}:${index}`} style={styles.planDiffText}>• {readablePlanDiff(change)}</Text>
-                    ))}
-                  </View>
-                  <View style={styles.planActions}>
-                    <CompactAction
-                      title={plan.kind === "exercise"
-                        ? planBusy === `${plan.id}:apply:true`
-                          ? planApplyBusyLabel(plan, true)
-                          : exerciseApplyLabel(plan.action)
-                        : plan.action === "create"
-                          ? planBusy === `${plan.id}:apply:true`
-                            ? planApplyBusyLabel(plan, true)
-                            : plan.status === "applying" ? "Retry creation" : "Create routine"
-                          : planBusy === `${plan.id}:apply:true`
-                            ? planApplyBusyLabel(plan, true)
-                            : "Apply & publish"}
-                      primary
-                      loading={planBusy === `${plan.id}:apply:true`}
-                      disabled={Boolean(planBusy)}
-                      onPress={() => void handlePlan(plan.id, "apply", true)}
-                    />
-                    {plan.kind === "routine" && plan.action === "update" ? (
-                      <CompactAction
-                        title={planBusy === `${plan.id}:apply:false`
-                          ? planApplyBusyLabel(plan, false)
-                          : "Save as draft"}
-                        loading={planBusy === `${plan.id}:apply:false`}
-                        disabled={Boolean(planBusy)}
-                        onPress={() => void handlePlan(plan.id, "apply", false)}
-                      />
-                    ) : null}
-                    {plan.status === "pending" ? (
-                      <CompactAction
-                        title="Dismiss"
-                        subtle
-                        loading={planBusy === `${plan.id}:reject:true`}
-                        disabled={Boolean(planBusy)}
-                        onPress={() => void handlePlan(plan.id, "reject")}
-                      />
-                    ) : null}
+                  <View style={styles.sendNotice}>
+                    <Text style={styles.sendNoticeText}>{activeSendNotice}</Text>
                   </View>
                 </View>
-              ))}
+              ) : null}
 
               {activePlanFeedback ? (
                 <View style={styles.assistantRow}>
@@ -603,6 +597,200 @@ export function CoachScreen() {
         </OptionModal>
       </KeyboardAvoidingView>
     </Screen>
+  );
+}
+
+function PlanReviewCard({
+  plan,
+  planBusy,
+  onPlan,
+}: {
+  plan: ChangePlan;
+  planBusy: string | null;
+  onPlan: (
+    planId: string,
+    action: "apply" | "reject",
+    publish?: boolean,
+  ) => void | Promise<void>;
+}) {
+  const presentation = planReviewPresentation(plan);
+  const fallbackDetails = plan.diff.map(readablePlanDiff);
+  const sections = presentation.sections.length
+    ? presentation.sections
+    : [{
+      key: "legacy",
+      title: "Proposed changes",
+      summary: `${fallbackDetails.length} ${fallbackDetails.length === 1 ? "detail" : "details"}`,
+      preview: fallbackDetails[0] ?? null,
+      details: fallbackDetails,
+    }];
+  const detailCount = presentation.detailCount
+    || sections.reduce((total, section) => total + section.details.length, 0);
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
+  const [showAllDetails, setShowAllDetails] = useState(false);
+
+  function toggleSection(sectionKey: string) {
+    setShowAllDetails(false);
+    setExpandedSections((current) => ({
+      ...current,
+      [sectionKey]: !current[sectionKey],
+    }));
+  }
+
+  function toggleAllDetails() {
+    if (showAllDetails) {
+      setExpandedSections({});
+      setShowAllDetails(false);
+      return;
+    }
+    setExpandedSections(Object.fromEntries(sections.map((section) => [section.key, true])));
+    setShowAllDetails(true);
+  }
+
+  const applyBusyKey = `${plan.id}:apply:true`;
+  const draftBusyKey = `${plan.id}:apply:false`;
+  const rejectBusyKey = `${plan.id}:reject:true`;
+  const primaryTitle = plan.kind === "exercise"
+    ? planBusy === applyBusyKey
+      ? planApplyBusyLabel(plan, true)
+      : exerciseApplyLabel(plan.action)
+    : plan.action === "create"
+      ? planBusy === applyBusyKey
+        ? planApplyBusyLabel(plan, true)
+        : plan.status === "applying" ? "Retry creation" : "Create routine"
+      : planBusy === applyBusyKey
+        ? planApplyBusyLabel(plan, true)
+        : "Apply & publish";
+  const title = plan.kind === "exercise"
+    ? `${plan.exerciseName}: ${plan.summary}`
+    : `${plan.action === "create" ? "New routine" : "Routine"} ${plan.routineCode}: ${plan.summary}`;
+  const safety = plan.kind === "routine"
+    && plan.action === "create"
+    && plan.status === "applying"
+    ? "Creation was interrupted or is still finishing. Retry shortly; the same routine will not be created twice."
+    : "Nothing changes until you choose an action.";
+
+  return (
+    <View style={styles.planCard}>
+      <View style={styles.planHeader}>
+        <View style={styles.planBadge}>
+          <Text style={styles.planBadgeText}>
+            {plan.kind === "routine"
+              ? plan.action === "create" ? "Review new routine" : "Review routine change"
+              : `Review exercise ${exerciseActionLabel(plan.action).toLowerCase()}`}
+          </Text>
+        </View>
+        <View style={styles.planHeading}>
+          <Text style={styles.planTitle}>{title}</Text>
+          {presentation.metadata ? (
+            <Text style={styles.planMetadata}>{presentation.metadata}</Text>
+          ) : null}
+        </View>
+      </View>
+
+      <View style={styles.planReasoning}>
+        <Text style={styles.planSectionLabel}>Why this change</Text>
+        <Text style={styles.planRationale}>{plan.rationale}</Text>
+      </View>
+
+      <View style={styles.planSafetyRow}>
+        <Text style={styles.planSafetyIcon}>i</Text>
+        <Text style={styles.planSafetyText}>{safety}</Text>
+      </View>
+
+      <View style={styles.planSectionList}>
+        {sections.map((section) => {
+          const expanded = Boolean(expandedSections[section.key]);
+          return (
+            <View key={`${plan.id}:${section.key}`} style={styles.planSection}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${section.title}`}
+                accessibilityState={{ expanded }}
+                onPress={() => toggleSection(section.key)}
+                style={({ pressed }) => [
+                  styles.planSectionTrigger,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <View style={styles.planSectionCopy}>
+                  <Text style={styles.planSectionTitle}>{section.title}</Text>
+                  <Text style={styles.planSectionSummary}>{section.summary}</Text>
+                </View>
+                <Text style={styles.planSectionChevron}>{expanded ? "−" : "+"}</Text>
+              </Pressable>
+
+              {!expanded && section.preview ? (
+                <Text numberOfLines={2} style={styles.planSectionPreview}>
+                  {section.preview}
+                </Text>
+              ) : null}
+
+              {expanded ? (
+                <View style={styles.planSectionDetails}>
+                  {section.details.map((detail, index) => (
+                    <Text
+                      key={`${plan.id}:${section.key}:${index}`}
+                      style={styles.planDetailText}
+                    >
+                      • {detail}
+                    </Text>
+                  ))}
+                </View>
+              ) : null}
+            </View>
+          );
+        })}
+      </View>
+
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${showAllDetails ? "Hide" : "Show"} all prescription details`}
+        accessibilityState={{ expanded: showAllDetails }}
+        onPress={toggleAllDetails}
+        style={({ pressed }) => [
+          styles.planDisclosure,
+          pressed && styles.pressed,
+        ]}
+      >
+        <View style={styles.planDisclosureCopy}>
+          <Text style={styles.planDisclosureTitle}>All prescription details</Text>
+          <Text style={styles.planDisclosureMeta}>
+            {detailCount} {detailCount === 1 ? "detail" : "details"}
+          </Text>
+        </View>
+        <Text style={styles.planDisclosureChevron}>{showAllDetails ? "−" : "+"}</Text>
+      </Pressable>
+
+      <View style={styles.planActions}>
+        <CompactAction
+          title={primaryTitle}
+          primary
+          loading={planBusy === applyBusyKey}
+          disabled={Boolean(planBusy)}
+          onPress={() => void onPlan(plan.id, "apply", true)}
+        />
+        {plan.kind === "routine" && plan.action === "update" ? (
+          <CompactAction
+            title={planBusy === draftBusyKey
+              ? planApplyBusyLabel(plan, false)
+              : "Save as draft"}
+            loading={planBusy === draftBusyKey}
+            disabled={Boolean(planBusy)}
+            onPress={() => void onPlan(plan.id, "apply", false)}
+          />
+        ) : null}
+        {plan.status === "pending" ? (
+          <CompactAction
+            title="Dismiss"
+            subtle
+            loading={planBusy === rejectBusyKey}
+            disabled={Boolean(planBusy)}
+            onPress={() => void onPlan(plan.id, "reject")}
+          />
+        ) : null}
+      </View>
+    </View>
   );
 }
 
@@ -869,7 +1057,7 @@ const styles = StyleSheet.create({
   thinkingRow: { minHeight: 28, flexDirection: "row", alignItems: "center", gap: spacing.sm },
   thinkingText: { color: colors.textMuted, fontSize: 14 },
   planCard: {
-    marginLeft: 40,
+    width: "100%",
     padding: spacing.lg,
     gap: spacing.md,
     borderWidth: 1,
@@ -880,13 +1068,116 @@ const styles = StyleSheet.create({
   planHeader: { flexDirection: "row", alignItems: "center", gap: spacing.md, flexWrap: "wrap" },
   planBadge: { borderRadius: radii.pill, backgroundColor: colors.accentDark, paddingHorizontal: spacing.md, paddingVertical: 5 },
   planBadgeText: { color: colors.accent, fontSize: 11, fontWeight: "800" },
-  planTitle: { flex: 1, minWidth: 180, color: colors.text, fontSize: 15, fontWeight: "800" },
+  planHeading: { flex: 1, minWidth: 180, gap: 4 },
+  planTitle: { color: colors.text, fontSize: 15, lineHeight: 20, fontWeight: "800" },
+  planMetadata: { color: colors.textMuted, fontSize: 12, lineHeight: 17 },
+  planReasoning: { gap: 4 },
+  planSectionLabel: {
+    color: colors.textDim,
+    fontSize: 10,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+  },
   planRationale: { color: colors.textMuted, fontSize: 13, lineHeight: 19 },
-  planSafety: { color: colors.warning, fontSize: 12, lineHeight: 17, fontWeight: "700" },
-  planDiff: { gap: 5 },
-  planDiffText: { color: colors.text, fontSize: 13, lineHeight: 18 },
+  planSafetyRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.sm,
+    padding: spacing.sm,
+    borderRadius: radii.md,
+    backgroundColor: colors.surfaceRaised,
+  },
+  planSafetyIcon: {
+    width: 18,
+    color: colors.warning,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "900",
+    textAlign: "center",
+  },
+  planSafetyText: {
+    flex: 1,
+    color: colors.textMuted,
+    fontSize: 12,
+    lineHeight: 17,
+  },
   planActions: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  planSectionList: { gap: spacing.sm },
+  planSection: {
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    backgroundColor: colors.surfaceRaised,
+  },
+  planSectionTrigger: {
+    minHeight: 52,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  planSectionCopy: { flex: 1, minWidth: 0, gap: 2 },
+  planSectionTitle: { color: colors.text, fontSize: 13, lineHeight: 18, fontWeight: "800" },
+  planSectionSummary: { color: colors.textMuted, fontSize: 11, lineHeight: 16 },
+  planSectionChevron: {
+    width: 22,
+    color: colors.textMuted,
+    fontSize: 18,
+    lineHeight: 20,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  planSectionPreview: {
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing.md,
+    color: colors.textDim,
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  planSectionDetails: {
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  planDetailText: { color: colors.text, fontSize: 12, lineHeight: 18 },
+  planDisclosure: {
+    minHeight: 46,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    paddingHorizontal: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: radii.md,
+  },
+  planDisclosureCopy: { flex: 1, minWidth: 0 },
+  planDisclosureTitle: { color: colors.text, fontSize: 12, lineHeight: 17, fontWeight: "800" },
+  planDisclosureMeta: { color: colors.textDim, fontSize: 10, lineHeight: 14 },
+  planDisclosureChevron: {
+    width: 22,
+    color: colors.textMuted,
+    fontSize: 18,
+    lineHeight: 20,
+    fontWeight: "700",
+    textAlign: "center",
+  },
   planFeedback: { flex: 1, minWidth: 0 },
+  sendNotice: {
+    flex: 1,
+    minWidth: 0,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    backgroundColor: colors.surface,
+  },
+  sendNoticeText: { color: colors.textMuted, fontSize: 12, lineHeight: 18 },
   compactAction: {
     minHeight: 36,
     minWidth: 74,
