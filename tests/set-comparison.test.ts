@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   alignPreviousExerciseSets,
+  buildExerciseSetOverviewRows,
   comparisonLoadPhrase,
   comparisonLoadHeading,
   comparisonResultHeading,
@@ -11,6 +12,7 @@ import {
   liveSetComparisonPerformance,
   type ComparisonPerformance,
   type ComparisonSet,
+  type ExerciseSetOverviewSet,
 } from "../src/client/workouts/set-comparison";
 import type { PreviousExerciseSet } from "../src/contracts/api";
 
@@ -46,6 +48,29 @@ function previousSet(
     actualDurationSec: null,
     weightUnit: "lb",
     status: "completed",
+    ...overrides,
+  };
+}
+
+function overviewSet(
+  id: string,
+  globalIndex: number,
+  overrides: Partial<ExerciseSetOverviewSet> = {},
+): ExerciseSetOverviewSet {
+  return {
+    id,
+    globalIndex,
+    sourceRoutineSetId: id,
+    setType: "regular",
+    targetType: "reps",
+    loadType: "external",
+    targetUnit: "reps",
+    weightUnit: "lb",
+    target: "8 reps",
+    targetMin: 8,
+    targetMax: 8,
+    targetRirMin: null,
+    targetRirMax: null,
     ...overrides,
   };
 }
@@ -297,4 +322,138 @@ test("formats target ranges and RIR without repeating table units", () => {
     targetRirMin: 1,
     targetRirMax: 3,
   }), { load: "—", result: "8–10", rir: "1–3" });
+});
+
+test("builds a full exercise overview with current, upcoming, and last-time values", () => {
+  const sets = [
+    overviewSet("done", 0),
+    overviewSet("skipped", 1),
+    overviewSet("not-logged", 2),
+    overviewSet("current", 3),
+    overviewSet("upcoming", 4, {
+      target: "10 reps",
+      targetMin: 10,
+      targetMax: 10,
+      targetRirMin: 2,
+      targetRirMax: 2,
+    }),
+    overviewSet("blank-target", 5, {
+      target: "",
+      targetMin: null,
+      targetMax: null,
+    }),
+    overviewSet("bad-recommendation", 6),
+  ];
+  const rows = buildExerciseSetOverviewRows({
+    sets,
+    previousSets: [
+      previousSet({
+        sourceRoutineSetId: "current",
+        targetType: "duration",
+        loadType: "bodyweight",
+        actualWeight: 0,
+        actualReps: 0,
+        actualDurationSec: 30,
+      }),
+      previousSet({ sourceRoutineSetId: "done", actualWeight: 125, actualReps: 7 }),
+      previousSet({
+        sourceRoutineSetId: "skipped",
+        status: "skipped",
+        actualWeight: null,
+        actualReps: null,
+      }),
+      previousSet({
+        sourceRoutineSetId: "upcoming",
+        actualWeight: 50,
+        actualReps: 9,
+        weightUnit: "",
+      }),
+    ],
+    recordedPerformanceBySetId: {
+      done: performance(),
+      skipped: performance({
+        status: "Skipped",
+        actualWeight: null,
+        actualReps: null,
+      }),
+    },
+    recommendedPerformanceBySetId: {
+      current: performance({ actualWeight: 140, actualReps: 9 }),
+      "bad-recommendation": performance({
+        status: "Skipped",
+        actualWeight: null,
+        actualReps: null,
+      }),
+    },
+    selectedSetId: "done",
+    activeSetIndex: 3,
+  });
+
+  assert.deepEqual(rows.map((row) => ({
+    id: row.id,
+    status: row.status,
+    selected: row.selected,
+    current: row.current,
+    thisWorkout: row.thisWorkout,
+    lastTime: row.lastTime,
+  })), [
+    {
+      id: "done",
+      status: "Completed",
+      selected: true,
+      current: false,
+      thisWorkout: "135 lb × 8 reps",
+      lastTime: "125 lb × 7 reps",
+    },
+    {
+      id: "skipped",
+      status: "Skipped",
+      selected: false,
+      current: false,
+      thisWorkout: "Skipped",
+      lastTime: "Skipped",
+    },
+    {
+      id: "not-logged",
+      status: "Not logged",
+      selected: false,
+      current: false,
+      thisWorkout: "Not logged",
+      lastTime: "—",
+    },
+    {
+      id: "current",
+      status: "Current",
+      selected: false,
+      current: true,
+      thisWorkout: "Target 140 lb × 9 reps",
+      lastTime: "BW × 30 sec",
+    },
+    {
+      id: "upcoming",
+      status: "Upcoming",
+      selected: false,
+      current: false,
+      thisWorkout: "Target 10 reps · RIR 2",
+      lastTime: "50 lb × 9 reps",
+    },
+    {
+      id: "blank-target",
+      status: "Upcoming",
+      selected: false,
+      current: false,
+      thisWorkout: "Target —",
+      lastTime: "—",
+    },
+    {
+      id: "bad-recommendation",
+      status: "Upcoming",
+      selected: false,
+      current: false,
+      thisWorkout: "Target —",
+      lastTime: "—",
+    },
+  ]);
+  assert.equal(rows[0].number, 1);
+  assert.equal(rows[0].setType, "regular");
 });

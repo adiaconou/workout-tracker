@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { WorkoutView } from "../../contracts/api";
 import { colors, radii, spacing } from "../ui/tokens";
 import {
   alignPreviousExerciseSets,
+  buildExerciseSetOverviewRows,
   comparisonLoadHeading,
-  comparisonLoadPhrase,
   comparisonResultHeading,
   formatComparisonTableCells,
   formatComparisonTargetCells,
@@ -100,63 +100,27 @@ export function ActiveSetComparison({
     return comparisonRows;
   }, [alignedPreviousSets, progressiveTrainingEnabled, selectedIndex, selectedSet]);
 
-  const allSetRows = useMemo(() => sets.map((set, index) => {
-    const recorded = recordedPerformanceBySetId[set.id];
-    const current = set.globalIndex === activeSetIndex;
-    const status = current
-      ? "Current"
-      : recorded?.status === "Completed"
-        ? "Completed"
-        : recorded?.status === "Skipped"
-          ? "Skipped"
-          : set.globalIndex > activeSetIndex
-            ? "Upcoming"
-            : "Not logged";
-    const targetCells = formatComparisonTargetCells(set);
-    const recommendedPerformance = progressiveTrainingEnabled
-      ? recommendProgressiveTarget(set, alignedPreviousSets[index])
-      : undefined;
-    const recommendedCells = formatComparisonTableCells(set, recommendedPerformance);
-    const plannedLoad = recommendedCells.load === "—"
-      ? "—"
-      : comparisonLoadPhrase(set.loadType, recommendedCells.load);
-    const plannedResult = metricWithUnit(
-      recommendedPerformance ? recommendedCells.result : targetCells.result,
-      set.targetUnit,
-    );
-    const plannedRir = targetCells.rir === "—" ? null : `RIR ${targetCells.rir}`;
-    const resultCells = formatComparisonTableCells(set, recorded);
-    const recordedLoad = resultCells.load === "—"
-      ? "—"
-      : comparisonLoadPhrase(set.loadType, resultCells.load);
-    const recordedResult = metricWithUnit(resultCells.result, set.targetUnit);
-    return {
-      id: set.id,
-      number: index + 1,
-      type: setTypeLabel(set.setType),
-      status,
-      selected: set.id === selectedSetId,
-      current,
-      plannedPrimary: plannedLoad === "—" ? plannedResult : plannedLoad,
-      plannedSecondary: [plannedLoad === "—" ? null : plannedResult, plannedRir]
-        .filter(Boolean)
-        .join(" · "),
-      resultPrimary: status === "Skipped"
-        ? "Skipped"
-        : recordedLoad === "—"
-          ? recordedResult
-          : recordedLoad,
-      resultSecondary: status === "Skipped"
-        ? ""
-        : recordedLoad === "—"
-          ? ""
-          : recordedResult,
-    };
+  const recommendedPerformanceBySetId = useMemo(() => Object.fromEntries(
+    sets.map((set, index) => [
+      set.id,
+      progressiveTrainingEnabled
+        ? recommendProgressiveTarget(set, alignedPreviousSets[index])
+        : undefined,
+    ]),
+  ), [alignedPreviousSets, progressiveTrainingEnabled, sets]);
+
+  const allSetRows = useMemo(() => buildExerciseSetOverviewRows({
+    sets,
+    previousSets,
+    recordedPerformanceBySetId,
+    recommendedPerformanceBySetId,
+    selectedSetId,
+    activeSetIndex,
   }), [
     activeSetIndex,
-    alignedPreviousSets,
-    progressiveTrainingEnabled,
+    previousSets,
     recordedPerformanceBySetId,
+    recommendedPerformanceBySetId,
     selectedSetId,
     sets,
   ]);
@@ -168,10 +132,10 @@ export function ActiveSetComparison({
           <Text nativeID="active-set-selector-label" style={styles.selectorLabel}>Sets</Text>
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={`View all ${sets.length} sets for ${sets[0]?.exerciseName ?? "this exercise"}`}
-            accessibilityState={{ disabled: navigationDisabled }}
+            accessibilityLabel={`${showAllSets ? "Hide" : "View"} all ${sets.length} sets for ${sets[0]?.exerciseName ?? "this exercise"}`}
+            accessibilityState={{ disabled: navigationDisabled, expanded: showAllSets }}
             disabled={navigationDisabled}
-            onPress={() => setShowAllSets(true)}
+            onPress={() => setShowAllSets((visible) => !visible)}
             hitSlop={4}
             style={({ pressed }) => [
               styles.viewAllSets,
@@ -179,7 +143,9 @@ export function ActiveSetComparison({
               navigationDisabled && styles.viewAllSetsDisabled,
             ]}
           >
-            <Text style={styles.viewAllSetsText}>View all sets</Text>
+            <Text style={styles.viewAllSetsText}>
+              {showAllSets ? "Hide all sets" : `View all ${sets.length} sets`}
+            </Text>
           </Pressable>
         </View>
         <ScrollView
@@ -263,6 +229,53 @@ export function ActiveSetComparison({
         </Text>
       </View>
 
+      {showAllSets ? (
+        <View style={styles.allSetsTable}>
+          <View style={[styles.allSetsRow, styles.allSetsTableHeader]}>
+            <Text style={[styles.allSetsHeaderText, styles.allSetsSetColumn]}>Set</Text>
+            <Text style={[styles.allSetsHeaderText, styles.allSetsValueColumn]}>This workout</Text>
+            <Text style={[styles.allSetsHeaderText, styles.allSetsValueColumn]}>Last time</Text>
+          </View>
+          {allSetRows.map((row) => (
+            <View
+              key={row.id}
+              accessible
+              accessibilityLabel={`Set ${row.number}, ${setTypeLabel(row.setType)}, ${row.status}. This workout ${row.thisWorkout}. Last time ${row.lastTime}.`}
+              style={[
+                styles.allSetsRow,
+                row.selected && !row.current && styles.allSetsRowSelected,
+                row.current && styles.allSetsRowCurrent,
+              ]}
+            >
+              <View style={styles.allSetsSetColumn}>
+                <Text style={[
+                  styles.allSetsSetNumber,
+                  row.current && styles.allSetsCurrentText,
+                ]}>
+                  {row.number}{row.status === "Completed" ? "  ✓" : row.status === "Skipped" ? "  –" : row.current ? "  •" : ""}
+                </Text>
+                <Text numberOfLines={1} style={styles.allSetsMeta}>
+                  {setTypeLabel(row.setType)} · {row.status}
+                </Text>
+              </View>
+              <View style={styles.allSetsValueColumn}>
+                <Text numberOfLines={2} style={[
+                  styles.allSetsValue,
+                  row.status === "Upcoming" && styles.allSetsUpcomingText,
+                ]}>
+                  {row.thisWorkout}
+                </Text>
+              </View>
+              <View style={styles.allSetsValueColumn}>
+                <Text numberOfLines={2} style={[styles.allSetsValue, styles.allSetsLastTimeText]}>
+                  {row.lastTime}
+                </Text>
+              </View>
+            </View>
+          ))}
+        </View>
+      ) : null}
+
       {selectedSet ? (
         <View
           accessible
@@ -308,113 +321,8 @@ export function ActiveSetComparison({
         </View>
       ) : null}
 
-      <Modal
-        visible={showAllSets}
-        transparent
-        animationType="slide"
-        statusBarTranslucent
-        onRequestClose={() => setShowAllSets(false)}
-      >
-        <View style={styles.allSetsOverlay}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Close all exercise sets"
-            onPress={() => setShowAllSets(false)}
-            style={styles.allSetsBackdrop}
-          />
-          <View accessibilityViewIsModal style={styles.allSetsSheet}>
-            <View style={styles.allSetsHeader}>
-              <View style={styles.allSetsTitleBlock}>
-                <Text accessibilityRole="header" style={styles.allSetsTitle}>
-                  {sets[0]?.exerciseName ?? "Exercise"}
-                </Text>
-                <Text style={styles.allSetsSubtitle}>All sets</Text>
-              </View>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Close all exercise sets"
-                onPress={() => setShowAllSets(false)}
-                style={({ pressed }) => [
-                  styles.allSetsDone,
-                  pressed && styles.allSetsDonePressed,
-                ]}
-              >
-                <Text style={styles.allSetsDoneText}>Done</Text>
-              </Pressable>
-            </View>
-            <ScrollView
-              style={styles.allSetsScroll}
-              contentContainerStyle={styles.allSetsContent}
-              showsVerticalScrollIndicator={false}
-            >
-              <View style={styles.allSetsTable}>
-                <View style={[styles.allSetsRow, styles.allSetsTableHeader]}>
-                  <Text style={[styles.allSetsHeaderText, styles.allSetsSetColumn]}>Set</Text>
-                  <Text style={[styles.allSetsHeaderText, styles.allSetsValueColumn]}>Planned</Text>
-                  <Text style={[styles.allSetsHeaderText, styles.allSetsValueColumn]}>Result</Text>
-                </View>
-                {allSetRows.map((row) => (
-                  <View
-                    key={row.id}
-                    accessible
-                    accessibilityLabel={`Set ${row.number}, ${row.type}, ${row.status}. Planned ${row.plannedPrimary}${row.plannedSecondary ? `, ${row.plannedSecondary}` : ""}. Result ${row.resultPrimary}${row.resultSecondary ? `, ${row.resultSecondary}` : ""}.`}
-                    style={[
-                      styles.allSetsRow,
-                      row.selected && !row.current && styles.allSetsRowSelected,
-                      row.current && styles.allSetsRowCurrent,
-                    ]}
-                  >
-                    <View style={styles.allSetsSetColumn}>
-                      <Text style={[
-                        styles.allSetsSetNumber,
-                        row.current && styles.allSetsCurrentText,
-                      ]}>
-                        {row.number}{row.status === "Completed" ? "  ✓" : row.status === "Skipped" ? "  –" : row.current ? "  ●" : ""}
-                      </Text>
-                      <Text numberOfLines={1} style={styles.allSetsMeta}>
-                        {row.type} · {row.status}
-                      </Text>
-                    </View>
-                    <View style={styles.allSetsValueColumn}>
-                      <Text numberOfLines={1} style={styles.allSetsValue}>
-                        {row.plannedPrimary}
-                      </Text>
-                      {row.plannedSecondary ? (
-                        <Text numberOfLines={1} style={styles.allSetsMeta}>
-                          {row.plannedSecondary}
-                        </Text>
-                      ) : null}
-                    </View>
-                    <View style={styles.allSetsValueColumn}>
-                      <Text numberOfLines={1} style={[
-                        styles.allSetsValue,
-                        row.status === "Upcoming" && styles.allSetsUpcomingText,
-                      ]}>
-                        {row.resultPrimary}
-                      </Text>
-                      {row.resultSecondary ? (
-                        <Text numberOfLines={1} style={styles.allSetsMeta}>
-                          {row.resultSecondary}
-                        </Text>
-                      ) : null}
-                    </View>
-                  </View>
-                ))}
-              </View>
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
     </View>
   );
-}
-
-function metricWithUnit(
-  value: string,
-  unit: WorkoutView["sets"][number]["targetUnit"],
-) {
-  if (value === "—" || value === "Skipped") return value;
-  return `${value} ${comparisonResultHeading(unit).toLowerCase()}`;
 }
 
 function setTypeLabel(setType: string) {
@@ -537,68 +445,6 @@ const styles = StyleSheet.create({
   loadColumn: { width: "28%", paddingHorizontal: 2 },
   resultColumn: { width: "18%", paddingHorizontal: 2 },
   rirColumn: { width: "18%", paddingLeft: 2 },
-  allSetsOverlay: {
-    flex: 1,
-    justifyContent: "flex-end",
-    alignItems: "center",
-    backgroundColor: colors.overlay,
-    paddingTop: spacing.xl,
-  },
-  allSetsBackdrop: {
-    position: "absolute",
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-  },
-  allSetsSheet: {
-    width: "100%",
-    maxWidth: 680,
-    maxHeight: "88%",
-    gap: spacing.md,
-    paddingTop: spacing.lg,
-    paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.xl,
-    borderTopLeftRadius: radii.lg,
-    borderTopRightRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.borderStrong,
-    backgroundColor: colors.surface,
-  },
-  allSetsHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.lg,
-  },
-  allSetsTitleBlock: { flex: 1, minWidth: 0, gap: spacing.xs },
-  allSetsTitle: {
-    color: colors.text,
-    fontSize: 21,
-    lineHeight: 26,
-    fontWeight: "800",
-  },
-  allSetsSubtitle: {
-    color: colors.textMuted,
-    fontSize: 12,
-    lineHeight: 17,
-  },
-  allSetsDone: {
-    minWidth: 44,
-    minHeight: 44,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: spacing.sm,
-  },
-  allSetsDonePressed: { opacity: 0.68 },
-  allSetsDoneText: {
-    color: colors.accent,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: "800",
-  },
-  allSetsScroll: { flexShrink: 1 },
-  allSetsContent: { paddingBottom: spacing.sm },
   allSetsTable: {
     width: "100%",
     overflow: "hidden",
@@ -657,4 +503,5 @@ const styles = StyleSheet.create({
     fontVariant: ["tabular-nums"],
   },
   allSetsUpcomingText: { color: colors.textMuted },
+  allSetsLastTimeText: { color: colors.textMuted, fontWeight: "500" },
 });

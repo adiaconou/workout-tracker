@@ -39,6 +39,31 @@ export type CurrentSetComparisonIdentity = {
   targetType?: string | null;
 };
 
+export type ExerciseSetOverviewSet = ComparisonTableSet
+  & CurrentSetComparisonIdentity
+  & {
+    id: string;
+    globalIndex: number;
+  };
+
+export type ExerciseSetOverviewStatus =
+  | "Current"
+  | "Completed"
+  | "Skipped"
+  | "Upcoming"
+  | "Not logged";
+
+export type ExerciseSetOverviewRow = {
+  id: string;
+  number: number;
+  setType: string;
+  status: ExerciseSetOverviewStatus;
+  selected: boolean;
+  current: boolean;
+  thisWorkout: string;
+  lastTime: string;
+};
+
 function displayNumber(value: number) {
   return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(2)));
 }
@@ -233,6 +258,87 @@ export function formatSetComparisonPerformance(
   if (!performance) return "—";
   if (performance.status.toLowerCase() === "skipped") return "Skipped";
   return `${loadLabel(set, performance)} × ${resultLabel(set, performance)}`;
+}
+
+function overviewMetricWithUnit(
+  value: string,
+  unit: ComparisonSet["targetUnit"],
+) {
+  return `${value} ${comparisonResultHeading(unit).toLowerCase()}`;
+}
+
+function formatOverviewTarget(
+  set: ExerciseSetOverviewSet,
+  recommendation: ComparisonPerformance | undefined,
+) {
+  const cells = recommendation
+    ? formatComparisonTableCells(set, recommendation)
+    : formatComparisonTargetCells(set);
+  const load = cells.load === "—"
+    ? null
+    : comparisonLoadPhrase(set.loadType, cells.load);
+  const result = cells.result === "—" || cells.result === "Skipped"
+    ? null
+    : overviewMetricWithUnit(cells.result, set.targetUnit);
+  const values = [load, result].filter((value): value is string => Boolean(value));
+  const target = values.length ? `Target ${values.join(" × ")}` : "Target —";
+  return cells.rir === "—" ? target : `${target} · RIR ${cells.rir}`;
+}
+
+function previousComparisonPerformance(
+  set: ExerciseSetOverviewSet,
+  previous: PreviousExerciseSet | undefined,
+): ComparisonPerformance | undefined {
+  if (!previous) return undefined;
+  return {
+    status: previous.status,
+    actualWeight: previous.actualWeight,
+    actualReps: previous.actualReps,
+    actualDurationSec: previous.actualDurationSec,
+    weightUnit: previous.weightUnit || set.weightUnit,
+    targetType: previous.targetType,
+    loadType: previous.loadType,
+  };
+}
+
+export function buildExerciseSetOverviewRows(input: {
+  sets: readonly ExerciseSetOverviewSet[];
+  previousSets: readonly PreviousExerciseSet[];
+  recordedPerformanceBySetId: Readonly<Record<string, ComparisonPerformance | undefined>>;
+  recommendedPerformanceBySetId: Readonly<Record<string, ComparisonPerformance | undefined>>;
+  selectedSetId: string;
+  activeSetIndex: number;
+}): ExerciseSetOverviewRow[] {
+  const alignedPreviousSets = alignPreviousExerciseSets(input.sets, input.previousSets);
+  return input.sets.map((set, index) => {
+    const recorded = input.recordedPerformanceBySetId[set.id];
+    const current = set.globalIndex === input.activeSetIndex;
+    const status: ExerciseSetOverviewStatus = current
+      ? "Current"
+      : recorded?.status === "Completed"
+        ? "Completed"
+        : recorded?.status === "Skipped"
+          ? "Skipped"
+          : set.globalIndex > input.activeSetIndex
+            ? "Upcoming"
+            : "Not logged";
+    const recommendation = input.recommendedPerformanceBySetId[set.id];
+    const previous = previousComparisonPerformance(set, alignedPreviousSets[index]);
+    return {
+      id: set.id,
+      number: index + 1,
+      setType: set.setType,
+      status,
+      selected: set.id === input.selectedSetId,
+      current,
+      thisWorkout: recorded
+        ? formatSetComparisonPerformance(set, recorded)
+        : status === "Current" || status === "Upcoming"
+          ? formatOverviewTarget(set, recommendation)
+          : "Not logged",
+      lastTime: formatSetComparisonPerformance(set, previous),
+    };
+  });
 }
 
 function numericInput(value: string) {
