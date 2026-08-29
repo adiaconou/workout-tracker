@@ -48,7 +48,15 @@ test("available-only exercise discovery respects equipment without changing full
       preferred_workout_duration_min, onboarding_version, onboarding_completed_at,
       created_at, updated_at
     ) VALUES (?, ?, ?, ?, 45, 1, ?, ?, ?)`)
-      .bind("equipment-user", ownerEmail, "Equipment User", JSON.stringify(["bodyweight", "dumbbells"]), now, now, now)
+      .bind(
+        "equipment-user",
+        ownerEmail,
+        "Equipment User",
+        JSON.stringify(["bodyweight", "dumbbells", "resistance_bands"]),
+        now,
+        now,
+        now,
+      )
       .run();
     await ensureEntityData(d1, ownerEmail);
 
@@ -65,13 +73,59 @@ test("available-only exercise discovery respects equipment without changing full
     assert.ok(!availableNames.has("Straight-arm cable pulldown"));
     assert.ok(fullByName.has("Flat dumbbell bench press"), "The default full-library read must remain unchanged");
 
+    const shoulderPulls = await repository.listExercises(ownerEmail, {
+      availableOnly: true,
+      muscleGroup: "shoulders",
+      movementPattern: "horizontal_pull",
+    });
+    const shoulderPullNames = new Set(shoulderPulls.map((exercise) => exercise.name));
+    assert.ok(shoulderPullNames.has("Bent-over dumbbell reverse fly"));
+    assert.ok(shoulderPullNames.has("Resistance-band face pull"));
+    assert.ok(shoulderPulls.every((exercise) => exercise.movementPattern === "horizontal_pull"));
+    assert.ok(shoulderPulls.every((exercise) => (
+      exercise.muscles.some((muscle) => muscle.muscleGroup === "shoulders")
+    )));
+
+    assert.deepEqual(
+      (await repository.listExercises(ownerEmail, {
+        availableOnly: true,
+        search: "face pull",
+        muscleGroup: "shoulders",
+        movementPattern: "horizontal_pull",
+      })).map((exercise) => exercise.name),
+      ["Resistance-band face pull"],
+    );
+
     const unavailableId = fullByName.get("Flat dumbbell bench press")!.id;
     assert.equal((await repository.getExercise(ownerEmail, unavailableId))?.id, unavailableId);
+
+    await d1.prepare("UPDATE app_users SET equipment_preferences_json = ? WHERE owner_email = ?")
+      .bind(JSON.stringify(["dumbbells"]), ownerEmail)
+      .run();
+    const dumbbellShoulderPullNames = new Set((await repository.listExercises(ownerEmail, {
+      availableOnly: true,
+      muscleGroup: "shoulders",
+      movementPattern: "horizontal_pull",
+    })).map((exercise) => exercise.name));
+    assert.ok(dumbbellShoulderPullNames.has("Bent-over dumbbell reverse fly"));
+    assert.ok(!dumbbellShoulderPullNames.has("Resistance-band face pull"));
 
     await d1.prepare("UPDATE app_users SET equipment_preferences_json = ? WHERE owner_email = ?")
       .bind("[]", ownerEmail)
       .run();
     assert.deepEqual(await repository.listExercises(ownerEmail, { availableOnly: true }), []);
+
+    const reverseFly = fullByName.get("Bent-over dumbbell reverse fly")!;
+    assert.equal(await repository.archiveExercise(ownerEmail, reverseFly.id), true);
+    assert.ok(!(await repository.listExercises(ownerEmail, {
+      muscleGroup: "shoulders",
+      movementPattern: "horizontal_pull",
+    })).some((exercise) => exercise.id === reverseFly.id));
+    assert.ok((await repository.listExercises(ownerEmail, {
+      includeArchived: true,
+      muscleGroup: "shoulders",
+      movementPattern: "horizontal_pull",
+    })).some((exercise) => exercise.id === reverseFly.id));
     assert.equal((await repository.getExercise(ownerEmail, unavailableId))?.id, unavailableId);
   } finally {
     sqlite.close();

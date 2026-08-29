@@ -2,6 +2,7 @@ import type {
   Exercise,
   ExerciseInput,
   ExerciseProgress,
+  MuscleGroup,
   Routine,
   RoutineAggregate,
   RoutineVersion,
@@ -15,6 +16,8 @@ export type ExerciseQuery = {
   includeArchived?: boolean;
   search?: string;
   availableOnly?: boolean;
+  muscleGroup?: MuscleGroup;
+  movementPattern?: Exercise["movementPattern"];
 };
 export type ExerciseProgressQuery = {
   from?: string;

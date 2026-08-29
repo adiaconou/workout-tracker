@@ -1,9 +1,11 @@
 import { env } from "cloudflare:workers";
 import { D1EntityRepository } from "./entity-repository";
+import { D1MessageRunRepository } from "./message-run-repository";
 import { D1ProgramGenerationJobRepository } from "./program-generation-job-repository";
 import { D1ProgramRepository } from "./program-repository";
 
 let repository: D1EntityRepository | null = null;
+let messageRunRepository: D1MessageRunRepository | null = null;
 let programGenerationJobRepository: D1ProgramGenerationJobRepository | null = null;
 let programRepository: D1ProgramRepository | null = null;
 
@@ -23,4 +25,10 @@ export function getProgramGenerationJobRepository() {
   if (!env.DB) throw new Error("The workout database is unavailable.");
   programGenerationJobRepository ??= new D1ProgramGenerationJobRepository(env.DB);
   return programGenerationJobRepository;
+}
+
+export function getMessageRunRepository() {
+  if (!env.DB) throw new Error("The workout database is unavailable.");
+  messageRunRepository ??= new D1MessageRunRepository(env.DB);
+  return messageRunRepository;
 }

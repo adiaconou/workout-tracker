@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import {
   ActivityIndicator,
+  AppState,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -12,20 +13,29 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { apiRequest } from "../api/client";
+import { ApiError, apiRequest } from "../api/client";
 import { LoadingView, Message, Screen } from "../ui/ui";
 import { colors, radii, spacing } from "../ui/tokens";
 import { CoachMarkdown } from "./coach-markdown";
+import {
+  createCoachRunController,
+  type CoachRunController,
+} from "./coach-run-controller";
 import {
   beginPlanAction,
   bootstrapWithAppliedPlan,
   bootstrapWithOptimisticMessage,
   bootstrapWithPreservedActivities,
   bootstrapWithProfile,
+  bootstrapWithRunResponse,
   bootstrapWithSendResponse,
   bootstrapWithoutPlan,
   bootstrapWithoutOptimisticMessage,
   coachToolActivityRows,
+  coachMessageAttemptKey,
+  coachRunCanRetry,
+  coachRunIsActive,
+  coachRunPresentation,
   modelSaveFailure,
   modelSelectionForOption,
   optimisticUserMessage,
@@ -44,7 +54,11 @@ import {
   type AssistantThread,
   type ChangePlan,
   type CoachBootstrap,
+  type CoachMessageAttempt,
+  type CoachMessageRun,
   type CoachProfile,
+  type CoachRunConnection,
+  type CoachRunResponse,
   type ExerciseChangePlan,
   type ModelOption,
   type ModelSelection,
@@ -65,10 +79,16 @@ export function CoachScreen() {
   const messageListRef = useRef<ScrollView | null>(null);
   const starterAppliedRef = useRef(false);
   const activeThreadIdRef = useRef<string | null>(null);
+  const messageAttemptRef = useRef<CoachMessageAttempt | null>(null);
+  const runRetryAttemptRef = useRef<{ runId: string; key: string } | null>(null);
+  const runControllerRef = useRef<CoachRunController | null>(null);
   const [data, setData] = useState<CoachBootstrap | null>(null);
   const [selection, setSelection] = useState<ModelSelection | null>(null);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [retryingRun, setRetryingRun] = useState(false);
+  const [runConnection, setRunConnection] = useState<CoachRunConnection>("connected");
+  const [runTransportError, setRunTransportError] = useState("");
   const [savingModel, setSavingModel] = useState(false);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const [planBusy, setPlanBusy] = useState<string | null>(null);
@@ -103,9 +123,68 @@ export function CoachScreen() {
     }
   }, []);
 
+  useEffect(() => {
+    const controller = createCoachRunController({
+      request: apiRequest,
+      schedule: (callback, delayMs) => setTimeout(callback, delayMs),
+      cancelScheduled: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+      isRetryableError: (caught) => !(caught instanceof ApiError) || caught.retryable,
+      errorMessage: (caught) => caught instanceof Error
+        ? caught.message
+        : "Coach progress could not be checked.",
+      onResponse: (payload) => {
+        setData((current) => bootstrapWithRunResponse(current, payload.run.threadId, payload));
+        setRunTransportError("");
+      },
+      onConnection: setRunConnection,
+      onFatalError: setRunTransportError,
+    });
+    runControllerRef.current = controller;
+    return () => {
+      controller.stop();
+      runControllerRef.current = null;
+    };
+  }, []);
+
   useFocusEffect(useCallback(() => {
+    runControllerRef.current?.resume();
     void load();
+    return () => runControllerRef.current?.pause();
   }, [load]));
+
+  useEffect(() => {
+    if (Platform.OS === "web") {
+      const updatePollingForVisibility = () => {
+        if (document.visibilityState === "visible") runControllerRef.current?.resume();
+        else runControllerRef.current?.pause();
+      };
+      window.addEventListener("focus", updatePollingForVisibility);
+      document.addEventListener("visibilitychange", updatePollingForVisibility);
+      updatePollingForVisibility();
+      return () => {
+        window.removeEventListener("focus", updatePollingForVisibility);
+        document.removeEventListener("visibilitychange", updatePollingForVisibility);
+      };
+    }
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") runControllerRef.current?.resume();
+      else runControllerRef.current?.pause();
+    });
+    return () => subscription.remove();
+  }, []);
+
+  const activeRunId = data?.latestRun && coachRunIsActive(data.latestRun.status)
+    ? data.latestRun.id
+    : null;
+
+  useEffect(() => {
+    if (!activeRunId || !data?.latestRun) {
+      runControllerRef.current?.stop();
+      return;
+    }
+    setRunTransportError("");
+    runControllerRef.current?.monitor(data.latestRun);
+  }, [activeRunId, data?.thread.id]);
 
   useEffect(() => {
     if (
@@ -198,8 +277,29 @@ export function CoachScreen() {
 
   async function send(text = composer) {
     const content = text.trim();
-    if (!content || !data || !selection || sending || !data.modelConfiguration.configured) return;
+    if (
+      !content
+      || !data
+      || !selection
+      || sending
+      || activeRunId
+      || !data.modelConfiguration.configured
+    ) return;
     const activeThreadId = data.thread.id;
+    const requestBody = JSON.stringify({
+      threadId: activeThreadId,
+      content,
+      model: selection.model,
+      reasoningEffort: selection.reasoningEffort,
+    });
+    const requestFingerprint = `${activeThreadId}:${requestBody}`;
+    const idempotencyKey = coachMessageAttemptKey(
+      messageAttemptRef.current,
+      requestFingerprint,
+      false,
+      createCoachMessageIdempotencyKey,
+    );
+    messageAttemptRef.current = { key: idempotencyKey, requestFingerprint };
     const optimisticMessage = optimisticUserMessage({
       id: `local-${Date.now()}`,
       threadId: activeThreadId,
@@ -215,13 +315,10 @@ export function CoachScreen() {
     try {
       const payload = await apiRequest<SendMessageResponse>("/api/v1/assistant/messages", {
         method: "POST",
-        body: JSON.stringify({
-          threadId: activeThreadId,
-          content,
-          model: selection.model,
-          reasoningEffort: selection.reasoningEffort,
-        }),
+        headers: { "x-idempotency-key": idempotencyKey },
+        body: requestBody,
       });
+      messageAttemptRef.current = null;
       setData((current) => bootstrapWithSendResponse(
         current,
         activeThreadId,
@@ -229,6 +326,9 @@ export function CoachScreen() {
         payload,
         selection,
       ));
+      setRunConnection("connected");
+      setRunTransportError("");
+      runControllerRef.current?.monitor(payload.run);
     } catch (caught) {
       const failure = sendFailureState(content, caught);
       let reconciliation: ReturnType<typeof reconcileFailedSend> = "none";
@@ -241,6 +341,11 @@ export function CoachScreen() {
           setData((current) => current?.thread.id === activeThreadId
             ? bootstrapWithPreservedActivities(current, refreshed)
             : current);
+          if (reconciliation === "running" && refreshed.latestRun) {
+            setRunConnection("connected");
+            setRunTransportError("");
+            runControllerRef.current?.monitor(refreshed.latestRun);
+          }
         }
       } catch {
         // Fall back to the original send error when reconciliation is unavailable.
@@ -251,7 +356,9 @@ export function CoachScreen() {
         setError("");
         setSendNotice({
           threadId: activeThreadId,
-          message: reconciliation === "completed"
+          message: reconciliation === "running"
+            ? "Your request was saved. Coach will resume from the last saved step if you leave."
+            : reconciliation === "completed"
             ? "The connection dropped, but your request and Coach's reply were saved."
             : "Your request was saved and the proposed update is ready to review.",
         });
@@ -277,6 +384,39 @@ export function CoachScreen() {
       await load(payload.thread.id);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "A new conversation could not be created.");
+    }
+  }
+
+  async function retryCoachRun(run: CoachMessageRun) {
+    if (!data || retryingRun || !coachRunCanRetry(run)) return;
+    const activeThreadId = data.thread.id;
+    const existingAttempt = runRetryAttemptRef.current;
+    const idempotencyKey = existingAttempt?.runId === run.id
+      ? existingAttempt.key
+      : createCoachRunRetryIdempotencyKey();
+    runRetryAttemptRef.current = { runId: run.id, key: idempotencyKey };
+    setRetryingRun(true);
+    setError("");
+    setRunTransportError("");
+    setSendNotice(null);
+    try {
+      const payload = await apiRequest<CoachRunResponse>(
+        `/api/v1/assistant/message-runs/${encodeURIComponent(run.id)}/retry`,
+        {
+          method: "POST",
+          headers: { "x-idempotency-key": idempotencyKey },
+        },
+      );
+      runRetryAttemptRef.current = null;
+      setData((current) => bootstrapWithRunResponse(current, activeThreadId, payload));
+      setRunConnection("connected");
+      runControllerRef.current?.monitor(payload.run);
+    } catch (caught) {
+      setRunTransportError(caught instanceof Error
+        ? caught.message
+        : "Coach could not retry this request.");
+    } finally {
+      setRetryingRun(false);
     }
   }
 
@@ -341,8 +481,18 @@ export function CoachScreen() {
 
   const activePlanFeedback = planFeedback?.threadId === data.thread.id ? planFeedback.feedback : null;
   const activeSendNotice = sendNotice?.threadId === data.thread.id ? sendNotice.message : null;
+  const latestRunAssistantLoaded = Boolean(
+    data.latestRun?.assistantMessageId
+    && data.messages.some((message) => message.id === data.latestRun?.assistantMessageId),
+  );
+  const visibleRun = data.latestRun && (
+    data.latestRun.status !== "succeeded" || !latestRunAssistantLoaded
+  )
+    ? data.latestRun
+    : null;
   const hasConversation = data.messages.length > 0
     || reviewPlans.length > 0
+    || Boolean(visibleRun)
     || Boolean(activePlanFeedback)
     || Boolean(activeSendNotice);
 
@@ -391,11 +541,11 @@ export function CoachScreen() {
                   <Pressable
                     key={prompt}
                     accessibilityRole="button"
-                    disabled={!data.modelConfiguration.configured || sending}
+                    disabled={!data.modelConfiguration.configured || sending || Boolean(activeRunId)}
                     onPress={() => void send(prompt)}
                     style={({ pressed }) => [
                       styles.promptButton,
-                      (!data.modelConfiguration.configured || sending) && styles.disabled,
+                      (!data.modelConfiguration.configured || sending || Boolean(activeRunId)) && styles.disabled,
                       pressed && styles.pressed,
                     ]}
                   >
@@ -418,6 +568,28 @@ export function CoachScreen() {
                   <AssistantMessageView key={message.id} message={message} />
                 )
               ))}
+
+              {visibleRun ? (
+                <CoachRunActivityCard
+                  run={visibleRun}
+                  connection={runConnection}
+                  transportError={runTransportError}
+                  retrying={retryingRun}
+                  onCheckNow={() => runControllerRef.current?.checkNow()}
+                  onRetry={() => void retryCoachRun(visibleRun)}
+                />
+              ) : sending ? (
+                <View style={styles.assistantRow} accessibilityLiveRegion="polite">
+                  <View style={styles.assistantAvatar}><Text style={styles.assistantAvatarText}>C</Text></View>
+                  <View style={styles.activityCard}>
+                    <View style={styles.runHeadingRow}>
+                      <ActivityIndicator color={colors.textMuted} size="small" />
+                      <Text style={styles.activityTitle}>Saving your request…</Text>
+                    </View>
+                    <Text style={styles.runDetail}>Your request is being saved before Coach starts.</Text>
+                  </View>
+                </View>
+              ) : null}
 
               {reviewPlans.map((plan) => (
                 <PlanReviewCard
@@ -448,15 +620,6 @@ export function CoachScreen() {
                 </View>
               ) : null}
 
-              {sending ? (
-                <View style={styles.assistantRow}>
-                  <View style={styles.assistantAvatar}><Text style={styles.assistantAvatarText}>C</Text></View>
-                  <View style={styles.thinkingRow}>
-                    <ActivityIndicator color={colors.textMuted} size="small" />
-                    <Text style={styles.thinkingText}>Thinking…</Text>
-                  </View>
-                </View>
-              ) : null}
             </View>
           )}
         </ScrollView>
@@ -468,7 +631,7 @@ export function CoachScreen() {
               accessibilityLabel="Message your coach"
               value={composer}
               multiline
-              editable={!sending && data.modelConfiguration.configured}
+              editable={data.modelConfiguration.configured}
               onChangeText={setComposer}
               placeholder={data.modelConfiguration.configured ? "Message Coach" : "OpenAI API key required"}
               placeholderTextColor={colors.textDim}
@@ -478,11 +641,11 @@ export function CoachScreen() {
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Send message"
-              disabled={!composer.trim() || sending || !data.modelConfiguration.configured}
+              disabled={!composer.trim() || sending || Boolean(activeRunId) || !data.modelConfiguration.configured}
               onPress={() => void send()}
               style={({ pressed }) => [
                 styles.sendButton,
-                (!composer.trim() || sending || !data.modelConfiguration.configured) && styles.sendButtonDisabled,
+                (!composer.trim() || sending || Boolean(activeRunId) || !data.modelConfiguration.configured) && styles.sendButtonDisabled,
                 pressed && styles.pressed,
               ]}
             >
@@ -491,7 +654,9 @@ export function CoachScreen() {
           </View>
           <Text style={[styles.composerNote, !data.modelConfiguration.configured && styles.setupNote]}>
             {data.modelConfiguration.configured
-              ? "Review each proposed change. Only the action buttons make changes."
+              ? activeRunId
+                ? "You can draft your next message while Coach finishes this request."
+                : "Review each proposed change. Only the action buttons make changes."
               : "Connect OPENAI_API_KEY in Site settings to start chatting."}
           </Text>
         </View>
@@ -819,6 +984,73 @@ function AssistantMessageView({ message }: { message: AssistantMessage }) {
   );
 }
 
+function CoachRunActivityCard({
+  run,
+  connection,
+  transportError,
+  retrying,
+  onCheckNow,
+  onRetry,
+}: {
+  run: CoachMessageRun;
+  connection: CoachRunConnection;
+  transportError: string;
+  retrying: boolean;
+  onCheckNow: () => void;
+  onRetry: () => void;
+}) {
+  const presentation = coachRunPresentation(run, connection);
+  return (
+    <View
+      style={styles.assistantRow}
+      accessibilityLiveRegion="polite"
+      accessibilityLabel={`Coach activity. ${presentation.title}. ${presentation.detail}`}
+    >
+      <View style={styles.assistantAvatar}><Text style={styles.assistantAvatarText}>C</Text></View>
+      <View style={styles.assistantContent}>
+        <View style={styles.activityCard}>
+          <View style={styles.runHeadingRow}>
+            {presentation.active && connection !== "failed" ? (
+              <ActivityIndicator color={colors.textMuted} size="small" />
+            ) : null}
+            <Text style={styles.runTitle}>{presentation.title}</Text>
+          </View>
+          <Text style={styles.runDetail}>{presentation.detail}</Text>
+          {run.activities.length ? (
+            <View style={styles.runActivityList}>
+              {run.activities.map((activity) => (
+                <View key={activity.id} style={styles.runActivityItem}>
+                  <Text style={activity.status === "succeeded" ? styles.activitySuccess : styles.activityError}>
+                    {activity.status === "succeeded" ? "✓" : "!"}
+                  </Text>
+                  <View style={styles.runActivityCopy}>
+                    <Text style={styles.activityText}>{activity.label}</Text>
+                    {activity.purpose ? <Text style={styles.runActivityPurpose}>{activity.purpose}</Text> : null}
+                  </View>
+                </View>
+              ))}
+            </View>
+          ) : null}
+          {transportError ? <Text style={styles.runTransportError}>{transportError}</Text> : null}
+          {connection === "failed" && presentation.active ? (
+            <View style={styles.runActions}>
+              <CompactAction title="Check again" onPress={onCheckNow} />
+            </View>
+          ) : presentation.retryable ? (
+            <View style={styles.runActions}>
+              <CompactAction
+                title={retrying ? "Retrying…" : "Retry request"}
+                loading={retrying}
+                onPress={onRetry}
+              />
+            </View>
+          ) : null}
+        </View>
+      </View>
+    </View>
+  );
+}
+
 function IconButton({
   label,
   symbol,
@@ -929,6 +1161,14 @@ function exerciseActionLabel(action: ExerciseChangePlan["action"]) {
 
 function exerciseApplyLabel(action: ExerciseChangePlan["action"]) {
   return action === "create" ? "Add to library" : action === "archive" ? "Archive exercise" : "Update exercise";
+}
+
+function createCoachMessageIdempotencyKey() {
+  return `coach-message-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function createCoachRunRetryIdempotencyKey() {
+  return `coach-run-retry-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 const styles = StyleSheet.create({
@@ -1053,6 +1293,20 @@ const styles = StyleSheet.create({
   activitySuccess: { color: colors.success, fontSize: 13, lineHeight: 19, fontWeight: "900" },
   activityError: { color: colors.danger, fontSize: 13, lineHeight: 19, fontWeight: "900" },
   activityText: { flex: 1, color: colors.text, fontSize: 13, lineHeight: 19 },
+  runHeadingRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  runTitle: { flex: 1, color: colors.text, fontSize: 14, lineHeight: 20, fontWeight: "800" },
+  runDetail: { color: colors.textMuted, fontSize: 12, lineHeight: 18 },
+  runActivityList: {
+    gap: spacing.sm,
+    paddingTop: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+  },
+  runActivityItem: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
+  runActivityCopy: { flex: 1, minWidth: 0, gap: 2 },
+  runActivityPurpose: { color: colors.textDim, fontSize: 11, lineHeight: 16 },
+  runTransportError: { color: colors.danger, fontSize: 12, lineHeight: 18 },
+  runActions: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
   messageText: { color: colors.text, fontSize: 15, lineHeight: 23 },
   thinkingRow: { minHeight: 28, flexDirection: "row", alignItems: "center", gap: spacing.sm },
   thinkingText: { color: colors.textMuted, fontSize: 14 },

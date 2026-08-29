@@ -120,8 +120,19 @@ export class D1EntityRepository implements EntityRepository {
     const values: unknown[] = [ownerEmail];
     if (!query.includeArchived) clauses.push("is_active = 1");
     if (query.search?.trim()) {
-      clauses.push("normalized_name LIKE ?");
+      clauses.push("ec.normalized_name LIKE ?");
       values.push(`%${normalizeExerciseName(query.search)}%`);
+    }
+    if (query.muscleGroup) {
+      clauses.push(`EXISTS (
+        SELECT 1 FROM exercise_muscles em
+        WHERE em.exercise_id = ec.id AND em.muscle_group = ?
+      )`);
+      values.push(query.muscleGroup);
+    }
+    if (query.movementPattern?.trim()) {
+      clauses.push("ec.movement_pattern = ?");
+      values.push(query.movementPattern.trim());
     }
     const rows = await this.d1.prepare(`${this.exerciseSelect()} WHERE ${clauses.join(" AND ")} ORDER BY name`)
       .bind(...values).all<Row>();

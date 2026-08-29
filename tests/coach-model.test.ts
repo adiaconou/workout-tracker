@@ -6,10 +6,17 @@ import {
   bootstrapWithOptimisticMessage,
   bootstrapWithPreservedActivities,
   bootstrapWithProfile,
+  bootstrapWithRunResponse,
   bootstrapWithSendResponse,
   bootstrapWithoutPlan,
   bootstrapWithoutOptimisticMessage,
   coachToolActivityRows,
+  coachMessageAttemptKey,
+  coachRunCanRetry,
+  coachRunIsActive,
+  coachRunPollDelay,
+  coachRunPresentation,
+  coachRunRetryDelay,
   modelSaveFailure,
   modelSelectionForOption,
   optimisticUserMessage,
@@ -28,6 +35,7 @@ import {
   type AssistantThread,
   type ChangePlan,
   type CoachBootstrap,
+  type CoachMessageRun,
   type ModelOption,
 } from "../src/client/coach/coach-model";
 
@@ -103,6 +111,28 @@ function bootstrap(overrides: Partial<CoachBootstrap> = {}): CoachBootstrap {
       source: "live",
       defaultModel: modelA.id,
     },
+    latestRun: null,
+    ...overrides,
+  };
+}
+
+function run(
+  status: CoachMessageRun["status"],
+  overrides: Partial<CoachMessageRun> = {},
+): CoachMessageRun {
+  return {
+    id: "run-1",
+    threadId: thread.id,
+    userMessageId: "server-user",
+    status,
+    phase: "planning",
+    activities: [],
+    pollAfterMs: 1_500,
+    assistantMessageId: null,
+    error: null,
+    createdAt: "2026-08-08T00:00:00.000Z",
+    updatedAt: "2026-08-08T00:00:00.000Z",
+    expiresAt: "2026-08-09T00:00:00.000Z",
     ...overrides,
   };
 }
@@ -513,13 +543,13 @@ test("send success replaces only its optimistic message and active thread", () =
   const current = bootstrap({ messages: [message("existing"), optimistic] });
   const updatedThread = { ...thread, title: "Updated", updatedAt: "2026-08-08T00:00:00.000Z" };
   const userMessage = message("server-user");
-  const assistantMessage = message("server-assistant", "assistant");
   const plans = [plan("plan-1")];
+  const messageRun = run("queued");
   const updated = bootstrapWithSendResponse(
     current,
     thread.id,
     optimistic.id,
-    { thread: updatedThread, userMessage, assistantMessage, plans },
+    { thread: updatedThread, userMessage, run: messageRun, plans },
     { model: modelB.id, reasoningEffort: "auto" },
   );
 
@@ -528,10 +558,106 @@ test("send success replaces only its optimistic message and active thread", () =
   assert.deepEqual(updated?.messages.map(({ id }) => id), [
     "existing",
     "server-user",
-    "server-assistant",
   ]);
   assert.equal(updated?.plans, plans);
+  assert.equal(updated?.latestRun, messageRun);
   assert.deepEqual(updated?.profile, { model: modelB.id, reasoningEffort: "auto" });
+});
+
+test("run responses update progress and append a terminal assistant message once", () => {
+  const current = bootstrap({ latestRun: run("queued") });
+  const activeResponse = { run: run("in_progress"), assistantMessage: null, plans: [plan("active-plan")] };
+  const active = bootstrapWithRunResponse(current, thread.id, activeResponse);
+  assert.equal(active?.latestRun?.status, "in_progress");
+  assert.equal(active?.messages, current.messages);
+  assert.deepEqual(active?.plans, activeResponse.plans);
+
+  const assistant = message("server-assistant", "assistant");
+  const completedResponse = {
+    run: run("succeeded", { assistantMessageId: assistant.id }),
+    assistantMessage: assistant,
+    plans: [plan("complete-plan")],
+  };
+  const completed = bootstrapWithRunResponse(active, thread.id, completedResponse);
+  assert.deepEqual(completed?.messages.map(({ id }) => id), ["existing", assistant.id]);
+  assert.deepEqual(
+    bootstrapWithRunResponse(completed, thread.id, completedResponse)?.messages.map(({ id }) => id),
+    ["existing", assistant.id],
+  );
+  assert.equal(bootstrapWithRunResponse(null, thread.id, completedResponse), null);
+  assert.equal(bootstrapWithRunResponse(current, otherThread.id, completedResponse), current);
+  assert.equal(bootstrapWithRunResponse(current, thread.id, {
+    ...completedResponse,
+    run: { ...completedResponse.run, threadId: otherThread.id },
+  }), current);
+});
+
+test("coach run helpers bound polling, retry transport failures, and reuse uncertain sends", () => {
+  for (const status of ["starting", "queued", "in_progress"] as const) {
+    assert.equal(coachRunIsActive(status), true);
+  }
+  for (const status of ["succeeded", "failed", "expired"] as const) {
+    assert.equal(coachRunIsActive(status), false);
+  }
+
+  assert.equal(coachRunPollDelay(run("queued", { pollAfterMs: 2_500 })), 2_500);
+  assert.equal(coachRunPollDelay(run("queued", { pollAfterMs: 100 })), 750);
+  assert.equal(coachRunPollDelay(run("queued", { pollAfterMs: 20_000 })), 10_000);
+  assert.equal(coachRunPollDelay(run("queued", { pollAfterMs: 0 })), 1_500);
+  assert.equal(coachRunPollDelay(run("queued", { pollAfterMs: Number.NaN })), 1_500);
+  assert.equal(coachRunRetryDelay(0), 2_000);
+  assert.equal(coachRunRetryDelay(1), 2_000);
+  assert.equal(coachRunRetryDelay(2), 4_000);
+  assert.equal(coachRunRetryDelay(3.9), 8_000);
+  assert.equal(coachRunRetryDelay(99), 15_000);
+
+  let created = 0;
+  const createKey = () => `new-${++created}`;
+  const existing = { key: "existing", requestFingerprint: "request-a" };
+  assert.equal(coachMessageAttemptKey(existing, "request-a", false, createKey), "existing");
+  assert.equal(coachMessageAttemptKey(null, "request-a", false, createKey), "new-1");
+  assert.equal(coachMessageAttemptKey(existing, "request-a", true, createKey), "new-2");
+  assert.equal(coachMessageAttemptKey(existing, "request-b", false, createKey), "new-3");
+
+  assert.equal(coachRunCanRetry(run("expired")), true);
+  assert.equal(coachRunCanRetry(run("failed", {
+    error: { code: "timeout", message: "Timed out", retryable: true },
+  })), true);
+  assert.equal(coachRunCanRetry(run("failed", {
+    error: { code: "invalid", message: "Invalid", retryable: false },
+  })), false);
+  assert.equal(coachRunCanRetry(run("failed")), false);
+  assert.equal(coachRunCanRetry(run("queued")), false);
+});
+
+test("coach run presentation gives truthful progress, reconnect, and terminal copy", () => {
+  for (const phase of ["planning", "checking", "recovering", "synthesizing", "review_ready"] as const) {
+    const presentation = coachRunPresentation(run("in_progress", { phase }), "connected");
+    assert.ok(presentation.title.length > 0, phase);
+    assert.ok(presentation.detail.length > 0, phase);
+    assert.equal(presentation.active, true);
+    assert.equal(presentation.retryable, false);
+  }
+
+  assert.match(coachRunPresentation(run("starting"), "connected").title, /getting started/i);
+  assert.match(coachRunPresentation(run("queued"), "connected").title, /getting started/i);
+  assert.match(coachRunPresentation(run("queued"), "reconnecting").title, /still working/i);
+  assert.match(coachRunPresentation(run("queued"), "paused").title, /paused/i);
+  assert.match(coachRunPresentation(run("queued"), "failed").title, /couldn't check/i);
+  assert.equal(coachRunPresentation(run("failed"), "failed").active, false);
+
+  const failed = coachRunPresentation(run("failed", {
+    error: { code: "rate_limited", message: "Please wait a moment.", retryable: true },
+  }), "connected");
+  assert.equal(failed.detail, "Please wait a moment.");
+  assert.equal(failed.retryable, true);
+  assert.match(coachRunPresentation(run("failed"), "connected").detail, /no changes/i);
+  assert.equal(coachRunPresentation(run("expired", {
+    error: { code: "expired", message: "This saved run expired.", retryable: true },
+  }), "connected").detail, "This saved run expired.");
+  assert.match(coachRunPresentation(run("expired"), "connected").detail, /no changes/i);
+  assert.match(coachRunPresentation(run("succeeded"), "connected").title, /finished/i);
+  assert.equal(coachRunPresentation(run("succeeded"), "connected").retryable, false);
 });
 
 test("late send responses cannot replace a different active thread", () => {
@@ -539,7 +665,7 @@ test("late send responses cannot replace a different active thread", () => {
   const response = {
     thread,
     userMessage: message("server-user"),
-    assistantMessage: message("server-assistant", "assistant"),
+    run: run("queued"),
     plans: [],
   };
   assert.equal(
@@ -585,6 +711,24 @@ test("failed-send reconciliation recognizes a completed persisted response", () 
   });
 
   assert.equal(reconcileFailedSend(before, refreshed, matchingUser.content), "completed");
+});
+
+test("failed-send reconciliation resumes a matching persisted run", () => {
+  const before = bootstrap({ messages: [message("existing")] });
+  const matchingUser = { ...message("server-user"), content: "Update routine C" };
+  const refreshed = bootstrap({
+    messages: [...before.messages, matchingUser],
+    latestRun: run("in_progress", { userMessageId: matchingUser.id }),
+  });
+  assert.equal(reconcileFailedSend(before, refreshed, matchingUser.content), "running");
+  assert.equal(reconcileFailedSend(before, bootstrap({
+    messages: [...before.messages, matchingUser],
+    latestRun: run("failed", { userMessageId: matchingUser.id }),
+  }), matchingUser.content), "none");
+  assert.equal(reconcileFailedSend(before, bootstrap({
+    messages: [...before.messages, matchingUser],
+    latestRun: run("queued", { userMessageId: "another-message" }),
+  }), matchingUser.content), "none");
 });
 
 test("failed-send reconciliation recognizes persisted users with staged plans", () => {

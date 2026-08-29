@@ -24,6 +24,7 @@ const entityMigrationFilenames = [
   "drizzle/0014_program_generation_jobs.sql",
   "drizzle/0015_material_rockslide.sql",
   "drizzle/0016_needy_phantom_reporter.sql",
+  "drizzle/0017_aspiring_madrox.sql",
 ];
 
 test("applies the complete migration chain and creates the normalized entity model", async () => {
@@ -43,6 +44,13 @@ test("applies the complete migration chain and creates the normalized entity mod
     const exerciseCatalogIndexes = sqlite.prepare("PRAGMA index_list(exercise_catalog)").all();
     const programGenerationJobColumns = sqlite.prepare("PRAGMA table_info(assistant_program_generation_jobs)").all();
     const programGenerationJobIndexes = sqlite.prepare("PRAGMA index_list(assistant_program_generation_jobs)").all();
+    const messageRunColumns = sqlite.prepare("PRAGMA table_info(assistant_message_runs)").all();
+    const messageRunIndexes = sqlite.prepare("PRAGMA index_list(assistant_message_runs)").all();
+    const messageRunCallColumns = sqlite.prepare("PRAGMA table_info(assistant_message_run_calls)").all();
+    const messageRunCallIndexes = sqlite.prepare("PRAGMA index_list(assistant_message_run_calls)").all();
+    const activeMessageRunIndexSql = sqlite
+      .prepare("SELECT sql FROM sqlite_master WHERE name = 'assistant_message_runs_active_thread_idx'")
+      .get().sql;
     const inspected = JSON.stringify({
       tables,
       appUsers: appUserColumns,
@@ -58,10 +66,14 @@ test("applies the complete migration chain and creates the normalized entity mod
       exercisePlanForeignKeys: sqlite.prepare("PRAGMA foreign_key_list(assistant_exercise_change_plans)").all(),
       programGenerationJobs: programGenerationJobColumns,
       programGenerationJobIndexes,
+      messageRuns: messageRunColumns,
+      messageRunIndexes,
+      messageRunCalls: messageRunCallColumns,
+      messageRunCallIndexes,
       workoutSetForeignKeys: sqlite.prepare("PRAGMA foreign_key_list(workout_sets)").all(),
     });
     sqlite.close();
-    for (const table of ["app_users", "auth_identities", "auth_sessions", "exercise_catalog", "exercise_favorites", "exercise_muscles", "routine_programs", "routine_program_routines", "routine_versions", "routine_version_exercises", "routine_set_templates", "workout_exercises", "workout_sets", "coach_profiles", "assistant_program_generation_jobs", "assistant_threads", "assistant_messages", "coach_check_ins", "assistant_change_plans", "assistant_exercise_change_plans", "assistant_tool_calls"]) {
+    for (const table of ["app_users", "auth_identities", "auth_sessions", "exercise_catalog", "exercise_favorites", "exercise_muscles", "routine_programs", "routine_program_routines", "routine_versions", "routine_version_exercises", "routine_set_templates", "workout_exercises", "workout_sets", "coach_profiles", "assistant_program_generation_jobs", "assistant_threads", "assistant_messages", "assistant_message_runs", "assistant_message_run_calls", "coach_check_ins", "assistant_change_plans", "assistant_exercise_change_plans", "assistant_tool_calls"]) {
       assert.match(inspected, new RegExp(`\\b${table}\\b`));
     }
     assert.match(inspected, /current_version_id/);
@@ -130,6 +142,49 @@ test("applies the complete migration chain and creates the normalized entity mod
     ));
     assert.ok(programGenerationJobIndexes.some(
       (index) => index.name === "assistant_program_generation_jobs_expires_idx" && index.unique === 0,
+    ));
+    assert.deepEqual(
+      messageRunColumns.map((column) => column.name),
+      [
+        "id", "owner_email", "thread_id", "idempotency_key", "request_fingerprint",
+        "user_message_id", "assistant_message_id", "status", "phase", "model",
+        "reasoning_effort", "openai_response_id", "previous_response_id", "response_ids_json",
+        "pending_input_json", "activities_json", "call_signatures_json", "round_count",
+        "tool_call_count", "force_final", "proposal_staged", "error_code", "error_message",
+        "error_retryable", "lease_token", "lease_expires_at", "created_at", "updated_at",
+        "expires_at",
+      ],
+    );
+    assert.deepEqual(
+      messageRunCallColumns.map((column) => column.name),
+      [
+        "id", "owner_email", "run_id", "call_id", "call_signature", "tool_name",
+        "arguments_json", "output_json", "activity_json", "status", "error_message",
+        "lease_token", "created_at", "updated_at",
+      ],
+    );
+    for (const [name, unique] of [
+      ["assistant_message_runs_owner_idempotency_idx", 1],
+      ["assistant_message_runs_assistant_message_idx", 1],
+      ["assistant_message_runs_active_thread_idx", 1],
+      ["assistant_message_runs_owner_updated_idx", 0],
+      ["assistant_message_runs_expires_idx", 0],
+    ]) {
+      assert.ok(messageRunIndexes.some((index) => index.name === name && index.unique === unique));
+    }
+    assert.equal(
+      messageRunIndexes.find((index) => index.name === "assistant_message_runs_active_thread_idx")?.partial,
+      1,
+    );
+    assert.match(
+      activeMessageRunIndexSql,
+      /WHERE .*status.*'starting'.*'queued'.*'in_progress'.*'processing'/,
+    );
+    assert.ok(messageRunCallIndexes.some(
+      (index) => index.name === "assistant_message_run_calls_run_call_idx" && index.unique === 1,
+    ));
+    assert.ok(messageRunCallIndexes.some(
+      (index) => index.name === "assistant_message_run_calls_owner_run_idx" && index.unique === 0,
     ));
     assert.deepEqual(
       workoutSetColumns.filter((column) => ["started_at", "elapsed_seconds"].includes(column.name)).map((column) => column.name),

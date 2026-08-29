@@ -200,3 +200,46 @@ export type ProgramGenerationJob = {
   program: GeneratedRoutineProgram | null;
   error: ProgramGenerationError | null;
 };
+
+export type CoachMessageRunStatus =
+  | "starting"
+  | "queued"
+  | "in_progress"
+  | "succeeded"
+  | "failed"
+  | "expired";
+
+export type CoachMessageRunPhase =
+  | "planning"
+  | "checking"
+  | "recovering"
+  | "synthesizing"
+  | "review_ready";
+
+export type CoachMessageRunActivity = {
+  id: string;
+  label: string;
+  purpose: string | null;
+  status: "succeeded" | "failed";
+};
+
+export type CoachMessageRunError = {
+  code: string;
+  message: string;
+  retryable: boolean;
+};
+
+export type CoachMessageRun = {
+  id: string;
+  threadId: string;
+  userMessageId: string;
+  status: CoachMessageRunStatus;
+  phase: CoachMessageRunPhase;
+  activities: CoachMessageRunActivity[];
+  pollAfterMs: number;
+  assistantMessageId: string | null;
+  error: CoachMessageRunError | null;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+};

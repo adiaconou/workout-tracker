@@ -11,6 +11,9 @@ export type AssistantRequestDecision =
   | { kind: "profile-update" }
   | { kind: "thread-create" }
   | { kind: "message-create" }
+  | { kind: "message-run-read"; runId: string }
+  | { kind: "message-run-advance"; runId: string }
+  | { kind: "message-run-retry"; runId: string }
   | { kind: "check-in-create" }
   | { kind: "program-generate" }
   | { kind: "program-generation-read"; jobId: string }
@@ -33,6 +36,27 @@ export function resolveAssistantRequest(
   if (action === "profile" && method === "PATCH") return { kind: "profile-update" };
   if (action === "threads" && method === "POST") return { kind: "thread-create" };
   if (action === "messages" && method === "POST") return { kind: "message-create" };
+  if (action === "message-runs" && resourceId && !childAction && method === "GET") {
+    return { kind: "message-run-read", runId: resourceId };
+  }
+  if (
+    action === "message-runs"
+    && resourceId
+    && childAction === "advance"
+    && !descendantAction
+    && method === "POST"
+  ) {
+    return { kind: "message-run-advance", runId: resourceId };
+  }
+  if (
+    action === "message-runs"
+    && resourceId
+    && childAction === "retry"
+    && !descendantAction
+    && method === "POST"
+  ) {
+    return { kind: "message-run-retry", runId: resourceId };
+  }
   if (action === "check-ins" && method === "POST") return { kind: "check-in-create" };
   if (action === "programs" && resourceId === "generate" && !childAction && method === "POST") {
     return { kind: "program-generate" };
@@ -200,7 +224,7 @@ ${JSON.stringify({
   latestCheckIn: checkIns[0] ?? null,
 })}
 
-Use tools to inspect current routines, exercise library, workout history, and active workout before making data-dependent claims. Reuse tool results within the same response cycle; do not repeat an identical tool call unless the underlying data could have changed. Keep recommendations specific and explain the tradeoff in plain language.
+Use tools to inspect current routines, exercise library, workout history, and active workout before making data-dependent claims. Reuse tool results within the same response cycle; do not repeat an identical tool call unless the underlying data could have changed. For anatomical substitution requests whose wording may not appear in an exercise name, search with the closest muscleGroup and movementPattern instead of repeating name synonyms. Keep recommendations specific and explain the tradeoff in plain language.
 
 Treat the user's equipment and session duration as design constraints. Exercise search returns only active exercises supported by the user's selected equipment. Use those results for every new or replacement exercise. Existing unavailable exercises may remain unchanged in an edited routine, but do not add another placement or replace an exercise with one that is unavailable. Do not create an exercise that needs unavailable equipment or change an existing exercise's equipment to something unavailable. Design normal sessions around sessionDurationMin; when the latest check-in supplies availableMinutes, use that as today's tighter time budget. A proposed duration is an estimate, not a measured result, so describe it as estimated and never claim the routine will take an exact time.
 

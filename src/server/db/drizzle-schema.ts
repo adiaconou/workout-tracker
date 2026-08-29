@@ -501,6 +501,77 @@ export const assistantMessages = sqliteTable(
   ],
 );
 
+export const assistantMessageRuns = sqliteTable(
+  "assistant_message_runs",
+  {
+    id: text("id").primaryKey(),
+    ownerEmail: text("owner_email").notNull(),
+    threadId: text("thread_id").notNull().references(() => assistantThreads.id, { onDelete: "cascade" }),
+    idempotencyKey: text("idempotency_key").notNull(),
+    requestFingerprint: text("request_fingerprint").notNull(),
+    userMessageId: text("user_message_id").notNull(),
+    assistantMessageId: text("assistant_message_id").references(() => assistantMessages.id, { onDelete: "set null" }),
+    status: text("status").notNull().default("starting"),
+    phase: text("phase").notNull().default("planning"),
+    model: text("model").notNull(),
+    reasoningEffort: text("reasoning_effort").notNull(),
+    openAIResponseId: text("openai_response_id"),
+    previousResponseId: text("previous_response_id"),
+    responseIdsJson: text("response_ids_json").notNull().default("[]"),
+    pendingInputJson: text("pending_input_json").notNull().default("[]"),
+    activitiesJson: text("activities_json").notNull().default("[]"),
+    callSignaturesJson: text("call_signatures_json").notNull().default("{}"),
+    roundCount: integer("round_count").notNull().default(0),
+    toolCallCount: integer("tool_call_count").notNull().default(0),
+    forceFinal: integer("force_final", { mode: "boolean" }).notNull().default(false),
+    proposalStaged: integer("proposal_staged", { mode: "boolean" }).notNull().default(false),
+    errorCode: text("error_code"),
+    errorMessage: text("error_message"),
+    errorRetryable: integer("error_retryable", { mode: "boolean" }).notNull().default(false),
+    leaseToken: text("lease_token"),
+    leaseExpiresAt: text("lease_expires_at"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("assistant_message_runs_owner_idempotency_idx").on(
+      table.ownerEmail,
+      table.idempotencyKey,
+    ),
+    uniqueIndex("assistant_message_runs_assistant_message_idx").on(table.assistantMessageId),
+    uniqueIndex("assistant_message_runs_active_thread_idx")
+      .on(table.ownerEmail, table.threadId)
+      .where(sql`${table.status} IN ('starting', 'queued', 'in_progress', 'processing')`),
+    index("assistant_message_runs_owner_updated_idx").on(table.ownerEmail, table.updatedAt),
+    index("assistant_message_runs_expires_idx").on(table.expiresAt),
+  ],
+);
+
+export const assistantMessageRunCalls = sqliteTable(
+  "assistant_message_run_calls",
+  {
+    id: text("id").primaryKey(),
+    ownerEmail: text("owner_email").notNull(),
+    runId: text("run_id").notNull().references(() => assistantMessageRuns.id, { onDelete: "cascade" }),
+    callId: text("call_id").notNull(),
+    callSignature: text("call_signature").notNull(),
+    toolName: text("tool_name").notNull(),
+    argumentsJson: text("arguments_json").notNull(),
+    outputJson: text("output_json"),
+    activityJson: text("activity_json"),
+    status: text("status").notNull().default("processing"),
+    errorMessage: text("error_message"),
+    leaseToken: text("lease_token").notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("assistant_message_run_calls_run_call_idx").on(table.runId, table.callId),
+    index("assistant_message_run_calls_owner_run_idx").on(table.ownerEmail, table.runId),
+  ],
+);
+
 export const coachCheckIns = sqliteTable(
   "coach_check_ins",
   {

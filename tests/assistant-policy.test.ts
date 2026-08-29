@@ -26,6 +26,18 @@ test("assistant request policy resolves every supported route and rejects incomp
     ["PATCH", ["assistant", "profile"], { kind: "profile-update" }],
     ["POST", ["assistant", "threads"], { kind: "thread-create" }],
     ["POST", ["assistant", "messages"], { kind: "message-create" }],
+    ["GET", ["assistant", "message-runs", "run-1"], {
+      kind: "message-run-read",
+      runId: "run-1",
+    }],
+    ["POST", ["assistant", "message-runs", "run-1", "advance"], {
+      kind: "message-run-advance",
+      runId: "run-1",
+    }],
+    ["POST", ["assistant", "message-runs", "run-2", "retry"], {
+      kind: "message-run-retry",
+      runId: "run-2",
+    }],
     ["POST", ["assistant", "check-ins"], { kind: "check-in-create" }],
     ["POST", ["assistant", "programs", "generate"], { kind: "program-generate" }],
     ["GET", ["assistant", "program-generations", "job-1"], {
@@ -49,6 +61,12 @@ test("assistant request policy resolves every supported route and rejects incomp
     ["PUT", ["assistant", "profile"]],
     ["GET", ["assistant", "threads"]],
     ["GET", ["assistant", "messages"]],
+    ["GET", ["assistant", "message-runs"]],
+    ["POST", ["assistant", "message-runs", "run-1"]],
+    ["GET", ["assistant", "message-runs", "run-1", "advance"]],
+    ["POST", ["assistant", "message-runs", "run-1", "advance", "unexpected"]],
+    ["GET", ["assistant", "message-runs", "run-1", "retry"]],
+    ["POST", ["assistant", "message-runs", "run-1", "retry", "unexpected"]],
     ["GET", ["assistant", "check-ins"]],
     ["GET", ["assistant", "programs", "generate"]],
     ["POST", ["assistant", "programs"]],

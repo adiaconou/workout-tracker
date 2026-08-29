@@ -134,6 +134,7 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
     minify: false,
   });
   const queuedResponses = [];
+  const storedResponses = new Map();
   const responseRequests = [];
   let responseSequence = 0;
   const miniflare = new Miniflare({
@@ -153,11 +154,28 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
       if (url.pathname === "/v1/models") {
         return Response.json({ data: [{ id: "gpt-5.6-terra", created: 1 }] });
       }
-      if (url.pathname === "/v1/responses") {
+      if (url.pathname === "/v1/responses" && request.method === "POST") {
         responseRequests.push(await request.json());
         const next = queuedResponses.shift();
         assert.ok(next, "A mocked Responses API result should be queued");
+        storedResponses.set(next.id, next);
         return Response.json(next);
+      }
+      if (url.pathname.startsWith("/v1/responses/") && request.method === "GET") {
+        const responseId = decodeURIComponent(url.pathname.slice("/v1/responses/".length));
+        const response = storedResponses.get(responseId);
+        assert.ok(response, `A mocked Responses API result should exist for ${responseId}`);
+        return Response.json(response);
+      }
+      if (url.pathname.startsWith("/v1/responses/") && request.method === "DELETE") {
+        const responseId = decodeURIComponent(url.pathname.slice("/v1/responses/".length));
+        storedResponses.delete(responseId);
+        return Response.json({ id: responseId, deleted: true });
+      }
+      if (url.pathname.endsWith("/cancel") && request.method === "POST") {
+        const responseId = decodeURIComponent(url.pathname
+          .slice("/v1/responses/".length, -"/cancel".length));
+        return Response.json({ id: responseId, status: "cancelled" });
       }
       return Response.json({ error: { message: `Unexpected outbound request: ${url.pathname}` } }, { status: 404 });
     },
@@ -221,20 +239,46 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
     return assertStatus(result, 201).thread;
   }
 
-  async function sendMessage(threadId, content) {
-    return request("/api/v1/assistant/messages", {
+  async function acceptMessage(threadId, content, idempotencyKey = `coach-message-${randomUUID()}`) {
+    return assertStatus(await request("/api/v1/assistant/messages", {
       method: "POST",
+      headers: {
+        ...ownerHeaders,
+        "x-idempotency-key": idempotencyKey,
+      },
       body: {
         threadId,
         content,
         model: "gpt-5.6-terra",
         reasoningEffort: "low",
       },
-    });
+    }), 202);
+  }
+
+  async function driveMessageRun(accepted) {
+    let latest = {
+      run: accepted.run,
+      assistantMessage: null,
+      plans: accepted.plans,
+    };
+    for (let attempt = 0; attempt < 32 && !["succeeded", "failed", "expired"].includes(latest.run.status); attempt += 1) {
+      latest = assertStatus(await request(
+        `/api/v1/assistant/message-runs/${encodeURIComponent(latest.run.id)}/advance`,
+        { method: "POST", body: {} },
+      ), 200);
+    }
+    assert.equal(latest.run.status, "succeeded", JSON.stringify(latest));
+    assert.ok(latest.assistantMessage, "A successful Coach run should persist an assistant message");
+    return { ...accepted, ...latest };
+  }
+
+  async function sendMessage(threadId, content) {
+    return driveMessageRun(await acceptMessage(threadId, content));
   }
 
   async function stageExercisePlan({ action, exercise = null, proposedExercise = null, summary }) {
     const thread = await createThread();
+    const responseRequestsBefore = responseRequests.length;
     const plansBefore = await count(
       "SELECT COUNT(*) AS count FROM assistant_exercise_change_plans WHERE owner_email = ?",
       ownerEmail,
@@ -252,9 +296,12 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
       summary,
       rationale: `Integration-test ${action} review plan.`,
     });
-    enqueueText("The review card is ready. Nothing has changed yet.");
-    const staged = await sendMessage(thread.id, `Please ${summary.toLowerCase()}.`);
-    const payload = assertStatus(staged, 201);
+    const payload = await sendMessage(thread.id, `Please ${summary.toLowerCase()}.`);
+    assert.equal(
+      responseRequests.length,
+      responseRequestsBefore + 2,
+      "A staged exercise card should finish without another model round",
+    );
     assert.equal(queuedResponses.length, 0, "Every queued model response should be consumed");
     assert.equal(
       await count("SELECT COUNT(*) AS count FROM assistant_exercise_change_plans WHERE owner_email = ?", ownerEmail),
@@ -276,6 +323,7 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
 
   async function stageRoutineCreation({ code, exercise, focus = "Coach-built strength" }) {
     const thread = await createThread();
+    const responseRequestsBefore = responseRequests.length;
     const plansBefore = await count(
       "SELECT COUNT(*) AS count FROM assistant_change_plans WHERE owner_email = ?",
       ownerEmail,
@@ -288,7 +336,12 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
       summary: `Create ${focus}`,
       rationale: "Create a complete routine from active exercises after the user reviews every field.",
     });
-    const payload = assertStatus(await sendMessage(thread.id, `Create a new ${focus} routine.`), 201);
+    const payload = await sendMessage(thread.id, `Create a new ${focus} routine.`);
+    assert.equal(
+      responseRequests.length,
+      responseRequestsBefore + 3,
+      "A staged routine card should finish without another model round",
+    );
     assert.equal(queuedResponses.length, 0, "Every queued model response should be consumed");
     assert.equal(
       payload.assistantMessage.content,
@@ -352,6 +405,36 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
 
   assertStatus(await request("/api/v1/assistant"), 200);
 
+  await context.test("retrying an expired Coach run reuses its original user message", async () => {
+    const thread = await createThread();
+    enqueueText("This first response will expire before retrieval.");
+    const accepted = await acceptMessage(thread.id, "Review this request after reconnecting.");
+    const expiredAt = new Date(Date.now() - 1_000).toISOString();
+    await database.prepare("UPDATE assistant_message_runs SET expires_at = ? WHERE id = ?")
+      .bind(expiredAt, accepted.run.id)
+      .run();
+
+    enqueueText("The retried response completed.");
+    const retried = assertStatus(await request(
+      `/api/v1/assistant/message-runs/${encodeURIComponent(accepted.run.id)}/retry`,
+      {
+        method: "POST",
+        headers: {
+          ...ownerHeaders,
+          "x-idempotency-key": `coach-retry-${randomUUID()}`,
+        },
+        body: {},
+      },
+    ), 202);
+    assert.equal(retried.run.userMessageId, accepted.run.userMessageId);
+    const completed = await driveMessageRun(retried);
+    assert.equal(completed.assistantMessage.content, "The retried response completed.");
+    assert.equal(
+      await count("SELECT COUNT(*) AS count FROM assistant_messages WHERE thread_id = ? AND role = 'user'", thread.id),
+      1,
+    );
+  });
+
   await context.test("equipment constraints filter Coach discovery and are rechecked at stage and Apply", async () => {
     assertStatus(await request("/api/v1/assistant/profile", {
       method: "PATCH",
@@ -371,9 +454,9 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
     const searchThread = await createThread();
     enqueueTool("search_exercises", { query: "Flat dumbbell bench press", includeArchived: false });
     enqueueText("That exercise is unavailable with your selected equipment.");
-    const searchReply = assertStatus(
-      await sendMessage(searchThread.id, "Can I use a flat dumbbell bench press?"),
-      201,
+    const searchReply = await sendMessage(
+      searchThread.id,
+      "Can I use a flat dumbbell bench press?",
     );
     assert.deepEqual(searchReply.assistantMessage.activities, [
       { name: "search_exercises", status: "succeeded" },
@@ -404,7 +487,7 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
       rationale: "Exercise equipment-policy staging test.",
     });
     enqueueText("I cannot stage that routine with the selected equipment.");
-    assertStatus(await sendMessage(rejectedRoutineThread.id, "Create that bench routine."), 201);
+    await sendMessage(rejectedRoutineThread.id, "Create that bench routine.");
     assert.equal(
       await count("SELECT COUNT(*) AS count FROM assistant_change_plans WHERE owner_email = ?", ownerEmail),
       routinePlansBefore,
@@ -428,7 +511,7 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
       rationale: "Exercise equipment-policy staging test.",
     });
     enqueueText("I cannot stage that exercise with the selected equipment.");
-    assertStatus(await sendMessage(rejectedExerciseThread.id, "Add that cable exercise."), 201);
+    await sendMessage(rejectedExerciseThread.id, "Add that cable exercise.");
     assert.equal(
       await count("SELECT COUNT(*) AS count FROM assistant_exercise_change_plans WHERE owner_email = ?", ownerEmail),
       exercisePlansBefore,
@@ -476,7 +559,7 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
       summary: "Keep the legacy cable placement",
       rationale: "Preserve existing data while changing only the routine summary.",
     });
-    const preserved = assertStatus(await sendMessage(preservedThread.id, "Update only the routine summary."), 201);
+    const preserved = await sendMessage(preservedThread.id, "Update only the routine summary.");
     assert.equal(
       preserved.assistantMessage.content,
       "I prepared a routine change for review. Nothing has changed yet.",
@@ -507,7 +590,7 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
       rationale: "Routine equipment-policy staging test.",
     });
     enqueueText("I cannot add another unavailable cable placement.");
-    assertStatus(await sendMessage(duplicateThread.id, "Add another cable placement."), 201);
+    await sendMessage(duplicateThread.id, "Add another cable placement.");
     assert.equal(
       await count("SELECT COUNT(*) AS count FROM assistant_change_plans WHERE owner_email = ?", ownerEmail),
       plansBeforeDuplicate,
@@ -532,9 +615,9 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
       summary: "Phrase the same new routine differently",
       rationale: "The normalized routine itself is unchanged.",
     });
-    const replay = assertStatus(
-      await sendMessage(staged.thread.id, "Prepare that exact new routine again."),
-      201,
+    const replay = await sendMessage(
+      staged.thread.id,
+      "Prepare that exact new routine again.",
     );
     const replayPlan = replay.plans.find((candidate) => (
       candidate.kind === "routine"
@@ -573,10 +656,7 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
         summary,
         rationale: "Exact pending routine-proposal reuse coverage.",
       });
-      return assertStatus(
-        await sendMessage(targetThread.id, "Prepare this routine proposal for review."),
-        201,
-      );
+      return sendMessage(targetThread.id, "Prepare this routine proposal for review.");
     }
 
     const firstPayload = await sendRoutineProposal(
@@ -871,7 +951,7 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
       summary: "Update the detailed set prescription",
       rationale: "Make every requested field visible before the user chooses an action.",
     });
-    const staged = assertStatus(await sendMessage(thread.id, "Update this routine exactly as requested."), 201);
+    const staged = await sendMessage(thread.id, "Update this routine exactly as requested.");
     assert.equal(
       staged.assistantMessage.content,
       "I prepared a routine change for review. Nothing has changed yet.",
@@ -979,5 +1059,10 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
   assert.equal(queuedResponses.length, 0);
   assert.ok(responseRequests.length >= 1);
   assert.ok(responseRequests.every((body) => body.parallel_tool_calls === false));
-  assert.ok(responseRequests.some((body) => body.tool_choice === "none"), "A staged card should end tool use for that turn");
+  assert.ok(responseRequests.every((body) => body.background === true && body.store === true));
+  assert.ok(
+    responseRequests.some((body) => typeof body.previous_response_id === "string"),
+    "Tool output should continue through the saved background response chain",
+  );
+  assert.equal(storedResponses.size, 0, "Terminal Coach runs should clean up mocked background responses");
 });

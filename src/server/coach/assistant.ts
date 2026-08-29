@@ -1,6 +1,8 @@
 import { validateRoutineVersionInput } from "../../domain/routines/validation";
 import { isRoutineVersionSemanticallyEqual } from "../../domain/routines/comparison";
 import type {
+  CoachMessageRun,
+  CoachMessageRunActivity,
   GeneratedRoutineProgram as GeneratedRoutineProgramPayload,
   ProgramGenerationJob,
 } from "../../contracts/api";
@@ -10,12 +12,14 @@ import {
   routineDurationToleranceMinutes,
 } from "../../domain/routines/duration";
 import { getEntityServices } from "../services";
-import { getProgramGenerationJobRepository } from "../db";
+import { getMessageRunRepository, getProgramGenerationJobRepository } from "../db";
+import type { StoredAssistantMessageRun } from "../db/message-run-repository";
 import type { StoredProgramGenerationJob } from "../db/program-generation-job-repository";
 import {
   muscleGroups,
   normalizeExerciseName,
   type Exercise,
+  type MuscleGroup,
   type RoutineAggregate,
   type RoutineVersionInput,
 } from "../../domain/entities";
@@ -31,12 +35,32 @@ import {
   type AssistantModelOption,
 } from "./models";
 import {
-  CoachToolLoopError,
-  runCoachToolLoop,
   type CoachResponse,
   type CoachToolActivity,
   type CoachToolChoice,
 } from "./tool-loop";
+import {
+  appendCoachRunActivity,
+  coachCallRepeatLimit,
+  coachCallSignature,
+  coachMessageRunAwaitsResponseAttachment,
+  coachMessageRunExpiresAt,
+  coachMessageRunIsExpired,
+  coachMessageRunLeaseExpiresAt,
+  coachMessageRunTerminalRetainedUntil,
+  coachProposalCompletionText,
+  coachResponseText,
+  coachResponseToolCalls,
+  coachRunActivity,
+  coachRunPhaseForActivities,
+  coachRunShouldForceFinal,
+  fingerprintCoachMessageRequest,
+  incrementCoachCallSignature,
+  isCoachProposalTool,
+  mapCoachMessageRunRemoteResponse,
+  normalizeCoachMessageIdempotencyKey,
+  COACH_MESSAGE_RUN_POLL_AFTER_MS,
+} from "./message-run";
 import {
   buildExerciseChangeDiff,
   completeExerciseInput,
@@ -217,6 +241,9 @@ export async function handleAssistantRequest(context: AssistantContext) {
   if (decision?.kind === "profile-update") return updateCoachProfile(context);
   if (decision?.kind === "thread-create") return createAssistantThread(context);
   if (decision?.kind === "message-create") return createAssistantMessage(context);
+  if (decision?.kind === "message-run-read") return readAssistantMessageRun(context, decision.runId);
+  if (decision?.kind === "message-run-advance") return advanceAssistantMessageRun(context, decision.runId);
+  if (decision?.kind === "message-run-retry") return retryAssistantMessageRun(context, decision.runId);
   if (decision?.kind === "check-in-create") return createCoachCheckIn(context);
   if (decision?.kind === "program-generate") return generateRoutineProgram(context);
   if (decision?.kind === "program-generation-read") {
@@ -242,18 +269,23 @@ async function assistantBootstrap({ request, env, user }: AssistantContext) {
   if (!thread) {
     return apiError(request, 404, "assistant_thread_not_found", "Coaching conversation not found.");
   }
-  const [messages, plans, checkIns, modelCatalog] = await Promise.all([
+  const [messages, plans, checkIns, modelCatalog, latestStoredRun] = await Promise.all([
     listMessages(env, user.email, thread.id),
     listChangePlans(env, user.email, thread.id),
     listCheckIns(env, user.email),
     listModelCatalog(env),
+    getMessageRunRepository().getLatestForThread(user.email, thread.id),
   ]);
+  const latestRun = latestStoredRun && latestStoredRun.status !== "succeeded"
+    ? serializeMessageRun(latestStoredRun)
+    : null;
   return apiResponse(request, {
     profile,
     threads: threads.some((candidate) => candidate.id === thread.id) ? threads : [thread, ...threads],
     thread,
     messages,
     plans,
+    latestRun,
     checkIns,
     models: modelCatalog.models,
     modelConfiguration: {
@@ -1012,6 +1044,13 @@ async function createAssistantMessage({ request, env, user }: AssistantContext) 
   if (!env.OPENAI_API_KEY) {
     return apiError(request, 503, "openai_not_configured", "The coach needs an OpenAI API key configured in the Site environment.");
   }
+  const repository = getMessageRunRepository();
+  let thread: AssistantThread;
+  let model: string;
+  let reasoningEffort: string;
+  let content: string;
+  let idempotencyKey: string;
+  let requestFingerprint: string;
   try {
     const input = await readJson<{
       threadId?: string;
@@ -1019,99 +1058,958 @@ async function createAssistantMessage({ request, env, user }: AssistantContext) 
       model?: string;
       reasoningEffort?: string;
     }>(request);
-    const content = cleanRequiredText(input.content, "Message", 4_000);
-    const thread = input.threadId ? await getThread(env, user.email, input.threadId) : await insertThread(env, user.email);
+    content = cleanRequiredText(input.content, "Message", 4_000);
+    idempotencyKey = normalizeCoachMessageIdempotencyKey(request.headers.get("x-idempotency-key"));
+    const loadedThread = input.threadId
+      ? await getThread(env, user.email, input.threadId)
+      : await insertThread(env, user.email);
+    thread = loadedThread!;
     if (!thread) {
       return apiError(request, 404, "assistant_thread_not_found", "Coaching conversation not found.");
     }
     const profile = await ensureCoachProfile(env, user.email);
     const catalog = await listModelCatalog(env);
-    const model = cleanModel(input.model ?? profile.model ?? pickDefaultModel(env, catalog.models));
+    model = cleanModel(input.model ?? profile.model ?? pickDefaultModel(env, catalog.models));
     const availableModel = catalog.models.find((option) => option.id === model);
     if (!availableModel) {
       return apiError(request, 400, "assistant_model_unavailable", "That model is not available for this API key.");
     }
-    const reasoningEffort = cleanReasoningEffort(input.reasoningEffort ?? profile.reasoningEffort, availableModel.reasoningEfforts);
-    const now = new Date().toISOString();
-    const userMessage: AssistantMessage = {
-      id: crypto.randomUUID(),
+    reasoningEffort = cleanReasoningEffort(
+      input.reasoningEffort ?? profile.reasoningEffort,
+      availableModel.reasoningEfforts,
+    );
+    requestFingerprint = await fingerprintCoachMessageRequest({
       threadId: thread.id,
-      role: "user",
       content,
-      model: null,
-      reasoningEffort: null,
-      createdAt: now,
-    };
-    await env.DB.batch([
-      env.DB.prepare(`INSERT INTO assistant_messages (
-        id, owner_email, thread_id, role, content, model, reasoning_effort, response_id, created_at
-      ) VALUES (?, ?, ?, 'user', ?, NULL, NULL, NULL, ?)`)
-        .bind(userMessage.id, user.email, thread.id, content, now),
-      env.DB.prepare(`UPDATE assistant_threads SET title = CASE
-        WHEN title = 'New coaching conversation' THEN ? ELSE title END,
-        updated_at = ? WHERE id = ? AND owner_email = ?`)
-        .bind(content.slice(0, 64), now, thread.id, user.email),
-      env.DB.prepare(`UPDATE coach_profiles SET model = ?, reasoning_effort = ?, updated_at = ?
-        WHERE owner_email = ?`).bind(model, reasoningEffort, now, user.email),
-    ]);
-
-    const history = await listMessages(env, user.email, thread.id, 50);
-    const checkIns = await listCheckIns(env, user.email);
-    const result = await runCoach({
-      env,
-      user,
-      thread,
-      profile: { ...profile, model, reasoningEffort },
-      history,
-      checkIns,
       model,
       reasoningEffort,
     });
-    const assistantMessage: AssistantMessage = {
-      id: crypto.randomUUID(),
-      threadId: thread.id,
-      role: "assistant",
-      content: result.text,
-      activities: result.activities,
-      model,
-      reasoningEffort,
-      createdAt: new Date().toISOString(),
-    };
-    await env.DB.batch([
-      env.DB.prepare(`INSERT INTO assistant_messages (
-        id, owner_email, thread_id, role, content, model, reasoning_effort,
-        response_id, activities_json, created_at
-      ) VALUES (?, ?, ?, 'assistant', ?, ?, ?, ?, ?, ?)`)
-        .bind(
-          assistantMessage.id,
-          user.email,
-          thread.id,
-          assistantMessage.content,
-          model,
-          reasoningEffort,
-          result.responseId,
-          JSON.stringify(result.activities),
-          assistantMessage.createdAt,
-        ),
-      env.DB.prepare("UPDATE assistant_threads SET updated_at = ? WHERE id = ? AND owner_email = ?")
-        .bind(assistantMessage.createdAt, thread.id, user.email),
-    ]);
-    return apiResponse(request, {
-      thread: { ...thread, title: thread.title === "New coaching conversation" ? content.slice(0, 64) : thread.title },
-      userMessage,
-      assistantMessage,
-      plans: await listChangePlans(env, user.email, thread.id),
-    }, { status: 201 });
   } catch (error) {
-    const status = error instanceof OpenAIRequestError ? error.status : 400;
     return apiError(
       request,
-      status,
-      error instanceof OpenAIRequestError ? "coach_model_request_failed" : "coach_message_invalid",
-      errorMessage(error, "The coach could not respond."),
-      status === 429 || status >= 500,
+      400,
+      "coach_message_invalid",
+      errorMessage(error, "The coaching message is invalid."),
     );
   }
+
+  try {
+    await repository.pruneExpired(new Date().toISOString());
+    await releaseExpiredActiveMessageRun({ request, env, user, segments: [] }, thread.id);
+    const now = new Date().toISOString();
+    const created = await repository.createStarting(user.email, {
+      id: crypto.randomUUID(),
+      threadId: thread.id,
+      idempotencyKey,
+      requestFingerprint,
+      userMessageId: crypto.randomUUID(),
+      userContent: content,
+      model,
+      reasoningEffort,
+      createdAt: now,
+      expiresAt: coachMessageRunExpiresAt(now),
+    });
+    if (created.kind === "conflict") {
+      return apiError(
+        request,
+        409,
+        "coach_message_idempotency_conflict",
+        "That send key was already used for a different coaching message.",
+      );
+    }
+    if (created.kind === "active") {
+      return apiError(
+        request,
+        409,
+        "coach_message_run_active",
+        "Coach is already working in this conversation. Wait for that response before sending another.",
+        true,
+      );
+    }
+    await env.DB.prepare(`UPDATE coach_profiles SET model = ?, reasoning_effort = ?, updated_at = ?
+      WHERE owner_email = ?`).bind(model, reasoningEffort, now, user.email).run();
+    let run = created.run;
+    if (created.kind === "created") run = await startAssistantMessageRun({ request, env, user, segments: [] }, run);
+    if (
+      created.kind === "replayed"
+      && run.status === "starting"
+      && !run.openAIResponseId
+      && !coachMessageRunAwaitsResponseAttachment(run.updatedAt)
+    ) {
+      run = await failUnattachedMessageRun(user.email, run);
+    }
+    return acceptedMessageRunResponse({ request, env, user, segments: [] }, run);
+  } catch (error) {
+    console.error("Coach message start failed", error);
+    return apiError(
+      request,
+      500,
+      "coach_message_start_failed",
+      "The coaching request could not be saved. Try again.",
+      true,
+    );
+  }
+}
+
+async function readAssistantMessageRun(context: AssistantContext, runId: string) {
+  const run = await getMessageRunRepository().get(context.user.email, runId);
+  if (!run) {
+    return apiError(context.request, 404, "coach_message_run_not_found", "Coaching request not found.");
+  }
+  return messageRunStatusResponse(context, run);
+}
+
+async function retryAssistantMessageRun(context: AssistantContext, runId: string) {
+  const { request, env, user } = context;
+  const repository = getMessageRunRepository();
+  let idempotencyKey: string;
+  try {
+    idempotencyKey = normalizeCoachMessageIdempotencyKey(request.headers.get("x-idempotency-key"));
+  } catch (error) {
+    return apiError(request, 400, "coach_message_retry_invalid", errorMessage(error, "Retry details are invalid."));
+  }
+  let source = await repository.get(user.email, runId);
+  if (!source) return apiError(request, 404, "coach_message_run_not_found", "Coaching request not found.");
+  if (!messageRunIsTerminal(source.status) && coachMessageRunIsExpired(source.expiresAt)) {
+    source = await expireMessageRun(context, source);
+  }
+  if (source.status !== "failed" && source.status !== "expired") {
+    return apiError(request, 409, "coach_message_retry_unavailable", "Only a failed or expired coaching request can be retried.");
+  }
+  if (!env.OPENAI_API_KEY) {
+    return apiError(request, 503, "openai_not_configured", "The coach needs an OpenAI API key configured in the Site environment.");
+  }
+  try {
+    await releaseExpiredActiveMessageRun(context, source.threadId);
+    const fingerprint = await fingerprintCoachMessageRequest({
+      retryOfRunId: source.id,
+      threadId: source.threadId,
+      userMessageId: source.userMessageId,
+      model: source.model,
+      reasoningEffort: source.reasoningEffort,
+    });
+    const now = new Date().toISOString();
+    const created = await repository.createRetryStarting(user.email, {
+      id: crypto.randomUUID(),
+      sourceRunId: source.id,
+      threadId: source.threadId,
+      idempotencyKey,
+      requestFingerprint: fingerprint,
+      userMessageId: source.userMessageId,
+      model: source.model,
+      reasoningEffort: source.reasoningEffort,
+      createdAt: now,
+      expiresAt: coachMessageRunExpiresAt(now),
+    });
+    if (created.kind === "conflict") {
+      return apiError(request, 409, "coach_message_idempotency_conflict", "That retry key was already used for a different coaching request.");
+    }
+    if (created.kind === "active") {
+      return apiError(request, 409, "coach_message_run_active", "Coach is already working in this conversation.", true);
+    }
+    const run = created.kind === "created"
+      ? await startAssistantMessageRun(context, created.run)
+      : created.run;
+    return messageRunStatusResponse(context, run, 202, true);
+  } catch (error) {
+    console.error("Coach message retry failed", error);
+    return apiError(
+      request,
+      500,
+      "coach_message_retry_failed",
+      "The coaching request could not be retried. Try again.",
+      true,
+    );
+  }
+}
+
+type StoredCoachRunActivity = CoachMessageRunActivity & { name: string };
+
+async function startAssistantMessageRun(
+  context: AssistantContext,
+  run: StoredAssistantMessageRun,
+) {
+  if (run.status !== "starting" || run.openAIResponseId) return run;
+  const { env, user } = context;
+  const repository = getMessageRunRepository();
+  let responseId: string | null = null;
+  try {
+    const thread = await getThread(env, user.email, run.threadId);
+    if (!thread) throw new Error("Coaching conversation not found.");
+    const [profile, checkIns, history, catalog] = await Promise.all([
+      ensureCoachProfile(env, user.email),
+      listCheckIns(env, user.email),
+      listModelMessages(env, user.email, run.threadId, run.userMessageId),
+      listModelCatalog(env),
+    ]);
+    const availableModel = catalog.models.find((option) => option.id === run.model);
+    if (!availableModel) {
+      throw new OpenAIRequestError(
+        "The saved Coach model is no longer available. Choose another model and try again.",
+        400,
+      );
+    }
+    const response = await createOpenAIResponse(env, {
+      model: run.model,
+      reasoningEffort: run.reasoningEffort,
+      safetyIdentifier: user.id,
+      instructions: coachInstructions(profile, checkIns),
+      input: history.map((message) => ({ role: message.role, content: message.content })),
+      tools: coachTools,
+      toolChoice: "auto",
+      background: true,
+      store: true,
+      metadata: { coach_message_run_id: run.id, coach_message_round: "1" },
+      textVerbosity: "low",
+      timeoutMs: assistantBackgroundRequestTimeoutMs,
+      timeoutMessage: "Coach could not start this response in time. Your request is saved; try again.",
+    });
+    if (!response.id) throw new OpenAIRequestError("OpenAI did not return a Coach response ID.");
+    responseId = response.id;
+    const remote = mapCoachMessageRunRemoteResponse(response);
+    const attached = await repository.attachResponse(user.email, run.id, {
+      openAIResponseId: response.id,
+      previousResponseId: null,
+      responseIdsJson: JSON.stringify(appendResponseId([], response.id)),
+      status: remote.kind === "pending" ? remote.status : "in_progress",
+      phase: "planning",
+      roundCount: 1,
+      updatedAt: new Date().toISOString(),
+    });
+    const reloaded = await repository.get(user.email, run.id);
+    if (!attached && reloaded?.openAIResponseId !== response.id) {
+      await deleteOpenAIResponse(env, response.id).catch(() => undefined);
+    }
+    return reloaded ?? run;
+  } catch (error) {
+    if (responseId) await deleteOpenAIResponse(env, responseId).catch(() => undefined);
+    const failure = publicMessageRunError(error);
+    const now = new Date().toISOString();
+    await repository.fail(
+      user.email,
+      run.id,
+      failure,
+      now,
+      coachMessageRunTerminalRetainedUntil(now),
+    );
+    return await repository.get(user.email, run.id) ?? run;
+  }
+}
+
+async function advanceAssistantMessageRun(context: AssistantContext, runId: string) {
+  const { request, env, user } = context;
+  const repository = getMessageRunRepository();
+  let run = await repository.get(user.email, runId);
+  if (!run) return apiError(request, 404, "coach_message_run_not_found", "Coaching request not found.");
+  if (messageRunIsTerminal(run.status)) return messageRunStatusResponse(context, run);
+  if (coachMessageRunIsExpired(run.expiresAt)) {
+    run = await expireMessageRun(context, run);
+    return messageRunStatusResponse(context, run);
+  }
+  if (!env.OPENAI_API_KEY) {
+    return apiError(
+      request,
+      503,
+      "openai_not_configured",
+      "Coach cannot continue until the OpenAI API key is restored. Your request is saved.",
+      true,
+    );
+  }
+  if (!run.openAIResponseId) {
+    if (run.status === "starting" && coachMessageRunAwaitsResponseAttachment(run.updatedAt)) {
+      return messageRunStatusResponse(context, run);
+    }
+    run = await failUnattachedMessageRun(user.email, run);
+    return messageRunStatusResponse(context, run);
+  }
+
+  let leaseToken: string | null = null;
+  try {
+    const response = await retrieveOpenAIResponse(env, run.openAIResponseId);
+    const remote = mapCoachMessageRunRemoteResponse(response);
+    if (remote.kind === "pending") {
+      await repository.setPending(
+        user.email,
+        run.id,
+        response.id,
+        remote.status,
+        run.phase,
+        new Date().toISOString(),
+      );
+      run = await repository.get(user.email, run.id) ?? run;
+      return messageRunStatusResponse(context, run);
+    }
+
+    const claimedAt = new Date().toISOString();
+    leaseToken = crypto.randomUUID();
+    const claimed = await repository.claimProcessing(
+      user.email,
+      run.id,
+      leaseToken,
+      claimedAt,
+      coachMessageRunLeaseExpiresAt(claimedAt),
+      claimedAt,
+    );
+    if (!claimed) {
+      run = await repository.get(user.email, run.id) ?? run;
+      return messageRunStatusResponse(context, run);
+    }
+    run = await repository.get(user.email, run.id) ?? run;
+    if (remote.kind === "failed") {
+      run = await failClaimedMessageRun(context, run, leaseToken, remote);
+      return messageRunStatusResponse(context, run);
+    }
+
+    run = await processCompletedMessageRun(context, run, leaseToken, remote.response);
+    return messageRunStatusResponse(context, run);
+  } catch (error) {
+    if (leaseToken && error instanceof OpenAIRequestError && isRetryableOpenAIError(error)) {
+      await repository.releaseProcessing(
+        user.email,
+        run.id,
+        leaseToken,
+        "in_progress",
+        "recovering",
+        new Date().toISOString(),
+      ).catch(() => undefined);
+      return apiError(
+        request,
+        error.status,
+        error.status === 429 ? "coach_rate_limited" : "coach_message_status_unavailable",
+        publicMessageRunError(error).message,
+        true,
+      );
+    }
+    if (!leaseToken && error instanceof OpenAIRequestError && error.upstreamStatus !== 404) {
+      return apiError(
+        request,
+        error.status,
+        error.status === 429 ? "coach_rate_limited" : "coach_message_status_unavailable",
+        publicMessageRunError(error).message,
+        isRetryableOpenAIError(error),
+      );
+    }
+    if (!leaseToken && error instanceof OpenAIRequestError && error.upstreamStatus === 404) {
+      run = await expireMessageRun(context, run);
+      return messageRunStatusResponse(context, run);
+    }
+    const failure = publicMessageRunError(error);
+    const now = new Date().toISOString();
+    await repository.fail(
+      user.email,
+      run.id,
+      failure,
+      now,
+      coachMessageRunTerminalRetainedUntil(now),
+      leaseToken ?? undefined,
+    );
+    run = await repository.get(user.email, run.id) ?? run;
+    await cleanupMessageRunResponses(context, run);
+    return messageRunStatusResponse(context, run);
+  }
+}
+
+async function processCompletedMessageRun(
+  context: AssistantContext,
+  run: StoredAssistantMessageRun,
+  leaseToken: string,
+  response: CoachResponse,
+) {
+  const repository = getMessageRunRepository();
+  const storedPendingInput = parseJsonArray(run.pendingInputJson);
+  if (run.proposalStaged) {
+    const proposalName = parseStoredRunActivities(run.activitiesJson)
+      .findLast((activity) => activity.status === "succeeded" && isCoachProposalTool(activity.name))
+      ?.name;
+    if (proposalName) {
+      return succeedMessageRun(
+        context,
+        run,
+        leaseToken,
+        coachProposalCompletionText(proposalName)!,
+        response.id,
+      );
+    }
+  }
+  if (storedPendingInput.length) {
+    return continueAssistantMessageRun(context, run, leaseToken, storedPendingInput, response.id);
+  }
+
+  const calls = coachResponseToolCalls(response);
+  if (!calls.length) {
+    const text = coachResponseText(response);
+    if (!text) throw new Error("The selected model returned no coaching response.");
+    return succeedMessageRun(context, run, leaseToken, text, response.id);
+  }
+  if (run.forceFinal) {
+    throw new Error("The selected model tried to call a tool after Coach switched to final synthesis.");
+  }
+
+  let activities = parseStoredRunActivities(run.activitiesJson);
+  let signatureCounts = parseSignatureCounts(run.callSignaturesJson);
+  let toolCallCount = run.toolCallCount;
+  let proposalStaged = run.proposalStaged;
+  let forceFinal: boolean = run.forceFinal;
+  const toolOutputs: unknown[] = [];
+  let proposalCompletion: string | null = null;
+
+  for (const call of calls) {
+    const signature = coachCallSignature(call);
+    const begun = await repository.beginCall(context.user.email, run.id, leaseToken, {
+      id: `${run.id}:${call.callId}`,
+      callId: call.callId,
+      callSignature: signature,
+      toolName: call.name,
+      argumentsJson: JSON.stringify(call.argumentsValue),
+      createdAt: new Date().toISOString(),
+    });
+    if (begun.kind === "rejected") return await repository.get(context.user.email, run.id) ?? run;
+    if (begun.kind === "conflict") {
+      throw new Error("The selected model reused a tool-call ID with different instructions.");
+    }
+    if (begun.kind === "replayed") {
+      const output = parseStoredToolOutput(begun.call.outputJson);
+      toolOutputs.push(functionCallOutput(call.callId, output));
+      if (begun.call.activityJson) {
+        activities = appendStoredRunActivity(activities, parseStoredRunActivity(begun.call.activityJson));
+      }
+      if (begun.call.status === "succeeded" && isCoachProposalTool(call.name)) {
+        proposalStaged = true;
+        proposalCompletion = coachProposalCompletionText(call.name);
+      }
+      continue;
+    }
+
+    const incremented = incrementCoachCallSignature(signatureCounts, signature);
+    signatureCounts = incremented.counts;
+    toolCallCount += 1;
+    let output: unknown;
+    let status: "succeeded" | "failed" = "succeeded";
+    let executed = false;
+    if (proposalStaged) {
+      status = "failed";
+      output = { error: "A review card is already ready. Finish the response without another tool." };
+    } else if (incremented.count >= coachCallRepeatLimit(call.name)) {
+      status = "failed";
+      forceFinal = true;
+      output = { error: "This exact tool call was repeated without progress. Use the prior result and finish." };
+    } else if (call.parseError) {
+      status = "failed";
+      output = { error: call.parseError };
+    } else {
+      executed = true;
+      try {
+        output = await executeCoachTool({
+          env: context.env,
+          user: context.user,
+          thread: (await getThread(context.env, context.user.email, run.threadId))!,
+          name: call.name,
+          argumentsValue: call.argumentsValue,
+        });
+        if (isCoachProposalTool(call.name)) {
+          proposalStaged = true;
+          proposalCompletion = coachProposalCompletionText(call.name);
+        }
+      } catch (error) {
+        status = "failed";
+        output = { error: errorMessage(error, "The coaching check failed.") };
+      }
+    }
+
+    const activity = executed
+      ? { ...coachRunActivity(activities.length + 1, call.name, status), name: call.name }
+      : null;
+    if (activity) activities = appendStoredRunActivity(activities, activity);
+    forceFinal = forceFinal || coachRunShouldForceFinal(run.roundCount, toolCallCount);
+    const phase = coachRunPhaseForActivities(activities, forceFinal, proposalStaged);
+    const outputJson = boundedToolOutput(output);
+    const finished = await repository.finishCall(
+      context.user.email,
+      run.id,
+      call.callId,
+      leaseToken,
+      {
+        status,
+        outputJson,
+        activityJson: activity ? JSON.stringify(activity) : null,
+        errorMessage: status === "failed" ? toolOutputError(output) : null,
+        activitiesJson: JSON.stringify(activities),
+        callSignaturesJson: JSON.stringify(signatureCounts),
+        toolCallCount,
+        proposalStaged,
+        phase,
+        updatedAt: new Date().toISOString(),
+      },
+    );
+    if (!finished) return await repository.get(context.user.email, run.id) ?? run;
+    await recordToolCall(
+      context.env,
+      context.user.email,
+      run.threadId,
+      call.name,
+      call.argumentsValue,
+      output,
+      status,
+      begun.call.id,
+    ).catch((error) => console.error("Coach tool-call audit failed", error));
+    toolOutputs.push({ type: "function_call_output", call_id: call.callId, output: outputJson });
+  }
+
+  const phase = coachRunPhaseForActivities(activities, forceFinal, proposalStaged);
+  const updated = await repository.updateProcessing(context.user.email, run.id, leaseToken, {
+    phase,
+    openAIResponseId: run.openAIResponseId,
+    previousResponseId: response.id,
+    responseIdsJson: run.responseIdsJson,
+    pendingInputJson: JSON.stringify(toolOutputs),
+    activitiesJson: JSON.stringify(activities),
+    callSignaturesJson: JSON.stringify(signatureCounts),
+    roundCount: run.roundCount,
+    toolCallCount,
+    forceFinal,
+    proposalStaged,
+    updatedAt: new Date().toISOString(),
+  });
+  if (!updated) return await repository.get(context.user.email, run.id) ?? run;
+  run = await repository.get(context.user.email, run.id) ?? run;
+  if (proposalCompletion) {
+    return succeedMessageRun(context, run, leaseToken, proposalCompletion, response.id);
+  }
+  return continueAssistantMessageRun(context, run, leaseToken, toolOutputs, response.id);
+}
+
+async function continueAssistantMessageRun(
+  context: AssistantContext,
+  run: StoredAssistantMessageRun,
+  leaseToken: string,
+  toolOutputs: unknown[],
+  previousResponseId: string,
+) {
+  const repository = getMessageRunRepository();
+  const [profile, checkIns] = await Promise.all([
+    ensureCoachProfile(context.env, context.user.email),
+    listCheckIns(context.env, context.user.email),
+  ]);
+  const response = await createOpenAIResponse(context.env, {
+    model: run.model,
+    reasoningEffort: run.reasoningEffort,
+    safetyIdentifier: context.user.id,
+    instructions: coachInstructions(profile, checkIns),
+    input: toolOutputs,
+    tools: coachTools,
+    toolChoice: run.forceFinal ? "none" : "auto",
+    previousResponseId,
+    background: true,
+    store: true,
+    metadata: {
+      coach_message_run_id: run.id,
+      coach_message_round: String(run.roundCount + 1),
+    },
+    textVerbosity: "low",
+    timeoutMs: assistantBackgroundRequestTimeoutMs,
+    timeoutMessage: "Coach could not start the next step in time. Your progress is saved.",
+  });
+  if (!response.id) throw new OpenAIRequestError("OpenAI did not return a Coach response ID.");
+  const remote = mapCoachMessageRunRemoteResponse(response);
+  const responseIds = appendResponseId(parseResponseIds(run.responseIdsJson), response.id);
+  const attached = await repository.attachResponse(context.user.email, run.id, {
+    openAIResponseId: response.id,
+    previousResponseId: null,
+    responseIdsJson: JSON.stringify(responseIds),
+    pendingInputJson: "[]",
+    status: remote.kind === "pending" ? remote.status : "in_progress",
+    phase: run.forceFinal ? "synthesizing" : run.phase,
+    roundCount: run.roundCount + 1,
+    updatedAt: new Date().toISOString(),
+    leaseToken,
+  });
+  const reloaded = await repository.get(context.user.email, run.id);
+  if (!attached && reloaded?.openAIResponseId !== response.id) {
+    await deleteOpenAIResponse(context.env, response.id).catch(() => undefined);
+  }
+  return reloaded ?? run;
+}
+
+async function succeedMessageRun(
+  context: AssistantContext,
+  run: StoredAssistantMessageRun,
+  leaseToken: string,
+  content: string,
+  responseId: string | null,
+) {
+  const repository = getMessageRunRepository();
+  const activities = parseStoredRunActivities(run.activitiesJson);
+  const now = new Date().toISOString();
+  await repository.succeed(context.user.email, run.id, leaseToken, {
+    assistantMessageId: crypto.randomUUID(),
+    content,
+    responseId,
+    runActivitiesJson: JSON.stringify(activities),
+    messageActivitiesJson: JSON.stringify(activities.map(({ name, status }) => ({ name, status }))),
+    createdAt: now,
+    expiresAt: coachMessageRunTerminalRetainedUntil(now),
+  });
+  const reloaded = await repository.get(context.user.email, run.id) ?? run;
+  await cleanupMessageRunResponses(context, reloaded);
+  return await repository.get(context.user.email, run.id) ?? reloaded;
+}
+
+async function failClaimedMessageRun(
+  context: AssistantContext,
+  run: StoredAssistantMessageRun,
+  leaseToken: string,
+  error: { code: string; message: string; retryable: boolean },
+) {
+  const now = new Date().toISOString();
+  await getMessageRunRepository().fail(
+    context.user.email,
+    run.id,
+    error,
+    now,
+    coachMessageRunTerminalRetainedUntil(now),
+    leaseToken,
+  );
+  const reloaded = await getMessageRunRepository().get(context.user.email, run.id) ?? run;
+  await cleanupMessageRunResponses(context, reloaded);
+  return await getMessageRunRepository().get(context.user.email, run.id) ?? reloaded;
+}
+
+async function failUnattachedMessageRun(ownerEmail: string, run: StoredAssistantMessageRun) {
+  const repository = getMessageRunRepository();
+  const now = new Date().toISOString();
+  await repository.fail(
+    ownerEmail,
+    run.id,
+    {
+      code: "coach_message_start_lost",
+      message: "Coach could not confirm that this response started. Your request is saved; try again.",
+      retryable: true,
+    },
+    now,
+    coachMessageRunTerminalRetainedUntil(now),
+  );
+  return await repository.get(ownerEmail, run.id) ?? run;
+}
+
+async function expireMessageRun(context: AssistantContext, run: StoredAssistantMessageRun) {
+  const repository = getMessageRunRepository();
+  const now = new Date().toISOString();
+  await repository.expireIfPast(
+    context.user.email,
+    run.id,
+    {
+      code: "coach_message_expired",
+      message: "This coaching request expired before it finished. Your message is saved and no routine changes were made.",
+      retryable: true,
+    },
+    now,
+    coachMessageRunTerminalRetainedUntil(now),
+  );
+  const reloaded = await repository.get(context.user.email, run.id) ?? run;
+  await cleanupMessageRunResponses(context, reloaded, true);
+  return await repository.get(context.user.email, run.id) ?? reloaded;
+}
+
+async function releaseExpiredActiveMessageRun(context: AssistantContext, threadId: string) {
+  const active = await getMessageRunRepository().getActiveForThread(context.user.email, threadId);
+  if (!active || !coachMessageRunIsExpired(active.expiresAt)) return;
+  await expireMessageRun(context, active);
+}
+
+async function cleanupMessageRunResponses(
+  context: AssistantContext,
+  run: StoredAssistantMessageRun,
+  cancelCurrent = false,
+) {
+  if (!messageRunIsTerminal(run.status)) return;
+  if (!context.env.OPENAI_API_KEY) return;
+  const ids = parseResponseIds(run.responseIdsJson);
+  if (run.openAIResponseId && !ids.includes(run.openAIResponseId)) ids.push(run.openAIResponseId);
+  if (!ids.length) return;
+  if (cancelCurrent && run.openAIResponseId) {
+    await cancelOpenAIResponse(context.env, run.openAIResponseId).catch(() => undefined);
+  }
+  const cleanup = await Promise.allSettled(ids.map((id) => deleteOpenAIResponse(context.env, id)));
+  const removed = cleanup.every((result) => (
+    result.status === "fulfilled"
+    || (result.reason instanceof OpenAIRequestError && result.reason.upstreamStatus === 404)
+  ));
+  if (removed) await getMessageRunRepository().clearResponseIds(context.user.email, run.id);
+}
+
+async function acceptedMessageRunResponse(
+  context: AssistantContext,
+  run: StoredAssistantMessageRun,
+) {
+  const [thread, userMessage, plans] = await Promise.all([
+    getThread(context.env, context.user.email, run.threadId),
+    getMessage(context.env, context.user.email, run.threadId, run.userMessageId),
+    listChangePlans(context.env, context.user.email, run.threadId),
+  ]);
+  if (!thread || !userMessage) throw new Error("The saved coaching request could not be reloaded.");
+  return apiResponse(context.request, {
+    thread,
+    userMessage,
+    run: serializeMessageRun(run),
+    plans,
+  }, {
+    status: 202,
+    headers: {
+      location: `/api/v1/assistant/message-runs/${encodeURIComponent(run.id)}`,
+      "cache-control": "no-store",
+    },
+  });
+}
+
+async function messageRunStatusResponse(
+  context: AssistantContext,
+  run: StoredAssistantMessageRun,
+  status = 200,
+  includeLocation = false,
+) {
+  const [assistantMessage, plans] = await Promise.all([
+    run.assistantMessageId
+      ? getMessage(context.env, context.user.email, run.threadId, run.assistantMessageId)
+      : null,
+    listChangePlans(context.env, context.user.email, run.threadId),
+  ]);
+  return apiResponse(context.request, {
+    run: serializeMessageRun(run),
+    assistantMessage,
+    plans,
+  }, {
+    status,
+    headers: {
+      ...(includeLocation
+        ? { location: `/api/v1/assistant/message-runs/${encodeURIComponent(run.id)}` }
+        : {}),
+      "cache-control": "no-store",
+    },
+  });
+}
+
+function serializeMessageRun(run: StoredAssistantMessageRun): CoachMessageRun {
+  const storedExpired = !messageRunIsTerminal(run.status) && coachMessageRunIsExpired(run.expiresAt);
+  const status = storedExpired
+    ? "expired" as const
+    : run.status === "processing"
+      ? "in_progress" as const
+      : run.status === "cancelled"
+        ? "failed" as const
+        : run.status;
+  const validPhase = ["planning", "checking", "recovering", "synthesizing", "review_ready"]
+    .includes(run.phase);
+  const error = storedExpired
+    ? {
+      code: "coach_message_expired",
+      message: "This coaching request expired before it finished. Your message is saved and no routine changes were made.",
+      retryable: true,
+    }
+    : run.errorCode && run.errorMessage
+      ? { code: run.errorCode, message: run.errorMessage, retryable: run.errorRetryable }
+      : null;
+  return {
+    id: run.id,
+    threadId: run.threadId,
+    userMessageId: run.userMessageId,
+    status,
+    phase: validPhase ? run.phase as CoachMessageRun["phase"] : "planning",
+    activities: parseStoredRunActivities(run.activitiesJson).map(({ name: _name, ...activity }) => activity),
+    pollAfterMs: COACH_MESSAGE_RUN_POLL_AFTER_MS,
+    assistantMessageId: run.assistantMessageId,
+    error,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+    expiresAt: run.expiresAt,
+  };
+}
+
+function publicMessageRunError(error: unknown) {
+  if (error instanceof OpenAIRequestError) {
+    if (error.status === 429) {
+      return {
+        code: "coach_rate_limited",
+        message: "Coach is temporarily rate-limited. Your request is saved; try again in a moment.",
+        retryable: true,
+      };
+    }
+    if (error.status === 504) {
+      return {
+        code: "coach_model_timeout",
+        message: "Coach’s model request timed out. Your request is saved; try again.",
+        retryable: true,
+      };
+    }
+    if (error.status >= 500) {
+      return {
+        code: "coach_model_unavailable",
+        message: "Coach’s model service is temporarily unavailable. Your request is saved; try again.",
+        retryable: true,
+      };
+    }
+    return {
+      code: "coach_model_request_invalid",
+      message: "Coach could not use the selected model for this request. Choose another model and try again.",
+      retryable: false,
+    };
+  }
+  return {
+    code: "coach_message_run_failed",
+    message: "Coach could not finish this response. Your request is saved and no routine changes were made.",
+    retryable: true,
+  };
+}
+
+function isRetryableOpenAIError(error: OpenAIRequestError) {
+  return error.status === 429 || error.status >= 500;
+}
+
+function messageRunIsTerminal(status: StoredAssistantMessageRun["status"]) {
+  return ["succeeded", "failed", "expired", "cancelled"].includes(status);
+}
+
+function parseStoredRunActivities(value: string): StoredCoachRunActivity[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+      const activity = entry as Record<string, unknown>;
+      if (
+        typeof activity.id !== "string"
+        || typeof activity.name !== "string"
+        || typeof activity.label !== "string"
+        || (activity.purpose !== null && typeof activity.purpose !== "string")
+        || (activity.status !== "succeeded" && activity.status !== "failed")
+      ) return [];
+      return [{
+        id: activity.id,
+        name: activity.name,
+        label: activity.label,
+        purpose: activity.purpose,
+        status: activity.status,
+      } as StoredCoachRunActivity];
+    }).slice(-12);
+  } catch {
+    return [];
+  }
+}
+
+function parseStoredRunActivity(value: string) {
+  const parsed = parseStoredRunActivities(`[${value}]`)[0];
+  if (!parsed) throw new Error("Stored Coach activity is invalid.");
+  return parsed;
+}
+
+function appendStoredRunActivity(
+  activities: readonly StoredCoachRunActivity[],
+  activity: StoredCoachRunActivity,
+) {
+  return appendCoachRunActivity(activities, activity) as StoredCoachRunActivity[];
+}
+
+function parseSignatureCounts(value: string) {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed as Record<string, unknown>)
+      .filter(([, count]) => Number.isInteger(count) && Number(count) >= 0)
+      .map(([signature, count]) => [signature, Number(count)]));
+  } catch {
+    return {};
+  }
+}
+
+function parseJsonArray(value: string) {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseResponseIds(value: string) {
+  return parseJsonArray(value).filter((id): id is string => typeof id === "string").slice(-8);
+}
+
+function appendResponseId(ids: readonly string[], id: string) {
+  return [...ids.filter((candidate) => candidate !== id), id];
+}
+
+function parseStoredToolOutput(value: string | null) {
+  if (!value) return { error: "A saved coaching step had no result." };
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return { error: "A saved coaching step result was invalid." };
+  }
+}
+
+function functionCallOutput(callId: string, output: unknown) {
+  return { type: "function_call_output", call_id: callId, output: boundedToolOutput(output) };
+}
+
+function boundedToolOutput(value: unknown) {
+  const serialized = JSON.stringify(value);
+  if (serialized.length <= 30_000) return serialized;
+  return JSON.stringify({
+    error: "The coaching step returned too much data. Refine the request and try a narrower check.",
+  });
+}
+
+function toolOutputError(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "The coaching step failed.";
+  const error = (value as Record<string, unknown>).error;
+  return typeof error === "string" ? error.slice(0, 500) : "The coaching step failed.";
+}
+
+async function getMessage(
+  env: WorkerEnv,
+  ownerEmail: string,
+  threadId: string,
+  messageId: string,
+) {
+  const row = await env.DB.prepare(`SELECT id, thread_id AS threadId, role, content,
+    model, reasoning_effort AS reasoningEffort, activities_json AS activitiesJson,
+    created_at AS createdAt FROM assistant_messages
+    WHERE id = ? AND owner_email = ? AND thread_id = ?`)
+    .bind(messageId, ownerEmail, threadId)
+    .first<AssistantMessageRow>();
+  if (!row) return null;
+  const { activitiesJson, ...message } = row;
+  return { ...message, activities: JSON.parse(activitiesJson) as CoachToolActivity[] };
+}
+
+async function listModelMessages(
+  env: WorkerEnv,
+  ownerEmail: string,
+  threadId: string,
+  currentUserMessageId: string,
+) {
+  const rows = await env.DB.prepare(`SELECT id, thread_id AS threadId, role, content,
+    model, reasoning_effort AS reasoningEffort, activities_json AS activitiesJson,
+    created_at AS createdAt FROM (
+      SELECT message.id, message.thread_id, message.role, message.content,
+        message.model, message.reasoning_effort, message.activities_json, message.created_at
+      FROM assistant_messages AS message
+      WHERE message.owner_email = ? AND message.thread_id = ? AND (
+        message.role <> 'user' OR message.id = ? OR EXISTS (
+          SELECT 1 FROM assistant_message_runs succeeded_run
+          WHERE succeeded_run.owner_email = message.owner_email
+            AND succeeded_run.user_message_id = message.id
+            AND succeeded_run.status = 'succeeded'
+        ) OR NOT EXISTS (
+          SELECT 1 FROM assistant_message_runs abandoned_run
+          WHERE abandoned_run.owner_email = message.owner_email
+            AND abandoned_run.user_message_id = message.id
+            AND abandoned_run.status IN ('failed', 'expired', 'cancelled')
+        )
+      ) ORDER BY message.created_at DESC LIMIT 50
+    ) ORDER BY created_at ASC`)
+    .bind(ownerEmail, threadId, currentUserMessageId)
+    .all<AssistantMessageRow>();
+  return rows.results.map(({ activitiesJson: _activitiesJson, ...message }) => message);
 }
 
 async function applyChangePlan(context: AssistantContext, planId: string) {
@@ -1396,65 +2294,6 @@ async function rejectChangePlan({ request, env, user }: AssistantContext, planId
     : apiError(request, 404, "coach_plan_not_found", "Pending change plan not found.");
 }
 
-async function runCoach(input: {
-  env: WorkerEnv;
-  user: ApiUser;
-  thread: AssistantThread;
-  profile: CoachProfile;
-  history: AssistantMessage[];
-  checkIns: CoachCheckIn[];
-  model: string;
-  reasoningEffort: string;
-}) {
-  try {
-    return await runCoachToolLoop({
-      conversation: input.history.map((message) => ({ role: message.role, content: message.content })),
-      createResponse: (conversation, toolChoice) => createOpenAIResponse(input.env, {
-        model: input.model,
-        reasoningEffort: input.reasoningEffort,
-        safetyIdentifier: input.user.id,
-        instructions: coachInstructions(input.profile, input.checkIns),
-        input: conversation,
-        tools: coachTools,
-        toolChoice,
-      }),
-      executeTool: ({ name, argumentsValue }) => executeCoachTool({
-        env: input.env,
-        user: input.user,
-        thread: input.thread,
-        name,
-        argumentsValue,
-      }),
-      recordToolCall: ({ name, argumentsValue, output, status }) => recordToolCall(
-        input.env,
-        input.user.email,
-        input.thread.id,
-        name,
-        argumentsValue,
-        output,
-        status,
-      ),
-      formatError: errorMessage,
-      isProposalTool: (name) => ["propose_new_routine", "propose_routine_change", "propose_exercise_change"].includes(name),
-      proposalCompletionText,
-      reportAuditError: (error) => console.error("Coach tool-call audit failed", error),
-    });
-  } catch (error) {
-    if (error instanceof CoachToolLoopError) throw new OpenAIRequestError(error.message);
-    throw error;
-  }
-}
-
-function proposalCompletionText(name: string) {
-  if (name === "propose_new_routine") {
-    return "I prepared a new routine for review. Nothing has changed yet.";
-  }
-  if (name === "propose_routine_change") {
-    return "I prepared a routine change for review. Nothing has changed yet.";
-  }
-  return null;
-}
-
 async function createOpenAIResponse(
   env: WorkerEnv,
   input: {
@@ -1466,6 +2305,8 @@ async function createOpenAIResponse(
     tools: unknown[];
     toolChoice: CoachToolChoice | { type: "function"; name: string };
     background?: boolean;
+    store?: boolean;
+    previousResponseId?: string;
     metadata?: Record<string, string>;
     textVerbosity?: "low" | "medium" | "high";
     timeoutMs?: number;
@@ -1482,6 +2323,7 @@ async function createOpenAIResponse(
         model: input.model,
         instructions: input.instructions,
         input: input.input,
+        previous_response_id: input.previousResponseId,
         tools: input.tools,
         tool_choice: input.toolChoice,
         parallel_tool_calls: false,
@@ -1491,11 +2333,21 @@ async function createOpenAIResponse(
         safety_identifier: input.safetyIdentifier,
         background: input.background || undefined,
         metadata: input.metadata,
-        store: false,
+        store: input.store ?? false,
       }),
     },
     input.timeoutMs ?? assistantApiTimeoutMs,
     input.timeoutMessage ?? "The coach took too long to respond. Try again or select a lower reasoning effort.",
+  );
+}
+
+async function deleteOpenAIResponse(env: WorkerEnv, responseId: string) {
+  return requestOpenAIResponse(
+    env,
+    `/responses/${encodeURIComponent(responseId)}`,
+    { method: "DELETE" },
+    assistantBackgroundRequestTimeoutMs,
+    "Coach finished locally, but temporary response cleanup timed out.",
   );
 }
 
@@ -1583,10 +2435,19 @@ async function executeCoachTool(input: {
       return { versions: await services.routines.listVersions(ownerEmail, cleanRequiredText(input.argumentsValue.routineId, "Routine", 100)) };
     case "search_exercises": {
       const query = typeof input.argumentsValue.query === "string" ? input.argumentsValue.query : undefined;
+      const muscleGroup = typeof input.argumentsValue.muscleGroup === "string"
+        && muscleGroups.includes(input.argumentsValue.muscleGroup as MuscleGroup)
+        ? input.argumentsValue.muscleGroup as MuscleGroup
+        : undefined;
+      const movementPattern = typeof input.argumentsValue.movementPattern === "string"
+        ? input.argumentsValue.movementPattern
+        : undefined;
       return { exercises: await services.exercises.list(ownerEmail, {
         search: query,
         includeArchived: input.argumentsValue.includeArchived === true,
         availableOnly: true,
+        muscleGroup,
+        movementPattern,
       }) };
     }
     case "get_exercise":
@@ -2039,10 +2900,12 @@ const coachTools = [
   functionTool("get_coaching_context", "Get routines, recent workout history, active workout, and readiness check-ins.", emptySchema()),
   functionTool("get_routine", "Get one routine and its complete current structured prescription.", objectSchema({ routineId: { type: "string", description: "Routine code or ID." } }, ["routineId"])),
   functionTool("list_routine_versions", "List saved versions for one routine.", objectSchema({ routineId: { type: "string", description: "Routine code or ID." } }, ["routineId"])),
-  functionTool("search_exercises", "Search active exercises supported by the user's selected equipment for substitutions or additions.", objectSchema({
+  functionTool("search_exercises", "Search active exercises supported by the user's selected equipment for substitutions or additions. Use muscleGroup and movementPattern when the user's wording is anatomical or may not appear in an exercise name.", objectSchema({
     query: { type: ["string", "null"] },
+    muscleGroup: { type: ["string", "null"], enum: [...muscleGroups, null] },
+    movementPattern: { type: ["string", "null"] },
     includeArchived: { type: "boolean" },
-  }, ["query", "includeArchived"])),
+  }, ["query", "muscleGroup", "movementPattern", "includeArchived"])),
   functionTool("get_exercise", "Get one exact exercise-library record, including its current fields, muscles, active state, and updated timestamp.", objectSchema({
     exerciseId: { type: "string" },
   }, ["exerciseId"])),
@@ -2341,12 +3204,13 @@ async function recordToolCall(
   argumentsValue: unknown,
   output: unknown,
   status: string,
+  id: string = crypto.randomUUID(),
 ) {
   const compact = (value: unknown) => JSON.stringify(value).slice(0, 30_000);
-  await env.DB.prepare(`INSERT INTO assistant_tool_calls (
+  await env.DB.prepare(`INSERT OR IGNORE INTO assistant_tool_calls (
     id, owner_email, thread_id, tool_name, arguments_json, output_json, status, created_at
   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(
-    crypto.randomUUID(), ownerEmail, threadId, toolName, compact(argumentsValue),
+    id, ownerEmail, threadId, toolName, compact(argumentsValue),
     compact(output), status, new Date().toISOString(),
   ).run();
 }

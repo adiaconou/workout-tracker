@@ -1,3 +1,19 @@
+import type {
+  CoachMessageRun,
+  CoachMessageRunActivity,
+  CoachMessageRunError,
+  CoachMessageRunPhase,
+  CoachMessageRunStatus,
+} from "../../contracts/api";
+
+export type {
+  CoachMessageRun,
+  CoachMessageRunActivity,
+  CoachMessageRunError,
+  CoachMessageRunPhase,
+  CoachMessageRunStatus,
+};
+
 export type CoachProfile = {
   model: string;
   reasoningEffort: string;
@@ -92,6 +108,7 @@ export type CoachBootstrap = {
     source: "live" | "fallback";
     defaultModel: string;
   };
+  latestRun: CoachMessageRun | null;
 };
 
 export type ModelSelection = Pick<CoachProfile, "model" | "reasoningEffort">;
@@ -99,8 +116,28 @@ export type ModelSelection = Pick<CoachProfile, "model" | "reasoningEffort">;
 export type SendMessageResponse = {
   thread: AssistantThread;
   userMessage: AssistantMessage;
-  assistantMessage: AssistantMessage;
+  run: CoachMessageRun;
   plans: ChangePlan[];
+};
+
+export type CoachRunResponse = {
+  run: CoachMessageRun;
+  assistantMessage: AssistantMessage | null;
+  plans: ChangePlan[];
+};
+
+export type CoachRunConnection = "connected" | "paused" | "reconnecting" | "failed";
+
+export type CoachRunPresentation = {
+  title: string;
+  detail: string;
+  active: boolean;
+  retryable: boolean;
+};
+
+export type CoachMessageAttempt = {
+  key: string;
+  requestFingerprint: string;
 };
 
 export type PlanApplyResponse =
@@ -383,6 +420,139 @@ export function coachToolActivityRows(activities: readonly CoachToolActivity[] |
   return rows;
 }
 
+const activeCoachRunStatuses = new Set<CoachMessageRunStatus>([
+  "starting",
+  "queued",
+  "in_progress",
+]);
+
+const coachRunRetryDelaysMs = [2_000, 4_000, 8_000, 15_000] as const;
+
+const coachRunPhaseCopy: Record<CoachMessageRunPhase, Pick<CoachRunPresentation, "title" | "detail">> = {
+  planning: {
+    title: "Planning the next steps",
+    detail: "Coach is deciding what information is needed for your request.",
+  },
+  checking: {
+    title: "Checking your training data",
+    detail: "Coach is reviewing the relevant routines, exercises, or workout history.",
+  },
+  recovering: {
+    title: "Resuming your request",
+    detail: "Coach is continuing from the last saved step.",
+  },
+  synthesizing: {
+    title: "Preparing your answer",
+    detail: "Coach has the needed information and is putting the response together.",
+  },
+  review_ready: {
+    title: "Preparing your review",
+    detail: "Coach is finalizing the proposed changes. Nothing changes until you approve them.",
+  },
+};
+
+export function coachRunIsActive(status: CoachMessageRunStatus) {
+  return activeCoachRunStatuses.has(status);
+}
+
+export function coachRunPollDelay(run: CoachMessageRun) {
+  const requested = Number.isFinite(run.pollAfterMs) && run.pollAfterMs > 0
+    ? run.pollAfterMs
+    : 1_500;
+  return Math.min(10_000, Math.max(750, requested));
+}
+
+export function coachRunRetryDelay(failureCount: number) {
+  const index = Math.min(
+    coachRunRetryDelaysMs.length - 1,
+    Math.max(0, Math.floor(failureCount) - 1),
+  );
+  return coachRunRetryDelaysMs[index]!;
+}
+
+export function coachRunCanRetry(run: CoachMessageRun) {
+  return run.status === "expired" || (run.status === "failed" && Boolean(run.error?.retryable));
+}
+
+export function coachMessageAttemptKey(
+  currentAttempt: CoachMessageAttempt | null,
+  requestFingerprint: string,
+  newAttempt: boolean,
+  createKey: () => string,
+) {
+  return !newAttempt && currentAttempt?.requestFingerprint === requestFingerprint
+    ? currentAttempt.key
+    : createKey();
+}
+
+export function coachRunPresentation(
+  run: CoachMessageRun,
+  connection: CoachRunConnection,
+): CoachRunPresentation {
+  const active = coachRunIsActive(run.status);
+  if (active && connection === "reconnecting") {
+    return {
+      title: "Coach is still working",
+      detail: "The connection dropped temporarily. Your request is saved and we will check again automatically.",
+      active: true,
+      retryable: false,
+    };
+  }
+  if (active && connection === "paused") {
+    return {
+      title: "Progress checks are paused",
+      detail: "Your request is saved. We will check again when you return.",
+      active: true,
+      retryable: false,
+    };
+  }
+  if (connection === "failed") {
+    return {
+      title: "We couldn't check Coach's progress",
+      detail: "Your request is saved and may still be running. Check again to reconnect.",
+      active,
+      retryable: false,
+    };
+  }
+  if (run.status === "failed") {
+    return {
+      title: "Coach couldn't finish this request",
+      detail: run.error?.message ?? "No changes were made. You can try this request again.",
+      active: false,
+      retryable: Boolean(run.error?.retryable),
+    };
+  }
+  if (run.status === "expired") {
+    return {
+      title: "This Coach request expired",
+      detail: run.error?.message ?? "No changes were made. Try again to start a fresh request.",
+      active: false,
+      retryable: true,
+    };
+  }
+  if (run.status === "succeeded") {
+    return {
+      title: "Coach finished",
+      detail: "The response and any proposed changes are ready below.",
+      active: false,
+      retryable: false,
+    };
+  }
+  if (run.status === "starting" || run.status === "queued") {
+    return {
+      title: "Coach is getting started",
+      detail: "Your request is saved. If more checks are needed, Coach will resume when you return.",
+      active: true,
+      retryable: false,
+    };
+  }
+  return {
+    ...coachRunPhaseCopy[run.phase],
+    active: true,
+    retryable: false,
+  };
+}
+
 export function selectionFromProfile(profile: CoachProfile): ModelSelection {
   return { model: profile.model, reasoningEffort: profile.reasoningEffort };
 }
@@ -499,10 +669,32 @@ export function bootstrapWithSendResponse(
     messages: [
       ...current.messages.filter((message) => message.id !== optimisticMessageId),
       payload.userMessage,
-      payload.assistantMessage,
     ],
     plans: payload.plans,
     profile: { ...current.profile, ...selection },
+    latestRun: payload.run,
+  };
+}
+
+export function bootstrapWithRunResponse(
+  current: CoachBootstrap | null,
+  activeThreadId: string,
+  payload: CoachRunResponse,
+) {
+  if (!current || current.thread.id !== activeThreadId || payload.run.threadId !== activeThreadId) {
+    return current;
+  }
+  const messages = payload.assistantMessage
+    ? [
+        ...current.messages.filter((message) => message.id !== payload.assistantMessage!.id),
+        payload.assistantMessage,
+      ]
+    : current.messages;
+  return {
+    ...current,
+    messages,
+    plans: payload.plans,
+    latestRun: payload.run,
   };
 }
 
@@ -529,7 +721,7 @@ export function reconcileFailedSend(
   before: CoachBootstrap,
   refreshed: CoachBootstrap,
   content: string,
-): "completed" | "partial" | "none" {
+): "running" | "completed" | "partial" | "none" {
   if (before.thread.id !== refreshed.thread.id) return "none";
 
   const existingMessageIds = new Set(before.messages.map((message) => message.id));
@@ -538,6 +730,14 @@ export function reconcileFailedSend(
     message.role === "user" && message.content === content
   ));
   if (matchingUserIndex < 0) return "none";
+
+  const matchingUserMessage = newMessages[matchingUserIndex]!;
+  if (
+    refreshed.latestRun?.userMessageId === matchingUserMessage.id
+    && coachRunIsActive(refreshed.latestRun.status)
+  ) {
+    return "running";
+  }
 
   const hasAssistantResponse = newMessages
     .slice(matchingUserIndex + 1)
