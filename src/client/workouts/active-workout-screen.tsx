@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Keyboard,
   Modal,
@@ -85,7 +85,13 @@ import {
   type WorkoutSetNavigation,
 } from "./active-workout-model";
 
-export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
+export function ActiveWorkoutScreen({
+  sessionId,
+  headerRightAccessory,
+}: {
+  sessionId: string;
+  headerRightAccessory?: ReactNode;
+}) {
   const { user } = useAuth();
   const [workout, setWorkout] = useState<WorkoutView | null>(null);
   const [setNavigation, setSetNavigation] = useState<WorkoutSetNavigation>(() =>
@@ -831,6 +837,7 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
           Routine {workout.routineCode}
         </Text>
         <View style={[styles.workoutHeaderSide, styles.workoutHeaderRight]}>
+          {headerRightAccessory}
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="More workout actions"
@@ -1805,7 +1812,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   workoutHeaderSide: { width: 88, alignItems: "flex-start" },
-  workoutHeaderRight: { alignItems: "flex-end" },
+  workoutHeaderRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+  },
   workoutHeaderTitle: {
     flex: 1,
     minWidth: 0,

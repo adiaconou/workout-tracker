@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import {
   ActivityIndicator,
   AppState,
@@ -74,8 +73,21 @@ const quickPrompts = [
   "Build me a new routine",
 ];
 
-export function CoachScreen() {
-  const { starter } = useLocalSearchParams<{ starter?: string }>();
+export type CoachScreenStatus = "idle" | "working" | "review" | "error";
+
+export function CoachScreen({
+  embedded = false,
+  visible = true,
+  starter,
+  onStarterConsumed,
+  onStatusChange,
+}: {
+  embedded?: boolean;
+  visible?: boolean;
+  starter?: string;
+  onStarterConsumed?: () => void;
+  onStatusChange?: (status: CoachScreenStatus) => void;
+}) {
   const messageListRef = useRef<ScrollView | null>(null);
   const starterAppliedRef = useRef(false);
   const activeThreadIdRef = useRef<string | null>(null);
@@ -146,11 +158,10 @@ export function CoachScreen() {
     };
   }, []);
 
-  useFocusEffect(useCallback(() => {
+  useEffect(() => {
     runControllerRef.current?.resume();
     void load();
-    return () => runControllerRef.current?.pause();
-  }, [load]));
+  }, [load]);
 
   useEffect(() => {
     if (Platform.OS === "web") {
@@ -187,19 +198,29 @@ export function CoachScreen() {
   }, [activeRunId, data?.thread.id]);
 
   useEffect(() => {
+    if (visible) return;
+    setShowModels(false);
+    setShowThreads(false);
+  }, [visible]);
+
+  useEffect(() => {
+    if (!starter) starterAppliedRef.current = false;
+  }, [starter]);
+
+  useEffect(() => {
     if (
       starter !== "routine-design" ||
       starterAppliedRef.current ||
-      !data ||
-      data.messages.length > 0 ||
-      composer
+      !data
     ) {
       return;
     }
     starterAppliedRef.current = true;
-    setComposer("Build routines using the equipment and workout length I just selected.");
-    router.setParams({ starter: "" });
-  }, [composer, data, starter]);
+    if (data.messages.length === 0 && !composer) {
+      setComposer("Build routines using the equipment and workout length I just selected.");
+    }
+    onStarterConsumed?.();
+  }, [composer, data, onStarterConsumed, starter]);
 
   const selectedModel = useMemo(
     () => selectedModelOption(data?.models, selection?.model),
@@ -208,6 +229,27 @@ export function CoachScreen() {
   const reasoningEfforts = selectedModel?.reasoningEfforts ?? ["auto"];
   const reviewPlans = reviewablePlans(data?.plans);
   activeThreadIdRef.current = data?.thread.id ?? null;
+
+  useEffect(() => {
+    if (error || runTransportError) {
+      onStatusChange?.("error");
+    } else if (loading || sending || retryingRun || activeRunId) {
+      onStatusChange?.("working");
+    } else if (reviewPlans.length > 0) {
+      onStatusChange?.("review");
+    } else {
+      onStatusChange?.("idle");
+    }
+  }, [
+    activeRunId,
+    error,
+    loading,
+    onStatusChange,
+    retryingRun,
+    reviewPlans.length,
+    runTransportError,
+    sending,
+  ]);
 
   async function persistModelSettings(next: ModelSelection) {
     if (!data || !selection) return;
@@ -471,10 +513,18 @@ export function CoachScreen() {
 
   if (loading && !data) return <LoadingView label="Opening Coach…" />;
   if (!data || !selection) {
-    return (
-      <Screen scroll={false} safeTop={false} contentStyle={styles.errorScreen}>
+    const errorContent = (
+      <>
         <Text style={styles.errorText}>{error || "The coach could not be loaded."}</Text>
         <CompactAction title="Try again" onPress={() => void load()} />
+      </>
+    );
+    if (embedded) {
+      return <View style={[styles.embeddedScreen, styles.errorScreen]}>{errorContent}</View>;
+    }
+    return (
+      <Screen scroll={false} safeTop={false} contentStyle={styles.errorScreen}>
+        {errorContent}
       </Screen>
     );
   }
@@ -496,8 +546,7 @@ export function CoachScreen() {
     || Boolean(activePlanFeedback)
     || Boolean(activeSendNotice);
 
-  return (
-    <Screen scroll={false} safeTop={false} contentStyle={styles.screen}>
+  const conversation = (
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         style={styles.keyboardView}
@@ -761,6 +810,12 @@ export function CoachScreen() {
           ))}
         </OptionModal>
       </KeyboardAvoidingView>
+  );
+
+  if (embedded) return <View style={styles.embeddedScreen}>{conversation}</View>;
+  return (
+    <Screen scroll={false} safeTop={false} contentStyle={styles.screen}>
+      {conversation}
     </Screen>
   );
 }
@@ -1172,6 +1227,11 @@ function createCoachRunRetryIdempotencyKey() {
 }
 
 const styles = StyleSheet.create({
+  embeddedScreen: {
+    flex: 1,
+    minHeight: 0,
+    backgroundColor: colors.background,
+  },
   screen: {
     flex: 1,
     maxWidth: 960,
