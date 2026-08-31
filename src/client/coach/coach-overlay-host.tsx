@@ -8,7 +8,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { usePathname } from "expo-router";
 import {
   BackHandler,
   Keyboard,
@@ -45,7 +44,6 @@ export function CoachOverlayProvider({
   enabled,
   sessionKey,
 }: PropsWithChildren<{ enabled: boolean; sessionKey?: string }>) {
-  const pathname = usePathname();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const [mounted, setMounted] = useState(false);
@@ -54,7 +52,7 @@ export function CoachOverlayProvider({
   const [starter, setStarter] = useState<string | undefined>();
   const [status, setStatus] = useState<CoachScreenStatus>("idle");
   const [hasUnread, setHasUnread] = useState(false);
-  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const [webKeyboardInset, setWebKeyboardInset] = useState(0);
   const previousStatusRef = useRef<CoachScreenStatus>("idle");
   const previousSessionKeyRef = useRef(sessionKey);
 
@@ -95,13 +93,22 @@ export function CoachOverlayProvider({
   }, [status, visible]);
 
   useEffect(() => {
-    const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
-    const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
-    const showSubscription = Keyboard.addListener(showEvent, () => setKeyboardVisible(true));
-    const hideSubscription = Keyboard.addListener(hideEvent, () => setKeyboardVisible(false));
+    if (Platform.OS !== "web" || typeof window === "undefined") return;
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const updateKeyboardInset = () => {
+      const occludedHeight = Math.max(
+        0,
+        window.innerHeight - viewport.height - viewport.offsetTop,
+      );
+      setWebKeyboardInset(viewport.scale === 1 && occludedHeight > 120 ? occludedHeight : 0);
+    };
+    updateKeyboardInset();
+    viewport.addEventListener("resize", updateKeyboardInset);
+    viewport.addEventListener("scroll", updateKeyboardInset);
     return () => {
-      showSubscription.remove();
-      hideSubscription.remove();
+      viewport.removeEventListener("resize", updateKeyboardInset);
+      viewport.removeEventListener("scroll", updateKeyboardInset);
     };
   }, []);
 
@@ -132,10 +139,10 @@ export function CoachOverlayProvider({
   }), [closeCoach, expanded, hasUnread, openCoach, status, visible]);
 
   const compact = width < 768;
-  const showFloatingLauncher = enabled
-    && !visible
-    && !keyboardVisible
-    && isCoachFloatingRoute(pathname);
+  const showFloatingLauncher = enabled && !visible;
+  const launcherBottom = webKeyboardInset > 0
+    ? webKeyboardInset + spacing.lg
+    : (compact ? 88 : spacing.xl) + insets.bottom;
   const statusCopy = coachStatusCopy(status);
 
   return (
@@ -152,9 +159,12 @@ export function CoachOverlayProvider({
         {showFloatingLauncher ? (
           <View style={[
             styles.floatingLauncher,
-            { right: spacing.lg + insets.right, bottom: spacing.lg + insets.bottom },
+            {
+              right: spacing.lg + insets.right,
+              bottom: launcherBottom,
+            },
           ]}>
-            <CoachLauncher variant="floating" />
+            <CoachLauncher />
           </View>
         ) : null}
 
@@ -242,7 +252,7 @@ export function useCoachOverlay() {
   return value;
 }
 
-export function CoachLauncher({ variant = "header" }: { variant?: "header" | "floating" }) {
+function CoachLauncher() {
   const { hasUnread, openCoach, status } = useCoachOverlay();
   const attention = hasUnread || status === "review" || status === "error";
   return (
@@ -253,7 +263,6 @@ export function CoachLauncher({ variant = "header" }: { variant?: "header" | "fl
       onPress={() => openCoach()}
       style={({ pressed }) => [
         styles.launcher,
-        variant === "floating" && styles.launcherFloating,
         pressed && styles.pressed,
       ]}
     >
@@ -278,10 +287,6 @@ function CoachBubbleGlyph({ active }: { active: boolean }) {
       <View style={[styles.bubbleTail, { borderTopColor: tint }]} />
     </View>
   );
-}
-
-function isCoachFloatingRoute(pathname: string) {
-  return /^\/(?:routines\/(?:new|[^/]+)|exercises\/(?:new|[^/]+)|history\/[^/]+|profile)$/.test(pathname);
 }
 
 function coachStatusCopy(status: CoachScreenStatus) {
@@ -395,19 +400,14 @@ const styles = StyleSheet.create({
   coachBody: { flex: 1, minHeight: 0 },
   floatingLauncher: { position: "absolute", zIndex: 30, elevation: 12 },
   launcher: {
-    width: 44,
-    height: 44,
+    width: 54,
+    height: 54,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: colors.borderStrong,
+    borderColor: colors.accent,
     borderRadius: radii.pill,
     backgroundColor: colors.surfaceRaised,
-  },
-  launcherFloating: {
-    width: 54,
-    height: 54,
-    borderColor: colors.accent,
     shadowColor: "#000000",
     shadowOpacity: 0.32,
     shadowRadius: 14,

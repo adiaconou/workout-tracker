@@ -2,9 +2,8 @@ import { Tabs } from "expo-router";
 import { Platform, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors, radii } from "../../client/ui/tokens";
-import { useCoachOverlay } from "../../client/coach/coach-overlay-host";
 
-type TabGlyphName = "routines" | "exercises" | "coach" | "history";
+type TabGlyphName = "routines" | "exercises" | "history";
 
 function TabLabel({ title, focused }: { title: string; focused: boolean }) {
   return <Text style={[styles.label, focused && styles.labelActive]}>{title}</Text>;
@@ -13,11 +12,9 @@ function TabLabel({ title, focused }: { title: string; focused: boolean }) {
 function TabGlyph({
   name,
   focused,
-  badge,
 }: {
   name: TabGlyphName;
   focused: boolean;
-  badge?: "working" | "attention";
 }) {
   const tint = focused ? colors.accent : colors.textMuted;
 
@@ -59,24 +56,6 @@ function TabGlyph({
     );
   }
 
-  if (name === "coach") {
-    return (
-      <View accessible={false} style={styles.coachGlyphWrap}>
-        <View style={[styles.coachBubble, { borderColor: tint }]}>
-          <View style={[styles.coachDot, { backgroundColor: tint }]} />
-          <View style={[styles.coachDot, { backgroundColor: tint }]} />
-          <View style={[styles.coachTail, { borderTopColor: tint }]} />
-        </View>
-        {badge ? (
-          <View style={[
-            styles.coachBadge,
-            badge === "attention" ? styles.coachBadgeAttention : styles.coachBadgeWorking,
-          ]} />
-        ) : null}
-      </View>
-    );
-  }
-
   return (
     <View accessible={false} style={[styles.clock, { borderColor: tint }]}>
       <View style={[styles.clockHandHour, { backgroundColor: tint }]} />
@@ -87,27 +66,7 @@ function TabGlyph({
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
-  const {
-    hasUnread: coachHasUnread,
-    openCoach,
-    status: coachStatus,
-    visible: coachVisible,
-  } = useCoachOverlay();
   const bottomPadding = Platform.OS === "web" ? 8 : Math.max(insets.bottom, 8);
-  const coachBadge = coachHasUnread || coachStatus === "review" || coachStatus === "error"
-    ? "attention"
-    : coachStatus === "working"
-    ? "working"
-    : undefined;
-  const coachAccessibilityLabel = coachHasUnread
-    ? "Open Coach chat, new reply"
-    : coachStatus === "working"
-    ? "Open Coach chat, response in progress"
-    : coachStatus === "review"
-    ? "Open Coach chat, change ready to review"
-    : coachStatus === "error"
-    ? "Open Coach chat, needs attention"
-    : "Open Coach chat";
 
   return (
     <Tabs
@@ -155,25 +114,7 @@ export default function TabsLayout() {
           ),
         }}
       />
-      <Tabs.Screen
-        name="coach"
-        listeners={{
-          tabPress: (event) => {
-            event.preventDefault();
-            openCoach();
-          },
-        }}
-        options={{
-          title: "Coach",
-          tabBarAccessibilityLabel: coachAccessibilityLabel,
-          tabBarIcon: ({ focused }) => (
-            <TabGlyph name="coach" focused={focused || coachVisible} badge={coachBadge} />
-          ),
-          tabBarLabel: ({ focused }) => (
-            <TabLabel title="Coach" focused={focused || coachVisible} />
-          ),
-        }}
-      />
+      <Tabs.Screen name="coach" options={{ href: null }} />
       <Tabs.Screen
         name="history"
         options={{
@@ -268,57 +209,6 @@ const styles = StyleSheet.create({
   },
   dumbbellPlateRight: {
     right: 1,
-  },
-  coachBubble: {
-    width: 22,
-    height: 18,
-    borderWidth: 2,
-    borderRadius: 7,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 4,
-  },
-  coachGlyphWrap: {
-    width: 24,
-    height: 24,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  coachBadge: {
-    position: "absolute",
-    top: -1,
-    right: -1,
-    borderWidth: 1,
-    borderColor: colors.surface,
-    borderRadius: radii.pill,
-  },
-  coachBadgeWorking: {
-    width: 8,
-    height: 8,
-    backgroundColor: colors.accent,
-  },
-  coachBadgeAttention: {
-    width: 10,
-    height: 10,
-    backgroundColor: colors.warning,
-  },
-  coachDot: {
-    width: 3,
-    height: 3,
-    borderRadius: radii.pill,
-  },
-  coachTail: {
-    position: "absolute",
-    right: 2,
-    bottom: -5,
-    width: 0,
-    height: 0,
-    borderLeftWidth: 4,
-    borderLeftColor: "transparent",
-    borderTopWidth: 5,
-    borderRightWidth: 0,
-    borderRightColor: "transparent",
   },
   clock: {
     width: 21,
