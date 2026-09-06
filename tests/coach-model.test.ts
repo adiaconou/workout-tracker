@@ -11,6 +11,8 @@ import {
   bootstrapWithoutPlan,
   bootstrapWithoutOptimisticMessage,
   coachToolActivityRows,
+  coachPlanReceipt,
+  coachPlanMessageGroups,
   coachMessageAttemptKey,
   coachRunCanRetry,
   coachRunIsActive,
@@ -911,4 +913,49 @@ test("plan transitions produce stable busy keys and apply/reject bodies", () => 
     busyKey: "plan-1:reject:true",
     body: {},
   });
+});
+
+test("Coach receipts preserve draft, publication, and handled outcomes", () => {
+  const routine = plan("routine", { kind: "routine", action: "update", routineCode: "A", proposedRoutine: { focus: "Strength", durationMin: 30, exercises: [] } });
+  assert.equal(coachPlanReceipt(routine), null);
+  assert.equal(coachPlanReceipt({ ...routine, status: "applying" }), null);
+  for (const [appliedAs, message] of [["draft", "Draft saved for Routine A."], ["published", "Routine A published."], [undefined, "Routine A applied."]] as const) {
+    assert.deepEqual(coachPlanReceipt({ ...routine, status: "applied", appliedAs }), { message, tone: "success" });
+  }
+  for (const [status, message, tone] of [["rejected", "Routine A proposal dismissed.", "neutral"], ["superseded", "Routine A proposal replaced by a revised proposal.", "neutral"], ["stale", "Routine A changed since this proposal. Ask Coach for a fresh proposal.", "error"]] as const) {
+    assert.deepEqual(coachPlanReceipt({ ...routine, status }), { message, tone });
+  }
+  for (const [action, message] of [["create", "Squat added to your exercise library."], ["update", "Squat updated."], ["archive", "Squat archived."]] as const) {
+    assert.deepEqual(coachPlanReceipt(plan("exercise", { action, status: "applied" })), { planId: "exercise", message, tone: "success" });
+  }
+});
+
+test("Coach groups separate review cards with their originating answer", () => {
+  const first = plan("a", { kind: "routine", action: "update", routineCode: "A", proposedRoutine: { focus: "Strength", durationMin: 30, exercises: [] }, originUserMessageId: "user-1", originRunId: "run-1" });
+  const second = plan("b", { originUserMessageId: "user-1", originRunId: "run-1" });
+  const later = plan("c", { originUserMessageId: "user-2" });
+  const legacy = plan("legacy", { status: "applied" });
+  const outsideWindow = plan("old", { originUserMessageId: "missing", status: "rejected" });
+  const messages = [message("legacy-answer", "assistant"), message("user-1"), message("answer-1", "assistant"), message("user-2")];
+  assert.deepEqual(coachPlanMessageGroups([], []), { byMessageId: {}, unlinked: [] });
+  assert.deepEqual(coachPlanMessageGroups(messages, [first, second, later, legacy, outsideWindow]), { byMessageId: { "answer-1": [first, second], "user-2": [later] }, unlinked: [legacy, outsideWindow] });
+  const handled = { ...first, status: "applied" as const, appliedAs: "draft" as const };
+  const reloaded = bootstrap({ messages, plans: [handled, second] });
+  assert.deepEqual(coachPlanMessageGroups(reloaded.messages, reloaded.plans).byMessageId["answer-1"], [handled, second]);
+  assert.equal(coachPlanReceipt(handled)?.message, "Draft saved for Routine A.");
+});
+
+test("Coach explains summarization and new tool activities", () => {
+  assert.deepEqual(coachRunPresentation(run("in_progress", { phase: "summarizing" }), "connected"), { title: "Keeping the conversation focused", detail: "Coach is saving the useful details from this chat before continuing.", active: true, retryable: false });
+  for (const [name, success, failure] of [
+    ["get_routines", "Checked the requested routines", "Couldn't check the requested routines"],
+    ["get_plan", "Reviewed the saved proposal", "Couldn't review the saved proposal"],
+    ["get_exercise_progress", "Reviewed exercise progress", "Couldn't review exercise progress"],
+    ["get_workout_details", "Reviewed workout details", "Couldn't review workout details"],
+    ["search_thread_history", "Checked earlier messages in this chat", "Couldn't check earlier messages"],
+    ["propose_routine_edit", "Prepared a routine edit for review", "Couldn't prepare the routine edit"],
+    ["propose_routine_changes", "Prepared routine changes for review", "Couldn't prepare the routine changes"],
+  ]) {
+    assert.deepEqual(coachToolActivityRows([{ name, status: "succeeded" }, { name, status: "failed" }]), [ { key: `${name}:succeeded`, label: success, tone: "success" }, { key: `${name}:failed`, label: failure.replace("Couldn't", "Couldn’t"), tone: "error" } ]);
+  }
 });

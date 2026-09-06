@@ -2,7 +2,7 @@ import { validateRoutineVersionInput } from "../../domain/routines/validation";
 import { isRoutineVersionSemanticallyEqual } from "../../domain/routines/comparison";
 import type {
   CoachMessageRun,
-  CoachMessageRunActivity,
+  CoachMessageContext,
   GeneratedRoutineProgram as GeneratedRoutineProgramPayload,
   ProgramGenerationJob,
 } from "../../contracts/api";
@@ -13,7 +13,7 @@ import {
 } from "../../domain/routines/duration";
 import { getEntityServices } from "../services";
 import { getMessageRunRepository, getProgramGenerationJobRepository } from "../db";
-import type { StoredAssistantMessageRun } from "../db/message-run-repository";
+import type { StoredAssistantMessageRun, PreparedCoachProposal } from "../db/message-run-repository";
 import type { StoredProgramGenerationJob } from "../db/program-generation-job-repository";
 import {
   muscleGroups,
@@ -38,25 +38,16 @@ import {
   type CoachResponse,
   type CoachToolActivity,
   type CoachToolChoice,
-} from "./tool-loop";
+} from "./response-types";
+import { coachTools } from "./tool-definitions";
+import { advanceCoachMessageRun, parseStoredRunActivities } from "./message-run-executor";
 import {
-  appendCoachRunActivity,
-  coachCallRepeatLimit,
-  coachCallSignature,
   coachMessageRunAwaitsResponseAttachment,
   coachMessageRunExpiresAt,
   coachMessageRunIsExpired,
-  coachMessageRunLeaseExpiresAt,
   coachMessageRunTerminalRetainedUntil,
-  coachProposalCompletionText,
   coachResponseText,
-  coachResponseToolCalls,
-  coachRunActivity,
-  coachRunPhaseForActivities,
-  coachRunShouldForceFinal,
   fingerprintCoachMessageRequest,
-  incrementCoachCallSignature,
-  isCoachProposalTool,
   mapCoachMessageRunRemoteResponse,
   normalizeCoachMessageIdempotencyKey,
   COACH_MESSAGE_RUN_POLL_AFTER_MS,
@@ -111,6 +102,14 @@ import {
   selectProgramGenerationReasoningEffort,
 } from "./program-generation-job";
 import { apiError, apiResponse, errorMessage, readJson } from "../http";
+import { coachExerciseSummary, coachRoutineSummary, coachRoutineDetails, coachWorkoutDetails,
+  coachPage, coachPageNumber, normalizeCoachMessageContext } from "./tool-data";
+import { applyCoachRoutineEdits } from "./routine-edit";
+import { restoreConversationSummary, normalizeCoachTimeZone, buildConversationContext, acceptConversationSummary, skipConversationSummaryRefresh,
+  coachCheckInContext, coachSummaryInstructions, coachSummaryJsonSchema, coachContextAuthorityInstructions,
+  type ConversationContext } from "./conversation-context";
+import type { CoachMessageRunRemoteResult } from "./message-run";
+import { coachResponseMetrics, COACH_PROMPT_VERSION } from "./response-metrics";
 import type { ApiUser, WorkerEnv } from "../types";
 
 type AssistantContext = {
@@ -164,6 +163,8 @@ type AssistantMessage = {
 
 type AssistantMessageRow = Omit<AssistantMessage, "activities"> & {
   activitiesJson: string;
+  contextJson: string;
+  timeZone: string;
 };
 
 type CoachCheckIn = {
@@ -188,6 +189,10 @@ type ChangePlanRow = {
   diffJson: string;
   status: string;
   appliedVersionId: string | null;
+  originRunId: string | null;
+  originUserMessageId: string | null;
+  appliedAs: "published" | "draft" | null;
+  supersedesPlanId: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -206,6 +211,10 @@ type ExerciseChangePlanRow = {
   diffJson: string;
   status: string;
   appliedExerciseId: string | null;
+  originRunId: string | null;
+  originUserMessageId: string | null;
+  appliedAs: "published" | "draft" | null;
+  supersedesPlanId: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -1051,12 +1060,16 @@ async function createAssistantMessage({ request, env, user }: AssistantContext) 
   let content: string;
   let idempotencyKey: string;
   let requestFingerprint: string;
+  let messageContext: CoachMessageContext;
+  let timeZone: string;
   try {
     const input = await readJson<{
       threadId?: string;
       content?: string;
       model?: string;
       reasoningEffort?: string;
+      context?: unknown;
+      timeZone?: unknown;
     }>(request);
     content = cleanRequiredText(input.content, "Message", 4_000);
     idempotencyKey = normalizeCoachMessageIdempotencyKey(request.headers.get("x-idempotency-key"));
@@ -1067,6 +1080,8 @@ async function createAssistantMessage({ request, env, user }: AssistantContext) 
     if (!thread) {
       return apiError(request, 404, "assistant_thread_not_found", "Coaching conversation not found.");
     }
+    messageContext = normalizeCoachMessageContext(input.context);
+    timeZone = normalizeCoachTimeZone(input.timeZone);
     const profile = await ensureCoachProfile(env, user.email);
     const catalog = await listModelCatalog(env);
     model = cleanModel(input.model ?? profile.model ?? pickDefaultModel(env, catalog.models));
@@ -1083,7 +1098,12 @@ async function createAssistantMessage({ request, env, user }: AssistantContext) 
       content,
       model,
       reasoningEffort,
+      context: messageContext,
+      timeZone,
     });
+    if (!await repository.getByIdempotency(user.email, idempotencyKey)) {
+      await resolveCoachTarget(env, user.email, thread.id, messageContext);
+    }
   } catch (error) {
     return apiError(
       request,
@@ -1104,6 +1124,8 @@ async function createAssistantMessage({ request, env, user }: AssistantContext) 
       requestFingerprint,
       userMessageId: crypto.randomUUID(),
       userContent: content,
+      userContextJson: JSON.stringify(messageContext),
+      timeZone,
       model,
       reasoningEffort,
       createdAt: now,
@@ -1223,411 +1245,234 @@ async function retryAssistantMessageRun(context: AssistantContext, runId: string
   }
 }
 
-type StoredCoachRunActivity = CoachMessageRunActivity & { name: string };
+async function savedCoachMessageContext(env: WorkerEnv, run: StoredAssistantMessageRun) {
+  const stored = await env.DB.prepare(`SELECT context_json AS contextJson, time_zone AS timeZone
+    FROM assistant_messages WHERE id = ? AND owner_email = ? AND thread_id = ?`)
+    .bind(run.userMessageId, run.ownerEmail, run.threadId).first<{ contextJson: string; timeZone: string }>();
+  if (!stored) throw new Error("The saved coaching message was not found.");
+  return { context: normalizeCoachMessageContext(JSON.parse(stored.contextJson)), timeZone: normalizeCoachTimeZone(stored.timeZone) };
+}
 
-async function startAssistantMessageRun(
-  context: AssistantContext,
-  run: StoredAssistantMessageRun,
-) {
+async function resolveCoachTarget(env: WorkerEnv, ownerEmail: string, threadId: string, context: CoachMessageContext) {
+  const services = getEntityServices();
+  let targetData: unknown = null;
+  const target = context.target;
+  if (target?.kind === "routine") {
+    const routine = await services.routines.get(ownerEmail, target.routineId);
+    if (!routine) throw new Error("The selected routine was not found.");
+    targetData = { ...target, routine: coachRoutineDetails(routine), versionChanged: Boolean(target.versionId && target.versionId !== routine.currentVersionId) };
+  } else if (target?.kind === "exercise") {
+    const exercise = await services.exercises.get(ownerEmail, target.exerciseId);
+    if (!exercise) throw new Error("The selected exercise was not found.");
+    targetData = { ...target, exercise: coachExerciseSummary(exercise) };
+  } else if (target?.kind === "workout") {
+    const workout = await services.workouts.get(ownerEmail, target.workoutId);
+    if (!workout) throw new Error("The selected workout was not found.");
+    const placement = target.viewedSetId ? workout.exercises.find((exercise) => exercise.sets.some((set) =>
+      set.id === target.viewedSetId || set.prescribedSetId === target.viewedSetId)) : null;
+    if (target.viewedSetId && !placement) throw new Error("The selected set does not belong to this workout.");
+    targetData = { ...target, routineCode: workout.routineCode, status: workout.status,
+      viewedExercise: placement ? { id: placement.id, exerciseId: placement.exerciseId, name: placement.exerciseNameSnapshot } : null,
+      viewedSet: placement?.sets.find((set) => set.id === target.viewedSetId || set.prescribedSetId === target.viewedSetId) ?? null };
+  }
+  let revision: unknown = null;
+  if (context.revisePlanId) {
+    const plan = await getThreadPlan(env, ownerEmail, threadId, context.revisePlanId);
+    if (plan.status !== "pending") throw new Error("The selected proposal was already handled. Start a new request using the current data.");
+    revision = { planId: plan.id, status: plan.status, summary: plan.summary, instruction: "Read this proposal with get_plan before revising it." };
+  }
+  return { target: targetData, revision };
+}
+
+async function currentCoachInstructions(env: WorkerEnv, run: StoredAssistantMessageRun) {
+  const [profile, checkIns, saved] = await Promise.all([
+    ensureCoachProfile(env, run.ownerEmail), listCheckIns(env, run.ownerEmail), savedCoachMessageContext(env, run),
+  ]);
+  return coachInstructions(profile, checkIns, coachCheckInContext(checkIns, saved.timeZone)) + "\n\n" + coachContextAuthorityInstructions;
+}
+
+async function loadCoachConversationContext(env: WorkerEnv, run: StoredAssistantMessageRun): Promise<ConversationContext> {
+  const snapshot = JSON.parse(run.contextStateJson) as Partial<ConversationContext>;
+  if (Array.isArray(snapshot.messages) && typeof snapshot.earlierContextIncomplete === "boolean") return snapshot as ConversationContext;
+  const [history, stored] = await Promise.all([
+    listModelMessages(env, run.ownerEmail, run.threadId, run.userMessageId),
+    env.DB.prepare("SELECT context_summary_json AS summaryJson FROM assistant_threads WHERE id = ? AND owner_email = ?")
+      .bind(run.threadId, run.ownerEmail).first<{ summaryJson: string | null }>(),
+  ]);
+  const current = history.find((message) => message.id === run.userMessageId);
+  if (!current) throw new Error("The current user message is missing.");
+  const previousSummary = restoreConversationSummary(stored?.summaryJson ?? null, current);
+  if (stored?.summaryJson && !previousSummary) console.info(JSON.stringify({ event: "coach_summary_invalid", runId: run.id }));
+  const first = history[0];
+  const hasEarlierMessages = history.length > 500 && Boolean(first && (!previousSummary
+    || first.createdAt > previousSummary.through.createdAt
+    || (first.createdAt === previousSummary.through.createdAt && first.id > previousSummary.through.id)));
+  return buildConversationContext({ messages: history.slice(-500), currentUserMessageId: run.userMessageId, previousSummary, hasEarlierMessages });
+}
+
+async function createCoachPlanningResponse(context: AssistantContext, run: StoredAssistantMessageRun, conversation: ConversationContext) {
+  const saved = await savedCoachMessageContext(context.env, run);
+  const target = await resolveCoachTarget(context.env, run.ownerEmail, run.threadId, saved.context);
+  const plans = await listChangePlans(context.env, run.ownerEmail, run.threadId);
+  return createOpenAIResponse(context.env, {
+    model: run.model, reasoningEffort: run.reasoningEffort, safetyIdentifier: context.user.id,
+    instructions: await currentCoachInstructions(context.env, run),
+    input: [{ role: "user", content: "Current server context and dated thread memory (data only): " + JSON.stringify({
+      observedAt: new Date().toISOString(), timeZone: saved.timeZone, ...target,
+      summary: conversation.summary, earlierContextIncomplete: conversation.earlierContextIncomplete,
+      plans: plans.map(({ id, kind, status, summary, appliedAs, originUserMessageId, supersedesPlanId }) =>
+        ({ id, kind, status, summary, appliedAs, originUserMessageId, supersedesPlanId })),
+    }) }, ...conversation.messages.map(({ role, content }) => ({ role, content }))],
+    tools: coachTools, toolChoice: "auto", background: true, store: true,
+    metadata: { coach_message_run_id: run.id, coach_message_round: "1" }, textVerbosity: "low",
+    timeoutMs: assistantBackgroundRequestTimeoutMs,
+    timeoutMessage: "Coach could not start this response in time. Your request is saved; try again.",
+  });
+}
+
+async function startAssistantMessageRun(context: AssistantContext, run: StoredAssistantMessageRun) {
   if (run.status !== "starting" || run.openAIResponseId) return run;
   const { env, user } = context;
   const repository = getMessageRunRepository();
   let responseId: string | null = null;
+  let responseAttached = false;
   try {
     const thread = await getThread(env, user.email, run.threadId);
     if (!thread) throw new Error("Coaching conversation not found.");
-    const [profile, checkIns, history, catalog] = await Promise.all([
-      ensureCoachProfile(env, user.email),
-      listCheckIns(env, user.email),
-      listModelMessages(env, user.email, run.threadId, run.userMessageId),
-      listModelCatalog(env),
-    ]);
+    const catalog = await listModelCatalog(env);
     const availableModel = catalog.models.find((option) => option.id === run.model);
-    if (!availableModel) {
-      throw new OpenAIRequestError(
-        "The saved Coach model is no longer available. Choose another model and try again.",
-        400,
-      );
+    if (!availableModel) throw new OpenAIRequestError("The saved Coach model is no longer available. Choose another model and try again.", 400);
+    let conversation = await loadCoachConversationContext(env, run);
+    let response: CoachResponse | null = null;
+    let summarizing = false;
+    if (conversation.summaryRequest) {
+      try {
+        response = await createOpenAIResponse(env, {
+          model: run.model, reasoningEffort: availableModel.reasoningEfforts.includes("low") ? "low" : "auto",
+          safetyIdentifier: user.id, instructions: coachSummaryInstructions,
+          input: [{ role: "user", content: JSON.stringify(conversation.summaryRequest) }], tools: [], toolChoice: "none",
+          background: true, store: true, metadata: { coach_message_run_id: run.id, coach_message_round: "summary" },
+          textVerbosity: "low", textFormat: { type: "json_schema", name: "coach_thread_summary", strict: true, schema: coachSummaryJsonSchema },
+          maxOutputTokens: 6000, timeoutMs: assistantBackgroundRequestTimeoutMs,
+        });
+        if (!response.id) throw new Error("No summary response ID.");
+        summarizing = true;
+      } catch {
+        conversation = skipConversationSummaryRefresh(conversation);
+        response = null;
+        console.info(JSON.stringify({ event: "coach_summary_skipped", runId: run.id, reason: "start_failed" }));
+      }
     }
-    const response = await createOpenAIResponse(env, {
-      model: run.model,
-      reasoningEffort: run.reasoningEffort,
-      safetyIdentifier: user.id,
-      instructions: coachInstructions(profile, checkIns),
-      input: history.map((message) => ({ role: message.role, content: message.content })),
-      tools: coachTools,
-      toolChoice: "auto",
-      background: true,
-      store: true,
-      metadata: { coach_message_run_id: run.id, coach_message_round: "1" },
-      textVerbosity: "low",
-      timeoutMs: assistantBackgroundRequestTimeoutMs,
-      timeoutMessage: "Coach could not start this response in time. Your request is saved; try again.",
-    });
+    response ??= await createCoachPlanningResponse(context, run, conversation);
     if (!response.id) throw new OpenAIRequestError("OpenAI did not return a Coach response ID.");
     responseId = response.id;
     const remote = mapCoachMessageRunRemoteResponse(response);
     const attached = await repository.attachResponse(user.email, run.id, {
-      openAIResponseId: response.id,
-      previousResponseId: null,
+      openAIResponseId: response.id, previousResponseId: null,
       responseIdsJson: JSON.stringify(appendResponseId([], response.id)),
-      status: remote.kind === "pending" ? remote.status : "in_progress",
-      phase: "planning",
-      roundCount: 1,
-      updatedAt: new Date().toISOString(),
+      contextStateJson: JSON.stringify(conversation), status: remote.kind === "pending" ? remote.status : "in_progress",
+      phase: summarizing ? "summarizing" : "planning", roundCount: summarizing ? 0 : 1, updatedAt: new Date().toISOString(),
     });
+    responseAttached = attached;
     const reloaded = await repository.get(user.email, run.id);
-    if (!attached && reloaded?.openAIResponseId !== response.id) {
-      await deleteOpenAIResponse(env, response.id).catch(() => undefined);
-    }
+    if (!attached && reloaded?.openAIResponseId !== response.id) await deleteOpenAIResponse(env, response.id).catch(() => undefined);
     return reloaded ?? run;
   } catch (error) {
-    if (responseId) await deleteOpenAIResponse(env, responseId).catch(() => undefined);
-    const failure = publicMessageRunError(error);
-    const now = new Date().toISOString();
-    await repository.fail(
-      user.email,
-      run.id,
-      failure,
-      now,
-      coachMessageRunTerminalRetainedUntil(now),
-    );
-    return await repository.get(user.email, run.id) ?? run;
+    const current = await repository.get(user.email, run.id).catch(() => null);
+    if (responseId && !responseAttached && current && current.openAIResponseId !== responseId) {
+      await deleteOpenAIResponse(env, responseId).catch(() => undefined);
+    }
+    if (!responseAttached) {
+      const now = new Date().toISOString();
+      await repository.failUnattached(user.email, run.id, { expectedUpdatedAt: run.updatedAt,
+        error: publicMessageRunError(error), updatedAt: now, expiresAt: coachMessageRunTerminalRetainedUntil(now) });
+    }
+    return await repository.get(user.email, run.id) ?? current ?? run;
   }
+}
+
+async function processCoachSummaryResponse(context: AssistantContext, run: StoredAssistantMessageRun, leaseToken: string, remote: CoachMessageRunRemoteResult) {
+  let conversation = JSON.parse(run.contextStateJson) as ConversationContext;
+  let summaryAccepted = false;
+  try {
+    if (remote.kind !== "ready") throw new Error("Summary generation did not complete.");
+    conversation = acceptConversationSummary(conversation, JSON.parse(coachResponseText(remote.response)));
+    summaryAccepted = true;
+  } catch {
+    conversation = skipConversationSummaryRefresh(conversation);
+    console.info(JSON.stringify({ event: "coach_summary_skipped", runId: run.id, reason: "invalid_or_failed" }));
+  }
+  const summary = conversation.summary;
+  if (summaryAccepted && summary) {
+    const now = new Date().toISOString();
+    try {
+      await context.env.DB.prepare(`UPDATE assistant_threads SET context_summary_json = ?,
+      context_summary_through_message_id = ?, context_summary_updated_at = ?
+      WHERE id = ? AND owner_email = ?
+        AND EXISTS (SELECT 1 FROM assistant_message_runs WHERE id = ? AND owner_email = ?
+          AND status = 'processing' AND lease_token = ? AND lease_expires_at > ? AND expires_at > ?)
+        AND (context_summary_through_message_id IS NULL OR EXISTS (
+          SELECT 1 FROM assistant_messages cursor WHERE cursor.id = context_summary_through_message_id
+            AND cursor.owner_email = assistant_threads.owner_email AND cursor.thread_id = assistant_threads.id
+            AND (cursor.created_at < ? OR (cursor.created_at = ? AND cursor.id <= ?))))`)
+      .bind(JSON.stringify(summary), summary.through.id, now, run.threadId, run.ownerEmail,
+        run.id, run.ownerEmail, leaseToken, now, now, summary.through.createdAt, summary.through.createdAt, summary.through.id).run();
+    } catch {
+      console.info(JSON.stringify({ event: "coach_summary_save_failed", runId: run.id }));
+    }
+  }
+  const response = await createCoachPlanningResponse(context, run, conversation);
+  if (!response.id) throw new OpenAIRequestError("OpenAI did not return a Coach response ID.");
+  const mapped = mapCoachMessageRunRemoteResponse(response);
+  const repository = getMessageRunRepository();
+  const attached = await repository.attachResponse(run.ownerEmail, run.id, {
+    openAIResponseId: response.id, previousResponseId: null,
+    responseIdsJson: JSON.stringify(appendResponseId(parseResponseIds(run.responseIdsJson), response.id)),
+    contextStateJson: JSON.stringify(conversation), pendingInputJson: "[]",
+    status: mapped.kind === "pending" ? mapped.status : "in_progress", phase: "planning", roundCount: 1,
+    updatedAt: new Date().toISOString(), leaseToken,
+  });
+  const reloaded = await repository.get(run.ownerEmail, run.id);
+  if (!attached && reloaded?.openAIResponseId !== response.id) await deleteOpenAIResponse(context.env, response.id).catch(() => undefined);
+  return reloaded ?? run;
 }
 
 async function advanceAssistantMessageRun(context: AssistantContext, runId: string) {
   const { request, env, user } = context;
-  const repository = getMessageRunRepository();
-  let run = await repository.get(user.email, runId);
-  if (!run) return apiError(request, 404, "coach_message_run_not_found", "Coaching request not found.");
-  if (messageRunIsTerminal(run.status)) return messageRunStatusResponse(context, run);
-  if (coachMessageRunIsExpired(run.expiresAt)) {
-    run = await expireMessageRun(context, run);
-    return messageRunStatusResponse(context, run);
-  }
-  if (!env.OPENAI_API_KEY) {
-    return apiError(
-      request,
-      503,
-      "openai_not_configured",
-      "Coach cannot continue until the OpenAI API key is restored. Your request is saved.",
-      true,
-    );
-  }
-  if (!run.openAIResponseId) {
-    if (run.status === "starting" && coachMessageRunAwaitsResponseAttachment(run.updatedAt)) {
-      return messageRunStatusResponse(context, run);
-    }
-    run = await failUnattachedMessageRun(user.email, run);
-    return messageRunStatusResponse(context, run);
-  }
-
-  let leaseToken: string | null = null;
-  try {
-    const response = await retrieveOpenAIResponse(env, run.openAIResponseId);
-    const remote = mapCoachMessageRunRemoteResponse(response);
-    if (remote.kind === "pending") {
-      await repository.setPending(
-        user.email,
-        run.id,
-        response.id,
-        remote.status,
-        run.phase,
-        new Date().toISOString(),
-      );
-      run = await repository.get(user.email, run.id) ?? run;
-      return messageRunStatusResponse(context, run);
-    }
-
-    const claimedAt = new Date().toISOString();
-    leaseToken = crypto.randomUUID();
-    const claimed = await repository.claimProcessing(
-      user.email,
-      run.id,
-      leaseToken,
-      claimedAt,
-      coachMessageRunLeaseExpiresAt(claimedAt),
-      claimedAt,
-    );
-    if (!claimed) {
-      run = await repository.get(user.email, run.id) ?? run;
-      return messageRunStatusResponse(context, run);
-    }
-    run = await repository.get(user.email, run.id) ?? run;
-    if (remote.kind === "failed") {
-      run = await failClaimedMessageRun(context, run, leaseToken, remote);
-      return messageRunStatusResponse(context, run);
-    }
-
-    run = await processCompletedMessageRun(context, run, leaseToken, remote.response);
-    return messageRunStatusResponse(context, run);
-  } catch (error) {
-    if (leaseToken && error instanceof OpenAIRequestError && isRetryableOpenAIError(error)) {
-      await repository.releaseProcessing(
-        user.email,
-        run.id,
-        leaseToken,
-        "in_progress",
-        "recovering",
-        new Date().toISOString(),
-      ).catch(() => undefined);
-      return apiError(
-        request,
-        error.status,
-        error.status === 429 ? "coach_rate_limited" : "coach_message_status_unavailable",
-        publicMessageRunError(error).message,
-        true,
-      );
-    }
-    if (!leaseToken && error instanceof OpenAIRequestError && error.upstreamStatus !== 404) {
-      return apiError(
-        request,
-        error.status,
-        error.status === 429 ? "coach_rate_limited" : "coach_message_status_unavailable",
-        publicMessageRunError(error).message,
-        isRetryableOpenAIError(error),
-      );
-    }
-    if (!leaseToken && error instanceof OpenAIRequestError && error.upstreamStatus === 404) {
-      run = await expireMessageRun(context, run);
-      return messageRunStatusResponse(context, run);
-    }
-    const failure = publicMessageRunError(error);
-    const now = new Date().toISOString();
-    await repository.fail(
-      user.email,
-      run.id,
-      failure,
-      now,
-      coachMessageRunTerminalRetainedUntil(now),
-      leaseToken ?? undefined,
-    );
-    run = await repository.get(user.email, run.id) ?? run;
-    await cleanupMessageRunResponses(context, run);
-    return messageRunStatusResponse(context, run);
-  }
-}
-
-async function processCompletedMessageRun(
-  context: AssistantContext,
-  run: StoredAssistantMessageRun,
-  leaseToken: string,
-  response: CoachResponse,
-) {
-  const repository = getMessageRunRepository();
-  const storedPendingInput = parseJsonArray(run.pendingInputJson);
-  if (run.proposalStaged) {
-    const proposalName = parseStoredRunActivities(run.activitiesJson)
-      .findLast((activity) => activity.status === "succeeded" && isCoachProposalTool(activity.name))
-      ?.name;
-    if (proposalName) {
-      return succeedMessageRun(
-        context,
-        run,
-        leaseToken,
-        coachProposalCompletionText(proposalName)!,
-        response.id,
-      );
-    }
-  }
-  if (storedPendingInput.length) {
-    return continueAssistantMessageRun(context, run, leaseToken, storedPendingInput, response.id);
-  }
-
-  const calls = coachResponseToolCalls(response);
-  if (!calls.length) {
-    const text = coachResponseText(response);
-    if (!text) throw new Error("The selected model returned no coaching response.");
-    return succeedMessageRun(context, run, leaseToken, text, response.id);
-  }
-  if (run.forceFinal) {
-    throw new Error("The selected model tried to call a tool after Coach switched to final synthesis.");
-  }
-
-  let activities = parseStoredRunActivities(run.activitiesJson);
-  let signatureCounts = parseSignatureCounts(run.callSignaturesJson);
-  let toolCallCount = run.toolCallCount;
-  let proposalStaged = run.proposalStaged;
-  let forceFinal: boolean = run.forceFinal;
-  const toolOutputs: unknown[] = [];
-  let proposalCompletion: string | null = null;
-
-  for (const call of calls) {
-    const signature = coachCallSignature(call);
-    const begun = await repository.beginCall(context.user.email, run.id, leaseToken, {
-      id: `${run.id}:${call.callId}`,
-      callId: call.callId,
-      callSignature: signature,
-      toolName: call.name,
-      argumentsJson: JSON.stringify(call.argumentsValue),
-      createdAt: new Date().toISOString(),
-    });
-    if (begun.kind === "rejected") return await repository.get(context.user.email, run.id) ?? run;
-    if (begun.kind === "conflict") {
-      throw new Error("The selected model reused a tool-call ID with different instructions.");
-    }
-    if (begun.kind === "replayed") {
-      const output = parseStoredToolOutput(begun.call.outputJson);
-      toolOutputs.push(functionCallOutput(call.callId, output));
-      if (begun.call.activityJson) {
-        activities = appendStoredRunActivity(activities, parseStoredRunActivity(begun.call.activityJson));
-      }
-      if (begun.call.status === "succeeded" && isCoachProposalTool(call.name)) {
-        proposalStaged = true;
-        proposalCompletion = coachProposalCompletionText(call.name);
-      }
-      continue;
-    }
-
-    const incremented = incrementCoachCallSignature(signatureCounts, signature);
-    signatureCounts = incremented.counts;
-    toolCallCount += 1;
-    let output: unknown;
-    let status: "succeeded" | "failed" = "succeeded";
-    let executed = false;
-    if (proposalStaged) {
-      status = "failed";
-      output = { error: "A review card is already ready. Finish the response without another tool." };
-    } else if (incremented.count >= coachCallRepeatLimit(call.name)) {
-      status = "failed";
-      forceFinal = true;
-      output = { error: "This exact tool call was repeated without progress. Use the prior result and finish." };
-    } else if (call.parseError) {
-      status = "failed";
-      output = { error: call.parseError };
-    } else {
-      executed = true;
-      try {
-        output = await executeCoachTool({
-          env: context.env,
-          user: context.user,
-          thread: (await getThread(context.env, context.user.email, run.threadId))!,
-          name: call.name,
-          argumentsValue: call.argumentsValue,
-        });
-        if (isCoachProposalTool(call.name)) {
-          proposalStaged = true;
-          proposalCompletion = coachProposalCompletionText(call.name);
-        }
-      } catch (error) {
-        status = "failed";
-        output = { error: errorMessage(error, "The coaching check failed.") };
-      }
-    }
-
-    const activity = executed
-      ? { ...coachRunActivity(activities.length + 1, call.name, status), name: call.name }
-      : null;
-    if (activity) activities = appendStoredRunActivity(activities, activity);
-    forceFinal = forceFinal || coachRunShouldForceFinal(run.roundCount, toolCallCount);
-    const phase = coachRunPhaseForActivities(activities, forceFinal, proposalStaged);
-    const outputJson = boundedToolOutput(output);
-    const finished = await repository.finishCall(
-      context.user.email,
-      run.id,
-      call.callId,
-      leaseToken,
-      {
-        status,
-        outputJson,
-        activityJson: activity ? JSON.stringify(activity) : null,
-        errorMessage: status === "failed" ? toolOutputError(output) : null,
-        activitiesJson: JSON.stringify(activities),
-        callSignaturesJson: JSON.stringify(signatureCounts),
-        toolCallCount,
-        proposalStaged,
-        phase,
-        updatedAt: new Date().toISOString(),
-      },
-    );
-    if (!finished) return await repository.get(context.user.email, run.id) ?? run;
-    await recordToolCall(
-      context.env,
-      context.user.email,
-      run.threadId,
-      call.name,
-      call.argumentsValue,
-      output,
-      status,
-      begun.call.id,
-    ).catch((error) => console.error("Coach tool-call audit failed", error));
-    toolOutputs.push({ type: "function_call_output", call_id: call.callId, output: outputJson });
-  }
-
-  const phase = coachRunPhaseForActivities(activities, forceFinal, proposalStaged);
-  const updated = await repository.updateProcessing(context.user.email, run.id, leaseToken, {
-    phase,
-    openAIResponseId: run.openAIResponseId,
-    previousResponseId: response.id,
-    responseIdsJson: run.responseIdsJson,
-    pendingInputJson: JSON.stringify(toolOutputs),
-    activitiesJson: JSON.stringify(activities),
-    callSignaturesJson: JSON.stringify(signatureCounts),
-    roundCount: run.roundCount,
-    toolCallCount,
-    forceFinal,
-    proposalStaged,
-    updatedAt: new Date().toISOString(),
+  const result = await advanceCoachMessageRun({ ownerEmail: user.email, runId }, {
+    store: getMessageRunRepository(), available: Boolean(env.OPENAI_API_KEY),
+    now: Date.now, createId: () => crypto.randomUUID(),
+    retrieveResponse: (id) => retrieveOpenAIResponse(env, id),
+    createContinuation: async (run, toolOutputs, previousResponseId) => createOpenAIResponse(env, {
+      model: run.model, reasoningEffort: run.reasoningEffort, safetyIdentifier: user.id,
+      instructions: await currentCoachInstructions(env, run), input: toolOutputs,
+      tools: coachTools, toolChoice: run.forceFinal ? "none" : "auto", previousResponseId,
+      background: true, store: true, metadata: { coach_message_run_id: run.id,
+        coach_message_round: String(run.roundCount + 1) }, textVerbosity: "low",
+      timeoutMs: assistantBackgroundRequestTimeoutMs,
+      timeoutMessage: "Coach could not start the next step in time. Your progress is saved.",
+    }),
+    executeTool: async (run, call, identity) => executeCoachTool({ env, user,
+      thread: (await getThread(env, user.email, run.threadId))!, run, identity,
+      name: call.name, argumentsValue: call.argumentsValue }),
+    recordToolCall: (run, call, output, status, id) => recordToolCall(env, user.email, run.threadId,
+      call.name, call.argumentsValue, output, status, id),
+    reportAuditError: (error) => console.error("Coach run audit failed", error),
+    classifyRequestError: (error) => error instanceof OpenAIRequestError
+      ? { ...publicMessageRunError(error), status: error.status, upstreamStatus: error.upstreamStatus } : null,
+    publicError: publicMessageRunError,
+    formatToolError: (error) => errorMessage(error, "The coaching check failed."),
+    expireRun: (run) => expireMessageRun(context, run),
+    failUnattachedRun: (run) => failUnattachedMessageRun(user.email, run),
+    succeedRun: (run, lease, content, responseId) => succeedMessageRun(context, run, lease, content, responseId),
+    failRun: (run, lease, error) => failClaimedMessageRun(context, run, lease, error),
+    deleteResponse: (id) => deleteOpenAIResponse(env, id),
+    processSummaryResponse: (run, lease, remote) => processCoachSummaryResponse(context, run, lease, remote),
   });
-  if (!updated) return await repository.get(context.user.email, run.id) ?? run;
-  run = await repository.get(context.user.email, run.id) ?? run;
-  if (proposalCompletion) {
-    return succeedMessageRun(context, run, leaseToken, proposalCompletion, response.id);
-  }
-  return continueAssistantMessageRun(context, run, leaseToken, toolOutputs, response.id);
-}
-
-async function continueAssistantMessageRun(
-  context: AssistantContext,
-  run: StoredAssistantMessageRun,
-  leaseToken: string,
-  toolOutputs: unknown[],
-  previousResponseId: string,
-) {
-  const repository = getMessageRunRepository();
-  const [profile, checkIns] = await Promise.all([
-    ensureCoachProfile(context.env, context.user.email),
-    listCheckIns(context.env, context.user.email),
-  ]);
-  const response = await createOpenAIResponse(context.env, {
-    model: run.model,
-    reasoningEffort: run.reasoningEffort,
-    safetyIdentifier: context.user.id,
-    instructions: coachInstructions(profile, checkIns),
-    input: toolOutputs,
-    tools: coachTools,
-    toolChoice: run.forceFinal ? "none" : "auto",
-    previousResponseId,
-    background: true,
-    store: true,
-    metadata: {
-      coach_message_run_id: run.id,
-      coach_message_round: String(run.roundCount + 1),
-    },
-    textVerbosity: "low",
-    timeoutMs: assistantBackgroundRequestTimeoutMs,
-    timeoutMessage: "Coach could not start the next step in time. Your progress is saved.",
-  });
-  if (!response.id) throw new OpenAIRequestError("OpenAI did not return a Coach response ID.");
-  const remote = mapCoachMessageRunRemoteResponse(response);
-  const responseIds = appendResponseId(parseResponseIds(run.responseIdsJson), response.id);
-  const attached = await repository.attachResponse(context.user.email, run.id, {
-    openAIResponseId: response.id,
-    previousResponseId: null,
-    responseIdsJson: JSON.stringify(responseIds),
-    pendingInputJson: "[]",
-    status: remote.kind === "pending" ? remote.status : "in_progress",
-    phase: run.forceFinal ? "synthesizing" : run.phase,
-    roundCount: run.roundCount + 1,
-    updatedAt: new Date().toISOString(),
-    leaseToken,
-  });
-  const reloaded = await repository.get(context.user.email, run.id);
-  if (!attached && reloaded?.openAIResponseId !== response.id) {
-    await deleteOpenAIResponse(context.env, response.id).catch(() => undefined);
-  }
-  return reloaded ?? run;
+  if (result.kind === "not_found") return apiError(request, 404, "coach_message_run_not_found", "Coaching request not found.");
+  if (result.kind === "unavailable") return apiError(request, result.error.status,
+    result.error.code, result.error.message, result.error.retryable);
+  return messageRunStatusResponse(context, result.run);
 }
 
 async function succeedMessageRun(
@@ -1677,17 +1522,12 @@ async function failClaimedMessageRun(
 async function failUnattachedMessageRun(ownerEmail: string, run: StoredAssistantMessageRun) {
   const repository = getMessageRunRepository();
   const now = new Date().toISOString();
-  await repository.fail(
-    ownerEmail,
-    run.id,
-    {
-      code: "coach_message_start_lost",
-      message: "Coach could not confirm that this response started. Your request is saved; try again.",
-      retryable: true,
-    },
-    now,
-    coachMessageRunTerminalRetainedUntil(now),
-  );
+  await repository.failUnattached(ownerEmail, run.id, {
+    expectedUpdatedAt: run.updatedAt,
+    error: { code: "coach_message_start_lost",
+      message: "Coach could not confirm that this response started. Your request is saved; try again.", retryable: true },
+    updatedAt: now, expiresAt: coachMessageRunTerminalRetainedUntil(now),
+  });
   return await repository.get(ownerEmail, run.id) ?? run;
 }
 
@@ -1797,7 +1637,7 @@ function serializeMessageRun(run: StoredAssistantMessageRun): CoachMessageRun {
       : run.status === "cancelled"
         ? "failed" as const
         : run.status;
-  const validPhase = ["planning", "checking", "recovering", "synthesizing", "review_ready"]
+  const validPhase = ["summarizing", "planning", "checking", "recovering", "synthesizing", "review_ready"]
     .includes(run.phase);
   const error = storedExpired
     ? {
@@ -1860,64 +1700,8 @@ function publicMessageRunError(error: unknown) {
   };
 }
 
-function isRetryableOpenAIError(error: OpenAIRequestError) {
-  return error.status === 429 || error.status >= 500;
-}
-
 function messageRunIsTerminal(status: StoredAssistantMessageRun["status"]) {
   return ["succeeded", "failed", "expired", "cancelled"].includes(status);
-}
-
-function parseStoredRunActivities(value: string): StoredCoachRunActivity[] {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.flatMap((entry) => {
-      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
-      const activity = entry as Record<string, unknown>;
-      if (
-        typeof activity.id !== "string"
-        || typeof activity.name !== "string"
-        || typeof activity.label !== "string"
-        || (activity.purpose !== null && typeof activity.purpose !== "string")
-        || (activity.status !== "succeeded" && activity.status !== "failed")
-      ) return [];
-      return [{
-        id: activity.id,
-        name: activity.name,
-        label: activity.label,
-        purpose: activity.purpose,
-        status: activity.status,
-      } as StoredCoachRunActivity];
-    }).slice(-12);
-  } catch {
-    return [];
-  }
-}
-
-function parseStoredRunActivity(value: string) {
-  const parsed = parseStoredRunActivities(`[${value}]`)[0];
-  if (!parsed) throw new Error("Stored Coach activity is invalid.");
-  return parsed;
-}
-
-function appendStoredRunActivity(
-  activities: readonly StoredCoachRunActivity[],
-  activity: StoredCoachRunActivity,
-) {
-  return appendCoachRunActivity(activities, activity) as StoredCoachRunActivity[];
-}
-
-function parseSignatureCounts(value: string) {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return Object.fromEntries(Object.entries(parsed as Record<string, unknown>)
-      .filter(([, count]) => Number.isInteger(count) && Number(count) >= 0)
-      .map(([signature, count]) => [signature, Number(count)]));
-  } catch {
-    return {};
-  }
 }
 
 function parseJsonArray(value: string) {
@@ -1930,38 +1714,11 @@ function parseJsonArray(value: string) {
 }
 
 function parseResponseIds(value: string) {
-  return parseJsonArray(value).filter((id): id is string => typeof id === "string").slice(-8);
+  return parseJsonArray(value).filter((id): id is string => typeof id === "string");
 }
 
 function appendResponseId(ids: readonly string[], id: string) {
   return [...ids.filter((candidate) => candidate !== id), id];
-}
-
-function parseStoredToolOutput(value: string | null) {
-  if (!value) return { error: "A saved coaching step had no result." };
-  try {
-    return JSON.parse(value) as unknown;
-  } catch {
-    return { error: "A saved coaching step result was invalid." };
-  }
-}
-
-function functionCallOutput(callId: string, output: unknown) {
-  return { type: "function_call_output", call_id: callId, output: boundedToolOutput(output) };
-}
-
-function boundedToolOutput(value: unknown) {
-  const serialized = JSON.stringify(value);
-  if (serialized.length <= 30_000) return serialized;
-  return JSON.stringify({
-    error: "The coaching step returned too much data. Refine the request and try a narrower check.",
-  });
-}
-
-function toolOutputError(value: unknown) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return "The coaching step failed.";
-  const error = (value as Record<string, unknown>).error;
-  return typeof error === "string" ? error.slice(0, 500) : "The coaching step failed.";
 }
 
 async function getMessage(
@@ -1993,7 +1750,10 @@ async function listModelMessages(
       SELECT message.id, message.thread_id, message.role, message.content,
         message.model, message.reasoning_effort, message.activities_json, message.created_at
       FROM assistant_messages AS message
-      WHERE message.owner_email = ? AND message.thread_id = ? AND (
+      WHERE message.owner_email = ? AND message.thread_id = ?
+      AND (message.created_at, message.id) <= (
+        SELECT created_at, id FROM assistant_messages WHERE id = ? AND owner_email = ? AND thread_id = ?
+      ) AND (
         message.role <> 'user' OR message.id = ? OR EXISTS (
           SELECT 1 FROM assistant_message_runs succeeded_run
           WHERE succeeded_run.owner_email = message.owner_email
@@ -2005,9 +1765,9 @@ async function listModelMessages(
             AND abandoned_run.user_message_id = message.id
             AND abandoned_run.status IN ('failed', 'expired', 'cancelled')
         )
-      ) ORDER BY message.created_at DESC LIMIT 50
-    ) ORDER BY created_at ASC`)
-    .bind(ownerEmail, threadId, currentUserMessageId)
+      ) ORDER BY message.created_at DESC, message.id DESC LIMIT 501
+    ) ORDER BY created_at ASC, id ASC`)
+    .bind(ownerEmail, threadId, currentUserMessageId, ownerEmail, threadId, currentUserMessageId)
     .all<AssistantMessageRow>();
   return rows.results.map(({ activitiesJson: _activitiesJson, ...message }) => message);
 }
@@ -2097,10 +1857,10 @@ async function applyRoutineChangePlan(context: AssistantContext, plan: ChangePla
     }
     const now = new Date().toISOString();
     await env.DB.prepare(`UPDATE assistant_change_plans SET status = 'applied',
-      applied_version_id = ?, updated_at = ? WHERE id = ? AND owner_email = ?`)
-      .bind(version.id, now, plan.id, user.email).run();
+      applied_version_id = ?, applied_as = ?, updated_at = ? WHERE id = ? AND owner_email = ?`)
+      .bind(version.id, publish ? "published" : "draft", now, plan.id, user.email).run();
     return apiResponse(request, {
-      plan: { ...serializeRoutinePlan(plan), status: "applied", appliedVersionId: version.id, updatedAt: now },
+      plan: { ...serializeRoutinePlan(plan), status: "applied", appliedAs: publish ? "published" : "draft", appliedVersionId: version.id, updatedAt: now },
       version,
       routine: publishedRoutine,
       published: publish,
@@ -2130,11 +1890,11 @@ async function finalizeRoutineCreationPlan(
   if (!version) throw new Error("The new routine was created without a published version.");
   const now = new Date().toISOString();
   await env.DB.prepare(`UPDATE assistant_change_plans SET status = 'applied',
-    routine_id = ?, applied_version_id = ?, updated_at = ? WHERE id = ? AND owner_email = ?`)
+    applied_as = 'published', routine_id = ?, applied_version_id = ?, updated_at = ? WHERE id = ? AND owner_email = ?`)
     .bind(routine.id, version.id, now, plan.id, user.email).run();
   return apiResponse(request, {
     plan: {
-      ...serializeRoutinePlan({ ...plan, routineId: routine.id, status: "applied", updatedAt: now }),
+      ...serializeRoutinePlan({ ...plan, routineId: routine.id, status: "applied", appliedAs: "published", updatedAt: now }),
       appliedVersionId: version.id,
     },
     version,
@@ -2158,7 +1918,7 @@ async function recoverRoutineCreationPlan(
   if (routine?.currentVersion) {
     const now = new Date().toISOString();
     await env.DB.prepare(`UPDATE assistant_change_plans SET status = 'applied',
-      routine_id = ?, applied_version_id = ?, updated_at = ?
+      applied_as = 'published', routine_id = ?, applied_version_id = ?, updated_at = ?
       WHERE id = ? AND owner_email = ? AND status = 'applying'`)
       .bind(routine.id, routine.currentVersion.id, now, plan.id, ownerEmail).run();
     return { state: "applied", routine };
@@ -2178,7 +1938,7 @@ async function recoverRoutineCreationPlan(
   routine = await services.routines.get(ownerEmail, plan.routineId);
   if (routine?.currentVersion) {
     await env.DB.prepare(`UPDATE assistant_change_plans SET status = 'applied',
-      routine_id = ?, applied_version_id = ?, updated_at = ?
+      applied_as = 'published', routine_id = ?, applied_version_id = ?, updated_at = ?
       WHERE id = ? AND owner_email = ? AND status = 'applying' AND updated_at = ?`)
       .bind(routine.id, routine.currentVersion.id, recoveryClaimedAt, plan.id, ownerEmail, recoveryClaimedAt).run();
     return { state: "applied", routine };
@@ -2190,7 +1950,7 @@ async function recoverRoutineCreationPlan(
       if (current?.currentVersion) {
         const now = new Date().toISOString();
         await env.DB.prepare(`UPDATE assistant_change_plans SET status = 'applied',
-          routine_id = ?, applied_version_id = ?, updated_at = ?
+          applied_as = 'published', routine_id = ?, applied_version_id = ?, updated_at = ?
           WHERE id = ? AND owner_email = ? AND status = 'applying' AND updated_at = ?`)
           .bind(current.id, current.currentVersion.id, now, plan.id, ownerEmail, recoveryClaimedAt).run();
         return { state: "applied", routine: current };
@@ -2309,6 +2069,8 @@ async function createOpenAIResponse(
     previousResponseId?: string;
     metadata?: Record<string, string>;
     textVerbosity?: "low" | "medium" | "high";
+    textFormat?: unknown;
+    maxOutputTokens?: number;
     timeoutMs?: number;
     timeoutMessage?: string;
   },
@@ -2328,11 +2090,11 @@ async function createOpenAIResponse(
         tool_choice: input.toolChoice,
         parallel_tool_calls: false,
         reasoning,
-        text: { verbosity: input.textVerbosity ?? "medium" },
-        max_output_tokens: outputTokenBudget(input.model),
+        text: { verbosity: input.textVerbosity ?? "medium", format: input.textFormat },
+        max_output_tokens: input.maxOutputTokens ?? outputTokenBudget(input.model),
         safety_identifier: input.safetyIdentifier,
         background: input.background || undefined,
-        metadata: input.metadata,
+        metadata: { ...input.metadata, coach_prompt_version: COACH_PROMPT_VERSION },
         store: input.store ?? false,
       }),
     },
@@ -2378,6 +2140,7 @@ async function requestOpenAIResponse(
   timeoutMs: number,
   timeoutMessage: string,
 ) {
+  const requestStartedAt = Date.now();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -2390,6 +2153,10 @@ async function requestOpenAIResponse(
       signal: controller.signal,
     });
     const payload = await response.json().catch(() => ({})) as CoachResponse;
+    if (init.method !== "DELETE") {
+      const metrics = coachResponseMetrics(payload, response.headers.get("x-request-id"), Date.now() - requestStartedAt);
+      if (metrics) console.info(JSON.stringify(metrics));
+    }
     if (!response.ok) {
       const status = response.status === 429 ? 429 : response.status >= 500 ? 502 : 400;
       throw new OpenAIRequestError(
@@ -2410,29 +2177,56 @@ async function requestOpenAIResponse(
   }
 }
 
-async function executeCoachTool(input: {
+type CoachToolInput = {
   env: WorkerEnv;
   user: ApiUser;
   thread: AssistantThread;
-  name: string;
+  run: StoredAssistantMessageRun;
+  identity: { ownerEmail: string; runId: string; callId: string; leaseToken: string };
   argumentsValue: Record<string, unknown>;
-}) {
+  stagedPlans?: PreparedCoachProposal[];
+  proposalIndex?: number;
+};
+
+async function executeCoachTool(input: CoachToolInput & { name: string }) {
   const services = getEntityServices();
   const ownerEmail = input.user.email;
   switch (input.name) {
     case "get_coaching_context": {
-      const [routines, history, activeWorkouts, checkIns] = await Promise.all([
+      const [routines, history, activeWorkouts, checkIns, saved] = await Promise.all([
         services.routines.list(ownerEmail),
         services.workouts.history(ownerEmail, { limit: 12, offset: 0 }),
         services.workouts.list(ownerEmail, { status: "In Progress" }),
         listCheckIns(input.env, ownerEmail),
+        savedCoachMessageContext(input.env, input.run),
       ]);
-      return { routines, history, activeWorkout: activeWorkouts[0] ?? null, checkIns };
+      const page = coachPage(routines.map(coachRoutineSummary), 25, coachPageNumber(input.argumentsValue.offset, 0, 100_000, 0), 12_000);
+      return { routines: page.items, hasMore: page.hasMore, nextOffset: page.nextOffset, history,
+        activeWorkout: activeWorkouts[0] ? { id: activeWorkouts[0].id, routineCode: activeWorkouts[0].routineCode } : null,
+        checkIns, readiness: coachCheckInContext(checkIns, saved.timeZone), observedAt: new Date().toISOString() };
     }
-    case "get_routine":
-      return { routine: await services.routines.get(ownerEmail, cleanRequiredText(input.argumentsValue.routineId, "Routine", 100)) };
-    case "list_routine_versions":
-      return { versions: await services.routines.listVersions(ownerEmail, cleanRequiredText(input.argumentsValue.routineId, "Routine", 100)) };
+    case "get_routine": {
+      const routine = await services.routines.get(ownerEmail, cleanRequiredText(input.argumentsValue.routineId, "Routine", 100));
+      return { routine: routine ? coachRoutineDetails(routine, coachPageNumber(input.argumentsValue.offset, 0, 10_000, 0)) : null };
+    }
+    case "get_routines": {
+      const ids = input.argumentsValue.routineIds;
+      if (!Array.isArray(ids) || !ids.length || ids.length > 7 || new Set(ids).size !== ids.length) throw new Error("Select 1-7 unique routines.");
+      const routines = await Promise.all(ids.map(async (id) => {
+        const routine = await services.routines.get(ownerEmail, cleanRequiredText(id, "Routine", 100));
+        if (!routine) throw new Error("A selected routine was not found.");
+        return coachRoutineDetails(routine);
+      }));
+      const page = coachPage(routines, 7, coachPageNumber(input.argumentsValue.offset, 0, 7, 0));
+      return { routines: page.items, hasMore: page.hasMore, nextOffset: page.nextOffset };
+    }
+    case "list_routine_versions": {
+      const versions = await services.routines.listVersions(ownerEmail, cleanRequiredText(input.argumentsValue.routineId, "Routine", 100));
+      const page = coachPage(versions.map(({ id, status, focus, durationMin, createdAt, exercises }) =>
+        ({ id, status, focus, durationMin, createdAt, exerciseCount: exercises.length })), 20,
+      coachPageNumber(input.argumentsValue.offset, 0, 100_000, 0));
+      return { versions: page.items, hasMore: page.hasMore, nextOffset: page.nextOffset };
+    }
     case "search_exercises": {
       const query = typeof input.argumentsValue.query === "string" ? input.argumentsValue.query : undefined;
       const muscleGroup = typeof input.argumentsValue.muscleGroup === "string"
@@ -2442,34 +2236,100 @@ async function executeCoachTool(input: {
       const movementPattern = typeof input.argumentsValue.movementPattern === "string"
         ? input.argumentsValue.movementPattern
         : undefined;
-      return { exercises: await services.exercises.list(ownerEmail, {
+      const exercises = await services.exercises.list(ownerEmail, {
         search: query,
         includeArchived: input.argumentsValue.includeArchived === true,
         availableOnly: true,
         muscleGroup,
         movementPattern,
-      }) };
+      });
+      const page = coachPage(exercises.map(coachExerciseSummary), coachPageNumber(input.argumentsValue.limit, 10, 25),
+        coachPageNumber(input.argumentsValue.offset, 0, 100_000, 0));
+      return { exercises: page.items, total: page.total, hasMore: page.hasMore, nextOffset: page.nextOffset };
     }
-    case "get_exercise":
-      return { exercise: await services.exercises.get(ownerEmail, cleanRequiredText(input.argumentsValue.exerciseId, "Exercise", 160)) };
+    case "get_exercise": {
+      const exercise = await services.exercises.get(ownerEmail, cleanRequiredText(input.argumentsValue.exerciseId, "Exercise", 160));
+      return { exercise: exercise ? { ...coachExerciseSummary(exercise), instructions: exercise.instructions } : null };
+    }
     case "get_workout_history": {
       const limit = boundedInteger(input.argumentsValue.limit, 1, 30, "History limit");
       const routineCode = typeof input.argumentsValue.routineCode === "string" ? input.argumentsValue.routineCode : undefined;
-      return { history: await services.workouts.history(ownerEmail, { limit, offset: 0, routineCode }) };
+      const from = coachDateFilter(input.argumentsValue.from);
+      const to = coachDateFilter(input.argumentsValue.to);
+      if (from && to && from >= to) throw new Error("History end must follow its start.");
+      return { history: await services.workouts.history(ownerEmail, { limit,
+        offset: coachPageNumber(input.argumentsValue.offset, 0, 100_000, 0), routineCode, from, to }),
+        range: { from: from ?? null, to: to ?? null }, statsScope: "All matching sessions in this date range, not just this page." };
+    }
+    case "get_exercise_progress": {
+      const exerciseId = cleanRequiredText(input.argumentsValue.exerciseId, "Exercise", 160);
+      const from = coachDateFilter(input.argumentsValue.from) ?? new Date(Date.now() - 90 * 86_400_000).toISOString();
+      const unit = input.argumentsValue.unit;
+      if (unit !== undefined && unit !== null && unit !== "lb" && unit !== "kg") throw new Error("Progress unit must be lb or kg.");
+      return { progress: await services.exercises.progress(ownerEmail, exerciseId, {
+        from, limit: coachPageNumber(input.argumentsValue.limit, 12, 30), unit: unit as "lb" | "kg" | undefined ?? undefined,
+      }), range: { from }, basis: "Best eligible working set per session; retrieve workout details for every set and RIR." };
+    }
+    case "get_workout_details": {
+      const workout = await services.workouts.get(ownerEmail, cleanRequiredText(input.argumentsValue.workoutId, "Workout", 200));
+      return { workout: workout ? coachWorkoutDetails(workout, coachPageNumber(input.argumentsValue.offset, 0, 10_000, 0)) : null };
+    }
+    case "get_plan": {
+      const plan = await getThreadPlan(input.env, ownerEmail, input.thread.id, cleanRequiredText(input.argumentsValue.planId, "Plan", 200));
+      if (!("routineCode" in plan)) return { plan: serializeExercisePlan(plan) };
+      const { proposedRoutine, diff: _diff, ...receipt } = serializeRoutinePlan(plan);
+      const page = coachPage(proposedRoutine.exercises, 20, coachPageNumber(input.argumentsValue.offset, 0, 100_000, 0));
+      return { plan: { ...receipt, proposedRoutine: { ...proposedRoutine, exercises: page.items } },
+        hasMore: page.hasMore, nextOffset: page.nextOffset, totalExercises: page.total };
+    }
+    case "search_thread_history": {
+      const query = cleanText(input.argumentsValue.query, 200);
+      const limit = coachPageNumber(input.argumentsValue.limit, 10, 20);
+      const offset = coachPageNumber(input.argumentsValue.offset, 0, 100_000, 0);
+      const rows = await input.env.DB.prepare(`SELECT message.id, message.role, message.content, message.created_at AS createdAt
+        FROM assistant_messages message WHERE message.owner_email = ? AND message.thread_id = ?
+          AND instr(lower(message.content), lower(?)) > 0
+          AND (message.created_at, message.id) <= (
+            SELECT created_at, id FROM assistant_messages WHERE id = ? AND owner_email = ? AND thread_id = ?
+          ) ORDER BY message.created_at DESC, message.id DESC LIMIT ? OFFSET ?`)
+        .bind(ownerEmail, input.thread.id, query, input.run.userMessageId, ownerEmail, input.thread.id, limit + 1, offset).all<AssistantMessage>();
+      const page = coachPage(rows.results.slice(0, limit), limit, 0);
+      return { messages: page.items, hasMore: page.hasMore || rows.results.length > limit, nextOffset: offset + page.items.length };
     }
     case "get_active_workout": {
       const workouts = await services.workouts.list(ownerEmail, { status: "In Progress" });
-      return { workout: workouts[0] ?? null };
+      return { workout: workouts[0] ? coachWorkoutDetails(workouts[0]) : null, observedAt: new Date().toISOString() };
     }
     case "propose_new_routine":
       return proposeNewRoutine(input);
     case "propose_routine_change":
       return proposeRoutineChange(input);
+    case "propose_routine_edit": {
+      const routine = await services.routines.get(ownerEmail, cleanRequiredText(input.argumentsValue.routineId, "Routine", 100));
+      if (!routine?.currentVersion) throw new Error("The current routine was not found.");
+      const library = await services.exercises.list(ownerEmail);
+      const proposedRoutine = applyCoachRoutineEdits(routine.currentVersion, input.argumentsValue.operations, library);
+      return proposeRoutineChange({ ...input, argumentsValue: { ...input.argumentsValue, proposedRoutine } });
+    }
+    case "propose_routine_changes":
+      return proposeRoutineBatch(input);
     case "propose_exercise_change":
       return proposeExerciseChange(input);
     default:
       throw new Error(`Unknown coach tool: ${input.name}`);
   }
+}
+
+function coachDateFilter(value: unknown) {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) throw new Error("History dates must be valid ISO dates.");
+  return new Date(value).toISOString();
+}
+
+async function getThreadPlan(env: WorkerEnv, ownerEmail: string, threadId: string, planId: string) {
+  const plan = await getRoutineChangePlan(env, ownerEmail, planId) ?? await getExerciseChangePlan(env, ownerEmail, planId);
+  if (!plan || plan.threadId !== threadId) throw new Error("The proposal was not found in this conversation.");
+  return plan;
 }
 
 type PendingRoutineProposalResult = Pick<
@@ -2510,12 +2370,7 @@ async function findExactPendingRoutineProposal(
     .first<PendingRoutineProposalResult>();
 }
 
-async function proposeNewRoutine(input: {
-  env: WorkerEnv;
-  user: ApiUser;
-  thread: AssistantThread;
-  argumentsValue: Record<string, unknown>;
-}) {
+async function proposeNewRoutine(input: CoachToolInput) {
   const services = getEntityServices();
   const routineCode = cleanRequiredText(input.argumentsValue.routineCode, "Routine code", 20).toUpperCase();
   if (await services.routines.get(input.user.email, routineCode)) {
@@ -2543,43 +2398,29 @@ async function proposeNewRoutine(input: {
     proposedInputJson,
   );
   const instruction = "Tell the user the new-routine review card is ready and nothing has changed yet. Do not ask for verbal approval.";
-  if (existing) return routineProposalToolResult(existing, instruction);
+  const supersedesPlanId = await proposalRevision(input, { kind: "routine", routineCode });
+  if (existing && !supersedesPlanId) {
+    const output = routineProposalToolResult(existing, instruction);
+    await commitPreparedProposals(input, [], output);
+    return output;
+  }
   const now = new Date().toISOString();
-  const planId = crypto.randomUUID();
-  await input.env.DB.prepare(`INSERT INTO assistant_change_plans (
-    id, owner_email, thread_id, routine_id, routine_code, base_version_id,
-    proposed_input_json, summary, rationale, diff_json, status,
-    applied_version_id, created_at, updated_at
-  ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, 'pending', NULL, ?, ?)`)
-    .bind(
-      planId,
-      input.user.email,
-      input.thread.id,
-      planId,
-      routineCode,
-      proposedInputJson,
-      summary,
-      rationale,
-      JSON.stringify(diff),
-      now,
-      now,
-    )
-    .run();
-  return routineProposalToolResult({
+  const planId = await proposalId(input);
+  const output = routineProposalToolResult({
     id: planId,
     routineCode,
     summary,
     rationale,
     diffJson: JSON.stringify(diff),
   }, instruction);
+  await commitPreparedProposals(input, [{ kind: "routine", id: planId, threadId: input.thread.id,
+    routineId: planId, routineCode, baseVersionId: null, proposedInputJson, summary, rationale,
+    diffJson: JSON.stringify(diff), createdAt: now, originRunId: input.run.id,
+    originUserMessageId: input.run.userMessageId, supersedesPlanId }], output);
+  return output;
 }
 
-async function proposeRoutineChange(input: {
-  env: WorkerEnv;
-  user: ApiUser;
-  thread: AssistantThread;
-  argumentsValue: Record<string, unknown>;
-}) {
+async function proposeRoutineChange(input: CoachToolInput) {
   const services = getEntityServices();
   const routineId = cleanRequiredText(input.argumentsValue.routineId, "Routine", 100);
   const routine = await services.routines.get(input.user.email, routineId);
@@ -2627,31 +2468,29 @@ async function proposeRoutineChange(input: {
     proposedInputJson,
   );
   const instruction = "Tell the user the review card is ready and nothing has changed yet. Do not ask for verbal approval.";
-  if (existing) return routineProposalToolResult(existing, instruction);
+  const supersedesPlanId = await proposalRevision(input, { kind: "routine", routineCode: routine.code });
+  if (existing && !supersedesPlanId) {
+    const output = routineProposalToolResult(existing, instruction);
+    await commitPreparedProposals(input, [], output);
+    return output;
+  }
   const now = new Date().toISOString();
-  const planId = crypto.randomUUID();
-  await input.env.DB.prepare(`INSERT INTO assistant_change_plans (
-    id, owner_email, thread_id, routine_id, routine_code, base_version_id,
-    proposed_input_json, summary, rationale, diff_json, status,
-    applied_version_id, created_at, updated_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)`)
-    .bind(planId, input.user.email, input.thread.id, routine.id, routine.code, baseVersionId, proposedInputJson, summary, rationale, JSON.stringify(diff), now, now)
-    .run();
-  return routineProposalToolResult({
+  const planId = await proposalId(input);
+  const output = routineProposalToolResult({
     id: planId,
     routineCode: routine.code,
     summary,
     rationale,
     diffJson: JSON.stringify(diff),
   }, instruction);
+  await commitPreparedProposals(input, [{ kind: "routine", id: planId, threadId: input.thread.id,
+    routineId: routine.id, routineCode: routine.code, baseVersionId, proposedInputJson, summary, rationale,
+    diffJson: JSON.stringify(diff), createdAt: now, originRunId: input.run.id,
+    originUserMessageId: input.run.userMessageId, supersedesPlanId }], output);
+  return output;
 }
 
-async function proposeExerciseChange(input: {
-  env: WorkerEnv;
-  user: ApiUser;
-  thread: AssistantThread;
-  argumentsValue: Record<string, unknown>;
-}) {
+async function proposeExerciseChange(input: CoachToolInput) {
   const actionValue = cleanRequiredText(input.argumentsValue.action, "Exercise change action", 20);
   if (!["create", "update", "archive"].includes(actionValue)) throw new Error("Exercise change action is invalid.");
   const action = actionValue as ExerciseChangeAction;
@@ -2694,30 +2533,12 @@ async function proposeExerciseChange(input: {
   const exerciseName = proposed?.name ?? current?.name;
   if (!exerciseName) throw new Error("The exercise name could not be determined.");
   const now = new Date().toISOString();
-  const planId = crypto.randomUUID();
-  await input.env.DB.prepare(`INSERT INTO assistant_exercise_change_plans (
-    id, owner_email, thread_id, action, exercise_id, exercise_name,
-    base_updated_at, base_input_json, proposed_input_json, summary, rationale,
-    diff_json, status, applied_exercise_id, created_at, updated_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)`)
-    .bind(
-      planId,
-      input.user.email,
-      input.thread.id,
-      action,
-      exerciseId,
-      exerciseName,
-      baseUpdatedAt,
-      current ? JSON.stringify(exerciseInputSnapshot(current)) : null,
-      JSON.stringify(proposed ?? {}),
-      summary,
-      rationale,
-      JSON.stringify(diff),
-      now,
-      now,
-    )
-    .run();
-  return {
+  const planId = await proposalId(input);
+  const supersedesPlanId = await proposalRevision(input, { kind: "exercise", exerciseId, exerciseName });
+  const supersedesExerciseName = supersedesPlanId && exerciseId === null
+    ? (await getExerciseChangePlan(input.env, input.user.email, supersedesPlanId))?.exerciseName
+    : undefined;
+  const output = {
     planId,
     status: "ready_for_review",
     action,
@@ -2727,6 +2548,69 @@ async function proposeExerciseChange(input: {
     diff,
     instruction: "Tell the user the review card is ready and nothing has changed yet. Do not ask for verbal approval.",
   };
+  await commitPreparedProposals(input, [{ kind: "exercise", id: planId, threadId: input.thread.id,
+    action, exerciseId, exerciseName, baseUpdatedAt, baseInputJson: current ? JSON.stringify(exerciseInputSnapshot(current)) : null,
+    proposedInputJson: JSON.stringify(proposed ?? {}), summary, rationale, diffJson: JSON.stringify(diff), createdAt: now,
+    originRunId: input.run.id, originUserMessageId: input.run.userMessageId, supersedesPlanId, supersedesExerciseName }], output);
+  return output;
+}
+
+async function proposalId(input: CoachToolInput) {
+  const source = JSON.stringify([input.user.email, input.run.id, input.identity.callId, input.proposalIndex ?? 0]);
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source));
+  return `coach-plan-${Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
+async function commitPreparedProposals(input: CoachToolInput, plans: PreparedCoachProposal[], output: unknown) {
+  if (input.stagedPlans) { input.stagedPlans.push(...plans); return; }
+  const committed = await getMessageRunRepository().commitProposalResult(input.user.email, input.run.id,
+    input.identity.callId, input.identity.leaseToken, { plans, outputJson: JSON.stringify(output), updatedAt: new Date().toISOString() });
+  if (!committed) throw new Error("The proposal changed or this coaching step lost its processing lease. Refresh and retry.");
+}
+
+async function proposalRevision(input: CoachToolInput, target:
+  { kind: "routine"; routineCode: string } | { kind: "exercise"; exerciseId: string | null; exerciseName: string }) {
+  const request = await savedCoachMessageContext(input.env, input.run);
+  if (!request.context.revisePlanId) return null;
+  const plan = await getThreadPlan(input.env, input.user.email, input.thread.id, request.context.revisePlanId);
+  if (plan.status !== "pending") throw new Error("This proposal was already handled. Read the current data before preparing a new change.");
+  const matches = target.kind === "routine"
+    ? "routineCode" in plan && plan.routineCode === target.routineCode
+    : "exerciseName" in plan && plan.exerciseId === target.exerciseId
+      && (target.exerciseId !== null || normalizeExerciseName(plan.exerciseName) === normalizeExerciseName(target.exerciseName));
+  if (!matches && !input.stagedPlans) throw new Error("A revision must target the same routine or exercise as its original proposal.");
+  return matches ? plan.id : null;
+}
+
+async function proposeRoutineBatch(input: CoachToolInput) {
+  const proposals = input.argumentsValue.proposals;
+  if (!Array.isArray(proposals) || proposals.length < 2 || proposals.length > 7) throw new Error("A batch needs 2-7 routine proposals.");
+  const stagedPlans: PreparedCoachProposal[] = [];
+  const results = [];
+  const targets = new Set<string>();
+  for (let index = 0; index < proposals.length; index++) {
+    const item = proposals[index] as Record<string, unknown> | null;
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error(`Proposal ${index + 1} is invalid.`);
+    try {
+      const child = { ...input, argumentsValue: item, stagedPlans, proposalIndex: index };
+      let result;
+      if (item.action === "create" && item.routineId === null && item.baseVersionId === null) {
+        result = await proposeNewRoutine(child);
+      } else if (item.action === "update" && item.routineCode === null) {
+        result = await proposeRoutineChange(child);
+      } else throw new Error("Use create with a code and null routine/base IDs, or update with routine/base IDs and a null code.");
+      if (targets.has(result.routineCode)) throw new Error("Each routine can appear only once in a batch.");
+      targets.add(result.routineCode);
+      results.push({ planId: result.planId, action: item.action, routineCode: result.routineCode, summary: result.summary });
+    } catch (error) { throw new Error(`Proposal ${index + 1}: ${errorMessage(error, "Invalid proposal")}`); }
+  }
+  const request = await savedCoachMessageContext(input.env, input.run);
+  if (request.context.revisePlanId && !stagedPlans.some((plan) => plan.supersedesPlanId === request.context.revisePlanId)) {
+    throw new Error("The batch must include the proposal selected for revision.");
+  }
+  const output = { status: "ready_for_review", plans: results };
+  await commitPreparedProposals(input, stagedPlans, output);
+  return output;
 }
 
 async function assertExerciseNameAvailable(
@@ -2784,169 +2668,6 @@ async function assertExerciseCanBeArchived(ownerEmail: string, exerciseId: strin
     const message = `Remove this exercise from active routine${references.length === 1 ? "" : "s"} or draft${references.length === 1 ? "" : "s"} ${references.join(", ")} before archiving it.`;
     throw stale ? new StaleExercisePlanError(message) : new Error(message);
   }
-}
-
-const routineSetSchema = {
-  type: "object",
-  properties: {
-    sourceRoutineSetId: { type: ["string", "null"], description: "Current set ID, or null only for a newly added set." },
-    position: { type: "integer", minimum: 1 },
-    setType: { type: "string", enum: ["warmup", "regular", "failure", "drop", "emom", "test"] },
-    targetType: { type: "string", enum: ["reps", "duration", "rounds"] },
-    targetMin: { type: ["number", "null"] },
-    targetMax: { type: ["number", "null"] },
-    targetDisplay: { type: "string" },
-    targetRirMin: { type: ["number", "null"] },
-    targetRirMax: { type: ["number", "null"] },
-    restAfterSec: { type: "integer", minimum: 0 },
-    restRule: { type: "string", enum: ["standard", "after_both_sides", "no_rest_before_drop", "emom", "after_superset"] },
-    loadInstruction: { type: "string" },
-    sideMode: { type: "string", enum: ["bilateral", "per_side", "per_leg", "left_right"] },
-    tempo: { type: ["string", "null"] },
-    notes: { type: "string" },
-  },
-  required: [
-    "sourceRoutineSetId", "position", "setType", "targetType", "targetMin", "targetMax", "targetDisplay",
-    "targetRirMin", "targetRirMax", "restAfterSec", "restRule", "loadInstruction",
-    "sideMode", "tempo", "notes",
-  ],
-  additionalProperties: false,
-} as const;
-
-const newRoutineSetSchema = {
-  ...routineSetSchema,
-  properties: {
-    ...routineSetSchema.properties,
-    sourceRoutineSetId: { type: "null", description: "Always null because this set does not exist yet." },
-  },
-} as const;
-
-const routineExerciseSchema = {
-  type: "object",
-  properties: {
-    sourceRoutineExerciseId: { type: ["string", "null"], description: "Current routine placement ID, or null only for a newly added exercise." },
-    exerciseId: { type: "string" },
-    position: { type: "integer", minimum: 1 },
-    supersetGroup: { type: ["string", "null"] },
-    instructions: { type: "string" },
-    notes: { type: "string" },
-    sets: { type: "array", minItems: 1, items: routineSetSchema },
-  },
-  required: ["sourceRoutineExerciseId", "exerciseId", "position", "supersetGroup", "instructions", "notes", "sets"],
-  additionalProperties: false,
-} as const;
-
-const newRoutineExerciseSchema = {
-  ...routineExerciseSchema,
-  properties: {
-    ...routineExerciseSchema.properties,
-    sourceRoutineExerciseId: { type: "null", description: "Always null because this routine placement does not exist yet." },
-    sets: { type: "array", minItems: 1, items: newRoutineSetSchema },
-  },
-} as const;
-
-const routineProposalSchema = {
-  type: "object",
-  properties: {
-    focus: { type: "string" },
-    summary: { type: "string" },
-    durationMin: { type: "integer", minimum: 5, maximum: 300 },
-    exercises: { type: "array", minItems: 1, items: routineExerciseSchema },
-  },
-  required: ["focus", "summary", "durationMin", "exercises"],
-  additionalProperties: false,
-} as const;
-
-const newRoutineProposalSchema = {
-  ...routineProposalSchema,
-  properties: {
-    ...routineProposalSchema.properties,
-    exercises: { type: "array", minItems: 1, items: newRoutineExerciseSchema },
-  },
-} as const;
-
-const proposedExerciseSchema = {
-  type: ["object", "null"],
-  properties: {
-    name: { type: "string" },
-    equipment: { type: "string" },
-    movementPattern: { type: "string" },
-    trackingType: { type: "string", enum: ["reps", "duration", "rounds"] },
-    defaultLoadType: { type: "string", enum: ["external", "bodyweight", "added", "assistance"] },
-    sideMode: { type: "string", enum: ["bilateral", "per_side", "per_leg", "left_right"] },
-    instructions: { type: "string" },
-    muscles: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          muscleGroup: { type: "string", enum: [...muscleGroups] },
-          role: { type: "string", enum: ["primary", "secondary"] },
-          weight: { type: "number", exclusiveMinimum: 0, maximum: 1 },
-        },
-        required: ["muscleGroup", "role", "weight"],
-        additionalProperties: false,
-      },
-    },
-  },
-  required: [
-    "name", "equipment", "movementPattern", "trackingType", "defaultLoadType",
-    "sideMode", "instructions", "muscles",
-  ],
-  additionalProperties: false,
-} as const;
-
-const coachTools = [
-  functionTool("get_coaching_context", "Get routines, recent workout history, active workout, and readiness check-ins.", emptySchema()),
-  functionTool("get_routine", "Get one routine and its complete current structured prescription.", objectSchema({ routineId: { type: "string", description: "Routine code or ID." } }, ["routineId"])),
-  functionTool("list_routine_versions", "List saved versions for one routine.", objectSchema({ routineId: { type: "string", description: "Routine code or ID." } }, ["routineId"])),
-  functionTool("search_exercises", "Search active exercises supported by the user's selected equipment for substitutions or additions. Use muscleGroup and movementPattern when the user's wording is anatomical or may not appear in an exercise name.", objectSchema({
-    query: { type: ["string", "null"] },
-    muscleGroup: { type: ["string", "null"], enum: [...muscleGroups, null] },
-    movementPattern: { type: ["string", "null"] },
-    includeArchived: { type: "boolean" },
-  }, ["query", "muscleGroup", "movementPattern", "includeArchived"])),
-  functionTool("get_exercise", "Get one exact exercise-library record, including its current fields, muscles, active state, and updated timestamp.", objectSchema({
-    exerciseId: { type: "string" },
-  }, ["exerciseId"])),
-  functionTool("get_workout_history", "Get recent workout history and aggregate performance totals.", objectSchema({
-    limit: { type: "integer", minimum: 1, maximum: 30 },
-    routineCode: { type: ["string", "null"] },
-  }, ["limit", "routineCode"])),
-  functionTool("get_active_workout", "Get the workout currently in progress, if any.", emptySchema()),
-  functionTool("propose_new_routine", "Stage a pending review card for a brand-new routine the user clearly requested. Inspect current routines and the equipment-filtered exercise library first, use only returned exercise IDs, and target the user's session duration. Prior chat approval is not required. This stores only the proposal and cannot create or publish the routine. The user must choose Create routine in the UI.", objectSchema({
-    routineCode: { type: "string", minLength: 1, maxLength: 20, description: "A short unique label for the new routine." },
-    proposedRoutine: newRoutineProposalSchema,
-    summary: { type: "string" },
-    rationale: { type: "string" },
-  }, ["routineCode", "proposedRoutine", "summary", "rationale"])),
-  functionTool("propose_routine_change", "Stage a pending review card for a routine change the user clearly requested. Call after reading the current routine; prior chat approval is not required. This stores only the proposal and cannot create or publish a routine version or change the current routine. The user must choose Apply & publish or Save as draft in the UI.", objectSchema({
-    routineId: { type: "string" },
-    baseVersionId: { type: "string" },
-    proposedRoutine: routineProposalSchema,
-    summary: { type: "string" },
-    rationale: { type: "string" },
-  }, ["routineId", "baseVersionId", "proposedRoutine", "summary", "rationale"])),
-  functionTool("propose_exercise_change", "Stage a pending review card for an exercise-library change the user clearly requested. Inspect the exact target or search the proposed name first, and keep created or changed equipment within the user's selected equipment. Prior chat approval is not required. This stores only the proposal and cannot create, update, or archive an exercise. The user must choose the action in the UI.", objectSchema({
-    action: { type: "string", enum: ["create", "update", "archive"] },
-    exerciseId: { type: ["string", "null"], description: "Null only when creating an exercise." },
-    baseUpdatedAt: { type: ["string", "null"], description: "The exact current updatedAt value, or null when creating." },
-    proposedExercise: proposedExerciseSchema,
-    summary: { type: "string" },
-    rationale: { type: "string" },
-  }, ["action", "exerciseId", "baseUpdatedAt", "proposedExercise", "summary", "rationale"])),
-];
-
-function functionTool(name: string, description: string, parameters: unknown) {
-  return { type: "function", name, description, parameters, strict: true };
-}
-
-function emptySchema() {
-  return { type: "object", properties: {}, required: [], additionalProperties: false };
-}
-
-function objectSchema(properties: Record<string, unknown>, required: string[]) {
-  return { type: "object", properties, required, additionalProperties: false };
 }
 
 async function listModelCatalog(env: WorkerEnv, refresh = false) {
@@ -3078,14 +2799,14 @@ async function listCheckIns(env: WorkerEnv, ownerEmail: string) {
 async function listChangePlans(env: WorkerEnv, ownerEmail: string, threadId: string) {
   await recoverInterruptedRoutineCreations(env, ownerEmail, threadId);
   const [routineRows, exerciseRows] = await Promise.all([
-    env.DB.prepare(`SELECT id, thread_id AS threadId,
+    env.DB.prepare(`SELECT id, thread_id AS threadId, ${planProvenanceColumns},
       routine_id AS routineId, routine_code AS routineCode,
       base_version_id AS baseVersionId, proposed_input_json AS proposedInputJson,
       summary, rationale, diff_json AS diffJson, status,
       applied_version_id AS appliedVersionId, created_at AS createdAt, updated_at AS updatedAt
       FROM assistant_change_plans WHERE owner_email = ? AND thread_id = ?
       ORDER BY created_at DESC LIMIT 20`).bind(ownerEmail, threadId).all<ChangePlanRow>(),
-    env.DB.prepare(`SELECT id, thread_id AS threadId, action,
+    env.DB.prepare(`SELECT id, thread_id AS threadId, ${planProvenanceColumns}, action,
       exercise_id AS exerciseId, exercise_name AS exerciseName,
       base_updated_at AS baseUpdatedAt, base_input_json AS baseInputJson,
       proposed_input_json AS proposedInputJson, summary, rationale,
@@ -3101,7 +2822,7 @@ async function listChangePlans(env: WorkerEnv, ownerEmail: string, threadId: str
 }
 
 async function recoverInterruptedRoutineCreations(env: WorkerEnv, ownerEmail: string, threadId: string) {
-  const rows = await env.DB.prepare(`SELECT id, thread_id AS threadId,
+  const rows = await env.DB.prepare(`SELECT id, thread_id AS threadId, ${planProvenanceColumns},
     routine_id AS routineId, routine_code AS routineCode,
     base_version_id AS baseVersionId, proposed_input_json AS proposedInputJson,
     summary, rationale, diff_json AS diffJson, status,
@@ -3114,7 +2835,7 @@ async function recoverInterruptedRoutineCreations(env: WorkerEnv, ownerEmail: st
 }
 
 async function getRoutineChangePlan(env: WorkerEnv, ownerEmail: string, planId: string) {
-  return env.DB.prepare(`SELECT id, thread_id AS threadId,
+  return env.DB.prepare(`SELECT id, thread_id AS threadId, ${planProvenanceColumns},
     routine_id AS routineId, routine_code AS routineCode,
     base_version_id AS baseVersionId, proposed_input_json AS proposedInputJson,
     summary, rationale, diff_json AS diffJson, status,
@@ -3123,7 +2844,7 @@ async function getRoutineChangePlan(env: WorkerEnv, ownerEmail: string, planId: 
 }
 
 async function getExerciseChangePlan(env: WorkerEnv, ownerEmail: string, planId: string) {
-  return env.DB.prepare(`SELECT id, thread_id AS threadId, action,
+  return env.DB.prepare(`SELECT id, thread_id AS threadId, ${planProvenanceColumns}, action,
     exercise_id AS exerciseId, exercise_name AS exerciseName,
     base_updated_at AS baseUpdatedAt, base_input_json AS baseInputJson,
     proposed_input_json AS proposedInputJson, summary, rationale,
@@ -3132,6 +2853,9 @@ async function getExerciseChangePlan(env: WorkerEnv, ownerEmail: string, planId:
     FROM assistant_exercise_change_plans WHERE id = ? AND owner_email = ?`)
     .bind(planId, ownerEmail).first<ExerciseChangePlanRow>();
 }
+
+const planProvenanceColumns = `origin_run_id AS originRunId, origin_user_message_id AS originUserMessageId,
+  applied_as AS appliedAs, supersedes_plan_id AS supersedesPlanId`;
 
 function serializeRoutinePlan(plan: ChangePlanRow) {
   const action = plan.baseVersionId === null ? "create" as const : "update" as const;
@@ -3149,6 +2873,10 @@ function serializeRoutinePlan(plan: ChangePlanRow) {
     diff: JSON.parse(plan.diffJson) as string[],
     status: plan.status,
     appliedVersionId: plan.appliedVersionId,
+    originRunId: plan.originRunId,
+    originUserMessageId: plan.originUserMessageId,
+    appliedAs: plan.appliedAs,
+    supersedesPlanId: plan.supersedesPlanId,
     createdAt: plan.createdAt,
     updatedAt: plan.updatedAt,
   };
@@ -3171,6 +2899,10 @@ function serializeExercisePlan(plan: ExerciseChangePlanRow) {
     diff: JSON.parse(plan.diffJson) as string[],
     status: plan.status,
     appliedExerciseId: plan.appliedExerciseId,
+    originRunId: plan.originRunId,
+    originUserMessageId: plan.originUserMessageId,
+    appliedAs: plan.appliedAs,
+    supersedesPlanId: plan.supersedesPlanId,
     createdAt: plan.createdAt,
     updatedAt: plan.updatedAt,
   };
@@ -3206,7 +2938,10 @@ async function recordToolCall(
   status: string,
   id: string = crypto.randomUUID(),
 ) {
-  const compact = (value: unknown) => JSON.stringify(value).slice(0, 30_000);
+  const compact = (value: unknown) => {
+    const json = JSON.stringify(value);
+    return json.length <= 30_000 ? json : JSON.stringify({ omitted: true, originalCharacters: json.length });
+  };
   await env.DB.prepare(`INSERT OR IGNORE INTO assistant_tool_calls (
     id, owner_email, thread_id, tool_name, arguments_json, output_json, status, created_at
   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(

@@ -2,7 +2,7 @@ import type {
   CoachMessageRunActivity,
   CoachMessageRunPhase,
 } from "../../contracts/api";
-import type { CoachResponse, CoachResponseItem } from "./tool-loop";
+import type { CoachResponse, CoachResponseItem } from "./response-types";
 
 export const COACH_MESSAGE_RUN_POLL_AFTER_MS = 1_500;
 export const COACH_MESSAGE_RUN_LIFETIME_MS = 10 * 60_000;
@@ -56,7 +56,42 @@ const activityCopy: Readonly<Record<string, ActivityCopy>> = {
   get_routine: {
     success: "Checked the current routine",
     failure: "Couldn’t check the current routine",
-    purpose: "Preserves the parts you didn’t ask to change.",
+    purpose: "Preserves the parts you didn't ask to change.",
+  },
+  get_routines: {
+    success: "Compared the selected routines",
+    failure: "Couldn't compare the selected routines",
+    purpose: "Checks the whole program before preparing related changes.",
+  },
+  get_exercise_progress: {
+    success: "Reviewed exercise progress",
+    failure: "Couldn't review exercise progress",
+    purpose: "Uses recorded sets to ground progression advice.",
+  },
+  get_workout_details: {
+    success: "Checked the recorded workout sets",
+    failure: "Couldn't check the workout details",
+    purpose: null,
+  },
+  get_plan: {
+    success: "Reviewed the saved proposal",
+    failure: "Couldn't review the saved proposal",
+    purpose: "Keeps revisions tied to the proposal you selected.",
+  },
+  search_thread_history: {
+    success: "Checked earlier conversation details",
+    failure: "Couldn't check earlier conversation details",
+    purpose: "Verifies details from this conversation when the summary is incomplete.",
+  },
+  propose_routine_edit: {
+    success: "Prepared the requested routine edit",
+    failure: "Couldn't prepare the routine edit",
+    purpose: "Preserves the rest of your prescription for review.",
+  },
+  propose_routine_changes: {
+    success: "Prepared routine proposals for review",
+    failure: "Couldn't prepare the routine proposals",
+    purpose: "Gives each routine its own review and approval action.",
   },
   list_routine_versions: {
     success: "Reviewed saved routine versions",
@@ -212,18 +247,26 @@ export function isCoachProposalTool(name: string) {
     "propose_new_routine",
     "propose_routine_change",
     "propose_exercise_change",
+    "propose_routine_edit",
+    "propose_routine_changes",
   ].includes(name);
 }
 
-export function coachProposalCompletionText(name: string) {
+export function coachProposalCompletionText(name: string, output?: unknown) {
   if (name === "propose_new_routine") {
     return "I prepared a new routine for review. Nothing has changed yet.";
   }
-  if (name === "propose_routine_change") {
+  if (name === "propose_routine_change" || name === "propose_routine_edit") {
     return "I prepared a routine change for review. Nothing has changed yet.";
   }
   if (name === "propose_exercise_change") {
     return "I prepared an exercise-library change for review. Nothing has changed yet.";
+  }
+  if (name === "propose_routine_changes") {
+    const plans = output && typeof output === "object" ? (output as { plans?: unknown }).plans : null;
+    return Array.isArray(plans)
+      ? `I prepared ${plans.length} routine proposals for review. Nothing has changed yet.`
+      : "I prepared your routine proposals for review. Nothing has changed yet.";
   }
   return null;
 }

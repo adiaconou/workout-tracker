@@ -85,7 +85,7 @@ import {
   type WorkoutSetNavigation,
 } from "./active-workout-model";
 
-export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
+export function ActiveWorkoutScreen({ sessionId, onCoachTargetChange }: { sessionId: string; onCoachTargetChange?: import("../coach/public").CoachTargetChange }) {
   const { user } = useAuth();
   const [workout, setWorkout] = useState<WorkoutView | null>(null);
   const [setNavigation, setSetNavigation] = useState<WorkoutSetNavigation>(() =>
@@ -216,6 +216,11 @@ export function ActiveWorkoutScreen({ sessionId }: { sessionId: string }) {
 
   const currentSet = workout?.sets[currentIndex];
   const viewedSet = workout?.sets[viewedIndex];
+  useEffect(() => {
+    onCoachTargetChange?.(!loading && workout ? { target: { kind: "workout", workoutId: workout.id,
+      ...(viewedSet ? { viewedSetId: viewedSet.id } : {}) },
+      label: viewedSet ? `${viewedSet.exerciseName} · set ${viewedSet.exerciseSetNumber}` : `Workout ${workout.routineCode}` } : null);
+  }, [loading, onCoachTargetChange, viewedSet?.id, viewedSet?.exerciseName, viewedSet?.exerciseSetNumber, workout?.id, workout?.routineCode]);
   const viewedPosition = viewedSetPosition(setNavigation);
   const isViewingPast = viewedPosition === "past";
   const isViewingCurrent = viewedPosition === "current";

@@ -13,6 +13,9 @@ import {
   View,
 } from "react-native";
 import { ApiError, apiRequest } from "../api/client";
+import type { CoachMessageInput } from "../../contracts/api";
+import { createCoachConversationState, emptyCoachDraft, draftWithCoachTarget, draftWithCoachRevision,
+  draftAfterCoachSend, requestForCoachView, type CoachDraft, type CoachTargetSelection } from "./coach-conversation-state";
 import { LoadingView, Message, Screen } from "../ui/ui";
 import { colors, radii, spacing } from "../ui/tokens";
 import { CoachMarkdown } from "./coach-markdown";
@@ -28,10 +31,10 @@ import {
   bootstrapWithProfile,
   bootstrapWithRunResponse,
   bootstrapWithSendResponse,
-  bootstrapWithoutPlan,
   bootstrapWithoutOptimisticMessage,
   coachToolActivityRows,
-  coachMessageAttemptKey,
+  coachPlanReceipt,
+  coachPlanMessageGroups,
   coachRunCanRetry,
   coachRunIsActive,
   coachRunPresentation,
@@ -40,7 +43,6 @@ import {
   optimisticUserMessage,
   planApplyBusyLabel,
   planApplyFailure,
-  planApplySuccess,
   planReviewPresentation,
   readablePlanDiff,
   reconcileFailedSend,
@@ -53,7 +55,6 @@ import {
   type AssistantThread,
   type ChangePlan,
   type CoachBootstrap,
-  type CoachMessageAttempt,
   type CoachMessageRun,
   type CoachProfile,
   type CoachRunConnection,
@@ -81,7 +82,9 @@ export function CoachScreen({
   starter,
   onStarterConsumed,
   onStatusChange,
+  targetRequest,
 }: {
+  targetRequest?: { id: number; selection: CoachTargetSelection | null };
   embedded?: boolean;
   visible?: boolean;
   starter?: string;
@@ -91,8 +94,10 @@ export function CoachScreen({
   const messageListRef = useRef<ScrollView | null>(null);
   const starterAppliedRef = useRef(false);
   const activeThreadIdRef = useRef<string | null>(null);
-  const messageAttemptRef = useRef<CoachMessageAttempt | null>(null);
-  const runRetryAttemptRef = useRef<{ runId: string; key: string } | null>(null);
+  const [conversationState] = useState(createCoachConversationState);
+  const loadRequestRef = useRef<AbortController | null>(null);
+  const targetRequestRef = useRef<number | null>(null);
+  const composerRef = useRef<TextInput | null>(null);
   const runControllerRef = useRef<CoachRunController | null>(null);
   const [data, setData] = useState<CoachBootstrap | null>(null);
   const [selection, setSelection] = useState<ModelSelection | null>(null);
@@ -112,28 +117,44 @@ export function CoachScreen({
     threadId: string;
     message: string;
   } | null>(null);
-  const [composer, setComposer] = useState("");
+  const [draft, setDraft] = useState(emptyCoachDraft);
+  const composer = draft.content;
+  const updateDraft = useCallback((next: CoachDraft) => {
+    const threadId = conversationState.currentThreadId();
+    if (threadId) conversationState.saveDraft(threadId, next);
+    setDraft(next);
+  }, [conversationState]);
+  const setComposer = (content: string) => updateDraft({ ...draft, content });
   const [error, setError] = useState("");
   const [showModels, setShowModels] = useState(false);
   const [showThreads, setShowThreads] = useState(false);
 
   const load = useCallback(async (threadId?: string) => {
-    setLoading(true);
-    setError("");
-    try {
-      const payload = await apiRequest<CoachBootstrap>(
-        `/api/v1/assistant${threadId ? `?threadId=${encodeURIComponent(threadId)}` : ""}`,
-      );
-      setData((current) => bootstrapWithPreservedActivities(current, payload));
-      setPlanFeedback((current) => current?.threadId === payload.thread.id ? current : null);
-      setSendNotice((current) => current?.threadId === payload.thread.id ? current : null);
-      setSelection(selectionFromProfile(payload.profile));
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The coach could not be loaded.");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+    const revision = conversationState.beginView(threadId ?? null);
+    activeThreadIdRef.current = threadId ?? null;
+    loadRequestRef.current?.abort();
+    const controller = new AbortController();
+    loadRequestRef.current = controller;
+    runControllerRef.current?.stop();
+    setData(null); setLoading(true); setSending(false); setRetryingRun(false);
+    setPlanBusy(null); setSavingModel(false); setRefreshingModels(false);
+    setRunTransportError(""); setError("");
+    setDraft(threadId ? conversationState.getDraft(threadId) : emptyCoachDraft());
+    await requestForCoachView(conversationState, revision,
+      () => apiRequest<CoachBootstrap>("/api/v1/assistant" + (threadId ? "?threadId=" + encodeURIComponent(threadId) : ""), { signal: controller.signal }), {
+      onSuccess: (payload) => {
+        if (!conversationState.acceptView(revision, payload.thread.id)) { setError("The selected conversation could not be loaded."); return; }
+        activeThreadIdRef.current = payload.thread.id;
+        setData(payload);
+        setPlanFeedback((current) => current?.threadId === payload.thread.id ? current : null);
+        setSendNotice((current) => current?.threadId === payload.thread.id ? current : null);
+        setSelection(selectionFromProfile(payload.profile));
+        setDraft(conversationState.getDraft(payload.thread.id));
+      },
+      onError: (caught) => setError(caught instanceof Error ? caught.message : "The coach could not be loaded."),
+      onSettled: () => { loadRequestRef.current = null; setLoading(false); },
+    });
+  }, [conversationState]);
 
   useEffect(() => {
     const controller = createCoachRunController({
@@ -145,6 +166,7 @@ export function CoachScreen({
         ? caught.message
         : "Coach progress could not be checked.",
       onResponse: (payload) => {
+        if (payload.run.threadId !== conversationState.currentThreadId()) return;
         setData((current) => bootstrapWithRunResponse(current, payload.run.threadId, payload));
         setRunTransportError("");
       },
@@ -156,12 +178,19 @@ export function CoachScreen({
       controller.stop();
       runControllerRef.current = null;
     };
-  }, []);
+  }, [conversationState]);
 
   useEffect(() => {
     runControllerRef.current?.resume();
     void load();
   }, [load]);
+  useEffect(() => () => { conversationState.beginView(null); loadRequestRef.current?.abort(); }, [conversationState]);
+  useEffect(() => {
+    if (!targetRequest || loading || !data || targetRequestRef.current === targetRequest.id) return;
+    targetRequestRef.current = targetRequest.id;
+    const current = conversationState.getDraft(data.thread.id);
+    if (!current.content && !current.context.revisePlanId) updateDraft(draftWithCoachTarget(current, targetRequest.selection));
+  }, [conversationState, data, loading, targetRequest, updateDraft]);
 
   useEffect(() => {
     if (Platform.OS === "web") {
@@ -189,13 +218,13 @@ export function CoachScreen({
     : null;
 
   useEffect(() => {
-    if (!activeRunId || !data?.latestRun) {
+    if (loading || conversationState.currentThreadId() !== data?.thread.id || !activeRunId || !data?.latestRun) {
       runControllerRef.current?.stop();
       return;
     }
     setRunTransportError("");
     runControllerRef.current?.monitor(data.latestRun);
-  }, [activeRunId, data?.thread.id]);
+  }, [activeRunId, conversationState, data?.thread.id, loading]);
 
   useEffect(() => {
     if (visible) return;
@@ -228,7 +257,6 @@ export function CoachScreen({
   );
   const reasoningEfforts = selectedModel?.reasoningEfforts ?? ["auto"];
   const reviewPlans = reviewablePlans(data?.plans);
-  activeThreadIdRef.current = data?.thread.id ?? null;
 
   useEffect(() => {
     if (error || runTransportError) {
@@ -252,25 +280,15 @@ export function CoachScreen({
   ]);
 
   async function persistModelSettings(next: ModelSelection) {
-    if (!data || !selection) return;
-    const previous = selection;
-    setSelection(next);
-    setSavingModel(true);
-    setError("");
-    try {
-      const payload = await apiRequest<{ profile: CoachProfile }>("/api/v1/assistant/profile", {
-        method: "PATCH",
-        body: JSON.stringify(next),
-      });
-      setData((current) => bootstrapWithProfile(current, payload.profile));
-      setSelection(selectionFromProfile(payload.profile));
-    } catch (caught) {
-      const failure = modelSaveFailure(previous, caught);
-      setSelection(failure.selection);
-      setError(failure.error);
-    } finally {
-      setSavingModel(false);
-    }
+    if (!data || !selection || loading) return;
+    const revision = conversationState.capture(), previous = selection;
+    setSelection(next); setSavingModel(true); setError("");
+    await requestForCoachView(conversationState, revision,
+      () => apiRequest<{ profile: CoachProfile }>("/api/v1/assistant/profile", { method: "PATCH", body: JSON.stringify(next) }), {
+      onSuccess: (payload) => { setData((current) => bootstrapWithProfile(current, payload.profile)); setSelection(selectionFromProfile(payload.profile)); },
+      onError: (caught) => { const failure = modelSaveFailure(previous, caught); setSelection(failure.selection); setError(failure.error); },
+      onSettled: () => setSavingModel(false),
+    });
   }
 
   function chooseModel(model: ModelOption) {
@@ -285,230 +303,148 @@ export function CoachScreen({
   }
 
   async function refreshModels() {
-    if (!data || !selection) return;
-    setRefreshingModels(true);
-    setError("");
-    try {
-      const payload = await apiRequest<{
-        models: ModelOption[];
-        configured: boolean;
-        source: "live" | "fallback";
-        defaultModel: string;
-      }>("/api/v1/assistant/models");
-      const nextSelection = refreshedModelSelection(
-        payload.models,
-        payload.defaultModel,
-        selection,
-      );
-      setData({
-        ...data,
-        models: payload.models,
-        modelConfiguration: {
-          configured: payload.configured,
-          source: payload.source,
-          defaultModel: payload.defaultModel,
-        },
-      });
-      setSelection(nextSelection);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The model list could not be refreshed.");
-    } finally {
-      setRefreshingModels(false);
-    }
+    if (!data || !selection || loading) return;
+    const revision = conversationState.capture();
+    setRefreshingModels(true); setError("");
+    await requestForCoachView(conversationState, revision,
+      () => apiRequest<{ models: ModelOption[]; configured: boolean; source: "live" | "fallback"; defaultModel: string }>("/api/v1/assistant/models"), {
+      onSuccess: (payload) => {
+        const nextSelection = refreshedModelSelection(payload.models, payload.defaultModel, selection);
+        setData((current) => current ? { ...current, models: payload.models, modelConfiguration: { configured: payload.configured, source: payload.source, defaultModel: payload.defaultModel } } : current);
+        setSelection(nextSelection);
+      },
+      onError: (caught) => setError(caught instanceof Error ? caught.message : "The model list could not be refreshed."),
+      onSettled: () => setRefreshingModels(false),
+    });
   }
 
   async function send(text = composer) {
     const content = text.trim();
-    if (
-      !content
-      || !data
-      || !selection
-      || sending
-      || activeRunId
-      || !data.modelConfiguration.configured
-    ) return;
+    if (!content || !data || !selection || loading || sending || retryingRun || activeRunId || !data.modelConfiguration.configured) return;
     const activeThreadId = data.thread.id;
-    const requestBody = JSON.stringify({
-      threadId: activeThreadId,
-      content,
-      model: selection.model,
-      reasoningEffort: selection.reasoningEffort,
-    });
-    const requestFingerprint = `${activeThreadId}:${requestBody}`;
-    const idempotencyKey = coachMessageAttemptKey(
-      messageAttemptRef.current,
-      requestFingerprint,
-      false,
-      createCoachMessageIdempotencyKey,
-    );
-    messageAttemptRef.current = { key: idempotencyKey, requestFingerprint };
-    const optimisticMessage = optimisticUserMessage({
-      id: `local-${Date.now()}`,
-      threadId: activeThreadId,
-      content,
-      createdAt: new Date().toISOString(),
-    });
-    setSending(true);
-    setError("");
-    setPlanFeedback(null);
-    setSendNotice(null);
-    setComposer("");
+    if (conversationState.currentThreadId() !== activeThreadId) return;
+    const revision = conversationState.capture(), sentDraft = { ...conversationState.getDraft(activeThreadId), content };
+    const requestInput: CoachMessageInput = { threadId: activeThreadId, content, model: selection.model,
+      reasoningEffort: selection.reasoningEffort, context: sentDraft.context, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+    const requestBody = JSON.stringify(requestInput);
+    const idempotencyKey = conversationState.messageKey(activeThreadId, requestBody, createCoachMessageIdempotencyKey);
+    const optimisticMessage = optimisticUserMessage({ id: "local-" + Date.now(), threadId: activeThreadId, content, createdAt: new Date().toISOString() });
+    const nextDraft = draftAfterCoachSend(sentDraft);
+    setSending(true); setError(""); setPlanFeedback(null); setSendNotice(null);
+    updateDraft(nextDraft);
     setData((current) => bootstrapWithOptimisticMessage(current, optimisticMessage));
-    try {
-      const payload = await apiRequest<SendMessageResponse>("/api/v1/assistant/messages", {
-        method: "POST",
-        headers: { "x-idempotency-key": idempotencyKey },
-        body: requestBody,
-      });
-      messageAttemptRef.current = null;
-      setData((current) => bootstrapWithSendResponse(
-        current,
-        activeThreadId,
-        optimisticMessage.id,
-        payload,
-        selection,
-      ));
-      setRunConnection("connected");
-      setRunTransportError("");
-      runControllerRef.current?.monitor(payload.run);
-    } catch (caught) {
-      const failure = sendFailureState(content, caught);
-      let reconciliation: ReturnType<typeof reconcileFailedSend> = "none";
+    await requestForCoachView(conversationState, revision, async () => {
       try {
-        const refreshed = await apiRequest<CoachBootstrap>(
-          `/api/v1/assistant?threadId=${encodeURIComponent(activeThreadId)}`,
-        );
-        reconciliation = reconcileFailedSend(data, refreshed, content);
-        if (reconciliation !== "none") {
-          setData((current) => current?.thread.id === activeThreadId
-            ? bootstrapWithPreservedActivities(current, refreshed)
-            : current);
-          if (reconciliation === "running" && refreshed.latestRun) {
-            setRunConnection("connected");
-            setRunTransportError("");
-            runControllerRef.current?.monitor(refreshed.latestRun);
-          }
-        }
-      } catch {
-        // Fall back to the original send error when reconciliation is unavailable.
-      }
-
-      if (activeThreadIdRef.current === activeThreadId && reconciliation !== "none") {
-        setComposer("");
-        setError("");
-        setSendNotice({
-          threadId: activeThreadId,
-          message: reconciliation === "running"
-            ? "Your request was saved. Coach will resume from the last saved step if you leave."
-            : reconciliation === "completed"
-            ? "The connection dropped, but your request and Coach's reply were saved."
-            : "Your request was saved and the proposed update is ready to review.",
+        const payload = await apiRequest<SendMessageResponse>("/api/v1/assistant/messages", {
+          method: "POST", headers: { "x-idempotency-key": idempotencyKey }, body: requestBody,
         });
-      } else if (activeThreadIdRef.current === activeThreadId) {
-        setData((current) => bootstrapWithoutOptimisticMessage(current, optimisticMessage.id));
-        setComposer(failure.composer);
-        setError(failure.error);
+        conversationState.finishMessage(activeThreadId, idempotencyKey); return payload;
+      } catch (caught) {
+        if (!conversationState.isCurrent(revision) && conversationState.getDraft(activeThreadId) === nextDraft) conversationState.saveDraft(activeThreadId, sentDraft);
+        throw caught;
       }
-    } finally {
-      setSending(false);
-    }
+    }, {
+      onSuccess: (payload) => {
+        if (payload.run.threadId !== activeThreadId) return;
+        setData((current) => bootstrapWithSendResponse(current, activeThreadId, optimisticMessage.id, payload, selection));
+        setRunConnection("connected"); setRunTransportError(""); runControllerRef.current?.monitor(payload.run);
+      },
+      onError: async (caught) => {
+        const failure = sendFailureState(content, caught);
+        let reconciliation: ReturnType<typeof reconcileFailedSend> = "none";
+        try {
+          const refreshed = await apiRequest<CoachBootstrap>("/api/v1/assistant?threadId=" + encodeURIComponent(activeThreadId));
+          reconciliation = reconcileFailedSend(data, refreshed, content);
+          if (!conversationState.isCurrent(revision)) {
+            if (reconciliation !== "none") conversationState.finishMessage(activeThreadId, idempotencyKey);
+            else if (conversationState.getDraft(activeThreadId) === nextDraft) conversationState.saveDraft(activeThreadId, sentDraft);
+            return;
+          }
+          if (reconciliation !== "none") {
+            conversationState.finishMessage(activeThreadId, idempotencyKey);
+            setData((current) => current?.thread.id === activeThreadId ? bootstrapWithPreservedActivities(current, refreshed) : current);
+            if (reconciliation === "running" && refreshed.latestRun) { setRunConnection("connected"); setRunTransportError(""); runControllerRef.current?.monitor(refreshed.latestRun); }
+          }
+        } catch { /* Preserve the original failure when reconciliation is unavailable. */ }
+        if (!conversationState.isCurrent(revision)) {
+          if (conversationState.getDraft(activeThreadId) === nextDraft) conversationState.saveDraft(activeThreadId, sentDraft);
+          return;
+        }
+        if (reconciliation !== "none") {
+          setError(""); setSendNotice({ threadId: activeThreadId, message: reconciliation === "running"
+            ? "Your request was saved. Coach will resume from the last saved step if you leave."
+            : reconciliation === "completed" ? "The connection dropped, but your request and Coach's reply were saved."
+            : "Your request was saved and the proposed update is ready to review." });
+        } else {
+          setData((current) => bootstrapWithoutOptimisticMessage(current, optimisticMessage.id));
+          if (conversationState.getDraft(activeThreadId) === nextDraft) updateDraft(sentDraft);
+          setError(failure.error);
+        }
+      },
+      onSettled: () => setSending(false),
+    });
   }
 
   async function createThread() {
-    if (sending) return;
-    setError("");
-    try {
-      const payload = await apiRequest<{ thread: AssistantThread }>("/api/v1/assistant/threads", {
-        method: "POST",
-        body: JSON.stringify({}),
-      });
-      setShowThreads(false);
-      await load(payload.thread.id);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "A new conversation could not be created.");
-    }
+    const revision = conversationState.beginView(null);
+    activeThreadIdRef.current = null; loadRequestRef.current?.abort(); runControllerRef.current?.stop();
+    setData(null); setLoading(true); setSending(false); setRetryingRun(false); setPlanBusy(null); setError("");
+    await requestForCoachView(conversationState, revision,
+      () => apiRequest<{ thread: AssistantThread }>("/api/v1/assistant/threads", { method: "POST", body: JSON.stringify({}) }), {
+      onSuccess: async (payload) => { setShowThreads(false); await load(payload.thread.id); },
+      onError: (caught) => setError(caught instanceof Error ? caught.message : "A new conversation could not be created."),
+      onSettled: () => setLoading(false),
+    });
   }
 
   async function retryCoachRun(run: CoachMessageRun) {
-    if (!data || retryingRun || !coachRunCanRetry(run)) return;
-    const activeThreadId = data.thread.id;
-    const existingAttempt = runRetryAttemptRef.current;
-    const idempotencyKey = existingAttempt?.runId === run.id
-      ? existingAttempt.key
-      : createCoachRunRetryIdempotencyKey();
-    runRetryAttemptRef.current = { runId: run.id, key: idempotencyKey };
-    setRetryingRun(true);
-    setError("");
-    setRunTransportError("");
-    setSendNotice(null);
-    try {
-      const payload = await apiRequest<CoachRunResponse>(
-        `/api/v1/assistant/message-runs/${encodeURIComponent(run.id)}/retry`,
-        {
-          method: "POST",
-          headers: { "x-idempotency-key": idempotencyKey },
-        },
-      );
-      runRetryAttemptRef.current = null;
-      setData((current) => bootstrapWithRunResponse(current, activeThreadId, payload));
-      setRunConnection("connected");
-      runControllerRef.current?.monitor(payload.run);
-    } catch (caught) {
-      setRunTransportError(caught instanceof Error
-        ? caught.message
-        : "Coach could not retry this request.");
-    } finally {
-      setRetryingRun(false);
-    }
+    if (!data || loading || retryingRun || !coachRunCanRetry(run)) return;
+    const activeThreadId = data.thread.id, revision = conversationState.capture();
+    const idempotencyKey = conversationState.retryKey(activeThreadId, run.id, createCoachRunRetryIdempotencyKey);
+    setRetryingRun(true); setError(""); setRunTransportError(""); setSendNotice(null);
+    await requestForCoachView(conversationState, revision, async () => {
+      const payload = await apiRequest<CoachRunResponse>("/api/v1/assistant/message-runs/" + encodeURIComponent(run.id) + "/retry", {
+        method: "POST", headers: { "x-idempotency-key": idempotencyKey },
+      });
+      conversationState.finishRetry(activeThreadId, idempotencyKey); return payload;
+    }, {
+      onSuccess: (payload) => {
+        if (payload.run.threadId !== activeThreadId) return;
+        setData((current) => bootstrapWithRunResponse(current, activeThreadId, payload));
+        setRunConnection("connected"); runControllerRef.current?.monitor(payload.run);
+      },
+      onError: (caught) => setRunTransportError(caught instanceof Error ? caught.message : "Coach could not retry this request."),
+      onSettled: () => setRetryingRun(false),
+    });
   }
 
   async function handlePlan(planId: string, action: "apply" | "reject", publish = true) {
-    if (!data) return;
+    if (!data || loading || planBusy) return;
     const plan = data.plans.find((candidate) => candidate.id === planId);
     if (!plan) return;
-    const activeThreadId = data.thread.id;
-    const transition = beginPlanAction(planId, action, publish);
-    setPlanBusy(transition.busyKey);
-    setError("");
-    setPlanFeedback(null);
-    setSendNotice(null);
-    try {
-      const payload = await apiRequest<PlanApplyResponse | { rejected: true; planId: string }>(
-        `/api/v1/assistant/plans/${encodeURIComponent(planId)}/${action}`,
-        {
-          method: "POST",
-          body: JSON.stringify(transition.body),
-        },
-      );
-      if (action === "apply" && "plan" in payload) {
-        setData((current) => bootstrapWithAppliedPlan(current, activeThreadId, payload.plan));
-        setPlanFeedback({
-          threadId: activeThreadId,
-          feedback: planApplySuccess(payload.plan, "published" in payload ? payload.published : publish),
-        });
-      } else {
-        setData((current) => bootstrapWithoutPlan(current, activeThreadId, planId));
-      }
-    } catch (caught) {
-      let feedback = planApplyFailure(plan, caught);
-      try {
-        const refreshed = await apiRequest<CoachBootstrap>(
-          `/api/v1/assistant?threadId=${encodeURIComponent(activeThreadId)}`,
-        );
-        const refreshedPlan = refreshed.plans.find((candidate) => candidate.id === planId);
-        setData((current) => current?.thread.id === activeThreadId
-          ? bootstrapWithPreservedActivities(current, refreshed)
-          : current);
-        if (action === "apply" && refreshedPlan?.status === "applied") {
-          feedback = planApplySuccess(refreshedPlan, publish);
-        }
-      } catch {
-        // Keep the original, plan-specific failure when refresh is also unavailable.
-      }
-      setPlanFeedback({ threadId: activeThreadId, feedback });
-    } finally {
-      setPlanBusy(null);
-    }
+    const activeThreadId = data.thread.id, revision = conversationState.capture(), transition = beginPlanAction(planId, action, publish);
+    setPlanBusy(transition.busyKey); setError(""); setPlanFeedback(null); setSendNotice(null);
+    await requestForCoachView(conversationState, revision,
+      () => apiRequest<PlanApplyResponse | { rejected: true; planId: string }>("/api/v1/assistant/plans/" + encodeURIComponent(planId) + "/" + action, {
+        method: "POST", body: JSON.stringify(transition.body),
+      }), {
+      onSuccess: (payload) => {
+        if (action === "apply" && "plan" in payload) setData((current) => bootstrapWithAppliedPlan(current, activeThreadId, payload.plan));
+        else setData((current) => bootstrapWithAppliedPlan(current, activeThreadId, { ...plan, status: "rejected", updatedAt: new Date().toISOString() }));
+      },
+      onError: async (caught) => {
+        const feedback = planApplyFailure(plan, caught);
+        try {
+          const refreshed = await apiRequest<CoachBootstrap>("/api/v1/assistant?threadId=" + encodeURIComponent(activeThreadId));
+          if (!conversationState.isCurrent(revision)) return;
+          const refreshedPlan = refreshed.plans.find((candidate) => candidate.id === planId);
+          setData((current) => current?.thread.id === activeThreadId ? bootstrapWithPreservedActivities(current, refreshed) : current);
+          if (refreshedPlan?.status === "applied" || refreshedPlan?.status === "rejected") return;
+        } catch { /* Preserve the plan-specific failure when refresh is unavailable. */ }
+        if (conversationState.isCurrent(revision)) setPlanFeedback({ threadId: activeThreadId, feedback });
+      },
+      onSettled: () => setPlanBusy(null),
+    });
   }
 
   if (loading && !data) return <LoadingView label="Opening Coach…" />;
@@ -516,7 +452,7 @@ export function CoachScreen({
     const errorContent = (
       <>
         <Text style={styles.errorText}>{error || "The coach could not be loaded."}</Text>
-        <CompactAction title="Try again" onPress={() => void load()} />
+        <CompactAction title="Try again" onPress={() => void load(conversationState.currentThreadId() ?? undefined)} />
       </>
     );
     if (embedded) {
@@ -527,6 +463,20 @@ export function CoachScreen({
         {errorContent}
       </Screen>
     );
+  }
+
+  const displayedThreadId = data.thread.id;
+  const planGroups = coachPlanMessageGroups(data.messages, data.plans);
+  function renderPlan(plan: ChangePlan) {
+    const receipt = coachPlanReceipt(plan);
+    if (receipt) return <View key={plan.id} style={styles.planReceipt}>
+      <Text style={[styles.planReceiptText, receipt.tone === "error" && styles.errorText]}>{receipt.message}</Text>
+      {plan.updatedAt ? <Text style={styles.planReceiptDate}>{new Date(plan.updatedAt).toLocaleString()}</Text> : null}
+    </View>;
+    return <PlanReviewCard key={plan.id} plan={plan} planBusy={loading ? "loading" : planBusy} onPlan={handlePlan} onRevise={() => {
+      const label = plan.kind === "routine" ? "Routine " + plan.routineCode : plan.exerciseName;
+      updateDraft(draftWithCoachRevision(conversationState.getDraft(displayedThreadId), plan.id, label)); composerRef.current?.focus();
+    }} />;
   }
 
   const activePlanFeedback = planFeedback?.threadId === data.thread.id ? planFeedback.feedback : null;
@@ -541,7 +491,7 @@ export function CoachScreen({
     ? data.latestRun
     : null;
   const hasConversation = data.messages.length > 0
-    || reviewPlans.length > 0
+    || data.plans.length > 0
     || Boolean(visibleRun)
     || Boolean(activePlanFeedback)
     || Boolean(activeSendNotice);
@@ -590,11 +540,11 @@ export function CoachScreen({
                   <Pressable
                     key={prompt}
                     accessibilityRole="button"
-                    disabled={!data.modelConfiguration.configured || sending || Boolean(activeRunId)}
+                    disabled={!data.modelConfiguration.configured || loading || retryingRun || sending || Boolean(activeRunId)}
                     onPress={() => void send(prompt)}
                     style={({ pressed }) => [
                       styles.promptButton,
-                      (!data.modelConfiguration.configured || sending || Boolean(activeRunId)) && styles.disabled,
+                      (!data.modelConfiguration.configured || loading || retryingRun || sending || Boolean(activeRunId)) && styles.disabled,
                       pressed && styles.pressed,
                     ]}
                   >
@@ -607,15 +557,12 @@ export function CoachScreen({
           ) : (
             <View style={styles.chatColumn}>
               {data.messages.map((message) => (
-                message.role === "user" ? (
-                  <View key={message.id} style={styles.userRow}>
-                    <View style={styles.userBubble}>
-                      <Text style={styles.messageText}>{message.content}</Text>
-                    </View>
-                  </View>
-                ) : (
-                  <AssistantMessageView key={message.id} message={message} />
-                )
+                <View key={message.id} style={{ gap: spacing.md }}>
+                  {message.role === "user" ? (
+                    <View style={styles.userRow}><View style={styles.userBubble}><Text style={styles.messageText}>{message.content}</Text></View></View>
+                  ) : <AssistantMessageView message={message} />}
+                  {(planGroups.byMessageId[message.id] ?? []).map(renderPlan)}
+                </View>
               ))}
 
               {visibleRun ? (
@@ -640,14 +587,7 @@ export function CoachScreen({
                 </View>
               ) : null}
 
-              {reviewPlans.map((plan) => (
-                <PlanReviewCard
-                  key={plan.id}
-                  plan={plan}
-                  planBusy={planBusy}
-                  onPlan={handlePlan}
-                />
-              ))}
+              {planGroups.unlinked.map(renderPlan)}
 
               {activeSendNotice ? (
                 <View style={styles.assistantRow}>
@@ -675,14 +615,19 @@ export function CoachScreen({
 
         <View style={styles.composerDock}>
           {error ? <Text style={styles.inlineError}>{error}</Text> : null}
+          <View style={styles.contextChips}>
+            {draft.targetLabel ? <Pressable accessibilityRole="button" accessibilityLabel={"Remove context " + draft.targetLabel} onPress={() => updateDraft(draftWithCoachTarget(draft, null))} style={styles.contextChip}><Text style={styles.contextChipText}>About {draft.targetLabel} ×</Text></Pressable> : null}
+            {draft.revisionLabel ? <Pressable accessibilityRole="button" accessibilityLabel={"Stop revising " + draft.revisionLabel} onPress={() => updateDraft(draftWithCoachRevision(draft, null, null))} style={styles.contextChip}><Text style={styles.contextChipText}>Revising {draft.revisionLabel} ×</Text></Pressable> : null}
+          </View>
           <View style={styles.composerShell}>
             <TextInput
+              ref={composerRef}
               accessibilityLabel="Message your coach"
               value={composer}
               multiline
-              editable={data.modelConfiguration.configured}
+              editable={data.modelConfiguration.configured && !loading}
               onChangeText={setComposer}
-              placeholder={data.modelConfiguration.configured ? "Message Coach" : "OpenAI API key required"}
+              placeholder={data.modelConfiguration.configured ? draft.context.revisePlanId ? "What would you like to change?" : "Message Coach" : "OpenAI API key required"}
               placeholderTextColor={colors.textDim}
               selectionColor={colors.accent}
               style={styles.composer}
@@ -690,11 +635,11 @@ export function CoachScreen({
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Send message"
-              disabled={!composer.trim() || sending || Boolean(activeRunId) || !data.modelConfiguration.configured}
+              disabled={!composer.trim() || loading || retryingRun || sending || Boolean(activeRunId) || !data.modelConfiguration.configured}
               onPress={() => void send()}
               style={({ pressed }) => [
                 styles.sendButton,
-                (!composer.trim() || sending || Boolean(activeRunId) || !data.modelConfiguration.configured) && styles.sendButtonDisabled,
+                (!composer.trim() || loading || retryingRun || sending || Boolean(activeRunId) || !data.modelConfiguration.configured) && styles.sendButtonDisabled,
                 pressed && styles.pressed,
               ]}
             >
@@ -824,9 +769,11 @@ function PlanReviewCard({
   plan,
   planBusy,
   onPlan,
+  onRevise,
 }: {
   plan: ChangePlan;
   planBusy: string | null;
+  onRevise: () => void;
   onPlan: (
     planId: string,
     action: "apply" | "reject",
@@ -1001,13 +948,10 @@ function PlanReviewCard({
           />
         ) : null}
         {plan.status === "pending" ? (
-          <CompactAction
-            title="Dismiss"
-            subtle
-            loading={planBusy === rejectBusyKey}
-            disabled={Boolean(planBusy)}
-            onPress={() => void onPlan(plan.id, "reject")}
-          />
+          <>
+            <CompactAction title="Revise" disabled={Boolean(planBusy)} onPress={onRevise} />
+            <CompactAction title="Dismiss" subtle loading={planBusy === rejectBusyKey} disabled={Boolean(planBusy)} onPress={() => void onPlan(plan.id, "reject")} />
+          </>
         ) : null}
       </View>
     </View>
@@ -1227,6 +1171,12 @@ function createCoachRunRetryIdempotencyKey() {
 }
 
 const styles = StyleSheet.create({
+  contextChips: { width: "100%", maxWidth: 760, alignSelf: "center", flexDirection: "row", flexWrap: "wrap", gap: spacing.xs },
+  contextChip: { borderRadius: radii.md, backgroundColor: colors.surfaceRaised, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, marginBottom: spacing.sm },
+  contextChipText: { color: colors.textMuted, fontSize: 12 },
+  planReceipt: { padding: spacing.md, gap: 4, borderLeftWidth: 2, borderLeftColor: colors.borderStrong },
+  planReceiptText: { color: colors.textMuted, fontSize: 12, lineHeight: 18 },
+  planReceiptDate: { color: colors.textDim, fontSize: 10 },
   embeddedScreen: {
     flex: 1,
     minHeight: 0,

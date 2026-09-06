@@ -42,6 +42,11 @@ public behavioral tests.
 - Type-only declarations, static data, and barrel entrypoints do not need
   artificial tests merely to create counters.
 
+The Coach's `src/client/coach/public.ts` exposes only its target callback type,
+and `src/server/coach/response-types.ts` declares only provider wire types.
+Both are exact type-only exclusions. The production message executor and
+proposal repository remain fully in scope for coverage.
+
 The test runner recursively discovers `tests/**/*.test.{mjs,ts}` itself instead
 of relying on shell glob expansion, so the same command works on Windows,
 macOS, and Linux.

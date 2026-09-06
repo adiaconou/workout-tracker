@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { ApiError, apiRequest } from "../api/client";
+import type { CoachTargetChange } from "../coach/public";
 import type { Exercise, RoutineAggregate, RoutineExercise, RoutineVersion } from "../../contracts/api";
 import {
   Body,
@@ -82,7 +83,7 @@ const sideModeOptions = [
   ["left_right", "Left / right"],
 ] as const;
 
-export function RoutineDetailScreen({ routineId }: { routineId: string }) {
+export function RoutineDetailScreen({ routineId, onCoachTargetChange }: { routineId: string; onCoachTargetChange?: CoachTargetChange }) {
   const [routine, setRoutine] = useState<RoutineAggregate | null>(null);
   const [versions, setVersions] = useState<RoutineVersion[]>([]);
   const [activeWorkout, setActiveWorkout] = useState<RoutineEditorPayload["activeWorkout"]>(null);
@@ -108,6 +109,10 @@ export function RoutineDetailScreen({ routineId }: { routineId: string }) {
   const [focusedControl, setFocusedControl] = useState<string | null>(null);
   const latestRequest = useRef(0);
   const editorState = useRef({ editing: false, dirty: false, currentVersionId: null as string | null });
+  useEffect(() => {
+    onCoachTargetChange?.(!loading && routine ? { target: { kind: "routine", routineId: routine.id,
+      ...(routine.currentVersionId ? { versionId: routine.currentVersionId } : {}) }, label: `Routine ${routine.code}` } : null);
+  }, [loading, onCoachTargetChange, routine?.id, routine?.code, routine?.currentVersionId]);
 
   const applyPayload = useCallback((payload: RoutineEditorPayload, resetDisclosure = true) => {
     setRoutine(payload.routine);

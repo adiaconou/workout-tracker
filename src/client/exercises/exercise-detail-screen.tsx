@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import { router } from "expo-router";
 import type { RoutineAggregate } from "../../domain/entities";
 import { apiRequest } from "../api/client";
+import type { CoachTargetChange } from "../coach/public";
 import type { Exercise } from "../../contracts/api";
 import {
   Body,
@@ -18,13 +19,16 @@ import {
 import { colors, radii, spacing } from "../ui/tokens";
 import { ExerciseProgressCard } from "./exercise-progress-card";
 
-export function ExerciseDetailScreen({ exerciseId }: { exerciseId: string }) {
+export function ExerciseDetailScreen({ exerciseId, onCoachTargetChange }: { exerciseId: string; onCoachTargetChange?: CoachTargetChange }) {
   const [exercise, setExercise] = useState<Exercise | null>(null);
   const [usedIn, setUsedIn] = useState<RoutineAggregate[]>([]);
   const [usageStatus, setUsageStatus] = useState<"idle" | "loading" | "loaded" | "error">("idle");
   const [loading, setLoading] = useState(true);
   const [savingFavorite, setSavingFavorite] = useState(false);
   const [error, setError] = useState("");
+  useEffect(() => {
+    onCoachTargetChange?.(!loading && exercise ? { target: { kind: "exercise", exerciseId: exercise.id }, label: exercise.name } : null);
+  }, [exercise?.id, exercise?.name, loading, onCoachTargetChange]);
 
   useEffect(() => {
     let cancelled = false;

@@ -157,6 +157,7 @@ test("message runs create atomically with one user message and owner-scoped idem
       previousResponseId: null,
       responseIdsJson: "[]",
       pendingInputJson: "[]",
+      contextStateJson: "{}",
       activitiesJson: "[]",
       callSignaturesJson: "{}",
       roundCount: 0,
@@ -262,15 +263,15 @@ test("processing leases and call ledger fence stale workers while preserving pro
     );
 
     assert.equal(
-      await repository.claimProcessing(otherOwner, "run-progress", "lease-1", later, expiresAt, createdAt),
+      await repository.claimProcessing(otherOwner, "run-progress", { expectedResponseId: "resp-1", leaseToken: "lease-1", claimedAt: later, leaseExpiresAt: expiresAt }),
       false,
     );
     assert.equal(
-      await repository.claimProcessing(owner, "run-progress", "lease-1", later, expiresAt, createdAt),
+      await repository.claimProcessing(owner, "run-progress", { expectedResponseId: "resp-1", leaseToken: "lease-1", claimedAt: later, leaseExpiresAt: expiresAt }),
       true,
     );
     assert.equal(
-      await repository.claimProcessing(owner, "run-progress", "lease-too-early", later, terminalExpiresAt, createdAt),
+      await repository.claimProcessing(owner, "run-progress", { expectedResponseId: "resp-1", leaseToken: "lease-too-early", claimedAt: later, leaseExpiresAt: expiresAt }),
       false,
     );
     const processingUpdate: UpdateProcessingMessageRunInput = {
@@ -309,8 +310,9 @@ test("processing leases and call ledger fence stale workers while preserving pro
     });
     assert.equal(conflictingCall.kind, "conflict");
     assert.equal(await repository.getCall(otherOwner, "run-progress", "call-1"), null);
+    sqlite.prepare("UPDATE assistant_message_runs SET lease_expires_at = ? WHERE id = ?").run(createdAt, "run-progress");
     assert.equal(
-      await repository.claimProcessing(owner, "run-progress", "lease-2", later, terminalExpiresAt, expiresAt),
+      await repository.claimProcessing(owner, "run-progress", { expectedResponseId: "resp-1", leaseToken: "lease-2", claimedAt: later, leaseExpiresAt: expiresAt }),
       true,
     );
     assert.equal((await repository.beginCall(owner, "run-progress", "lease-2", callInput)).kind, "reclaimed");
@@ -324,7 +326,7 @@ test("processing leases and call ledger fence stale workers while preserving pro
       toolCallCount: 1,
       proposalStaged: false,
       phase: "checking",
-      updatedAt: terminalExpiresAt,
+      updatedAt: later,
     };
     assert.equal(
       await repository.finishCall(owner, "run-progress", "call-1", "lease-1", finishInput),
@@ -376,7 +378,7 @@ test("processing leases and call ledger fence stale workers while preserving pro
       { kind: "rejected", call: null },
     );
     assert.equal(
-      await repository.claimProcessing(owner, "run-progress", "lease-3", later, terminalExpiresAt, later),
+      await repository.claimProcessing(owner, "run-progress", { expectedResponseId: "resp-1", leaseToken: "lease-3", claimedAt: later, leaseExpiresAt: expiresAt }),
       true,
     );
     assert.equal(await repository.attachResponse(owner, "run-progress", {
@@ -402,7 +404,7 @@ test("processing leases and call ledger fence stale workers while preserving pro
     assert.equal((await repository.get(owner, "run-progress"))?.pendingInputJson, "[]");
 
     assert.equal(
-      await repository.claimProcessing(owner, "run-progress", "lease-final", later, terminalExpiresAt, later),
+      await repository.claimProcessing(owner, "run-progress", { expectedResponseId: "resp-2", leaseToken: "lease-final", claimedAt: later, leaseExpiresAt: expiresAt }),
       true,
     );
     assert.equal(await repository.updateProcessing(owner, "run-progress", "lease-final", {
@@ -419,7 +421,7 @@ test("processing leases and call ledger fence stale workers while preserving pro
       responseId: "resp-2",
       runActivitiesJson: '[{"id":"step-2","status":"succeeded"}]',
       messageActivitiesJson: '[{"name":"propose_routine_change","status":"succeeded"}]',
-      createdAt: terminalExpiresAt,
+      createdAt: later,
       expiresAt: "2026-08-31T20:00:00.000Z",
     };
     assert.equal(await repository.succeed(otherOwner, "run-progress", "lease-final", success), false);
@@ -440,7 +442,7 @@ test("processing leases and call ledger fence stale workers while preserving pro
     assert.equal((await repository.get(owner, "run-progress"))?.responseIdsJson, "[]");
 
     await repository.createStarting(owner, startingInput("run-no-proposal", "no-proposal-key"));
-    await repository.claimProcessing(owner, "run-no-proposal", "lease-no-proposal", later, terminalExpiresAt, later);
+    await repository.claimProcessing(owner, "run-no-proposal", { expectedResponseId: null, leaseToken: "lease-no-proposal", claimedAt: later, leaseExpiresAt: expiresAt });
     assert.equal(await repository.succeed(owner, "run-no-proposal", "lease-no-proposal", {
       ...success,
       assistantMessageId: "assistant-2",
@@ -505,7 +507,7 @@ test("terminal failures, expiry, retries, and pruning release the active slot sa
       false,
     );
     assert.equal(
-      await repository.claimProcessing(owner, "retry-1", "retry-lease", later, terminalExpiresAt, later),
+      await repository.claimProcessing(owner, "retry-1", { expectedResponseId: null, leaseToken: "retry-lease", claimedAt: later, leaseExpiresAt: expiresAt }),
       true,
     );
     assert.equal(await repository.fail(owner, "retry-1", runError, later, terminalExpiresAt), false);
@@ -531,7 +533,7 @@ test("terminal failures, expiry, retries, and pruning release the active slot sa
     await repository.createStarting(owner, startingInput("absolute-expiry", "absolute-key"));
     sqlite.prepare("UPDATE assistant_message_runs SET expires_at = ? WHERE id = ?")
       .run(createdAt, "absolute-expiry");
-    await repository.claimProcessing(owner, "absolute-expiry", "absolute-lease", later, terminalExpiresAt, later);
+    await repository.claimProcessing(owner, "absolute-expiry", { expectedResponseId: null, leaseToken: "absolute-lease", claimedAt: later, leaseExpiresAt: expiresAt });
     assert.equal(
       await repository.expireIfPast(otherOwner, "absolute-expiry", runError, later, terminalExpiresAt),
       false,
@@ -543,7 +545,7 @@ test("terminal failures, expiry, retries, and pruning release the active slot sa
     assert.equal((await repository.get(owner, "absolute-expiry"))?.leaseToken, null);
 
     await repository.createStarting(owner, startingInput("leased-expiry", "leased-expiry-key"));
-    await repository.claimProcessing(owner, "leased-expiry", "expiry-lease", later, terminalExpiresAt, later);
+    await repository.claimProcessing(owner, "leased-expiry", { expectedResponseId: null, leaseToken: "expiry-lease", claimedAt: later, leaseExpiresAt: expiresAt });
     assert.equal(
       await repository.expire(owner, "leased-expiry", runError, later, terminalExpiresAt, "expiry-lease"),
       true,
@@ -559,4 +561,20 @@ test("terminal failures, expiry, retries, and pruning release the active slot sa
   } finally {
     sqlite.close();
   }
+});
+
+test("unattached start failure cannot overwrite a concurrently attached response", async () => {
+  const { sqlite, repository } = await repositoryFixture();
+  try {
+    await repository.createStarting(owner, startingInput("attach-race"));
+    const failure = { expectedUpdatedAt: createdAt, error: runError, updatedAt: later, expiresAt: terminalExpiresAt };
+    assert.equal(await repository.failUnattached(otherOwner, "attach-race", failure), false);
+    assert.equal(await repository.failUnattached(owner, "attach-race", { ...failure, expectedUpdatedAt: later }), false);
+    assert.equal(await repository.attachResponse(owner, "attach-race", { openAIResponseId: "new-response", previousResponseId: null, responseIdsJson: '["new-response"]', status: "queued", phase: "planning", roundCount: 1, updatedAt: later }), true);
+    assert.equal(await repository.failUnattached(owner, "attach-race", failure), false);
+    assert.equal((await repository.get(owner, "attach-race"))?.status, "queued");
+    await repository.createStarting(owner, startingInput("unattached", "unattached-key", "unattached", "second-thread"));
+    assert.equal(await repository.failUnattached(owner, "unattached", failure), true);
+    assert.equal(await repository.failUnattached(owner, "unattached", failure), false);
+  } finally { sqlite.close(); }
 });

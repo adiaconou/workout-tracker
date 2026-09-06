@@ -21,6 +21,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors, radii, spacing } from "../ui/tokens";
 import { CoachScreen, type CoachScreenStatus } from "./coach-screen";
+import type { CoachTargetSelection } from "./coach-conversation-state";
 
 type OpenCoachOptions = {
   fullScreen?: boolean;
@@ -28,6 +29,7 @@ type OpenCoachOptions = {
 };
 
 type CoachOverlayContextValue = {
+  registerTarget: (selection: CoachTargetSelection | null) => () => void;
   visible: boolean;
   expanded: boolean;
   status: CoachScreenStatus;
@@ -55,6 +57,14 @@ export function CoachOverlayProvider({
   const [webKeyboardInset, setWebKeyboardInset] = useState(0);
   const previousStatusRef = useRef<CoachScreenStatus>("idle");
   const previousSessionKeyRef = useRef(sessionKey);
+  const focusedTargetRef = useRef<{ token: object; selection: CoachTargetSelection | null } | null>(null);
+  const targetSequenceRef = useRef(0);
+  const [targetRequest, setTargetRequest] = useState<{ id: number; selection: CoachTargetSelection | null }>();
+  const registerTarget = useCallback((selection: CoachTargetSelection | null) => {
+    const token = {};
+    focusedTargetRef.current = { token, selection };
+    return () => { if (focusedTargetRef.current?.token === token) focusedTargetRef.current = null; };
+  }, []);
 
   const closeCoach = useCallback(() => {
     Keyboard.dismiss();
@@ -64,6 +74,7 @@ export function CoachOverlayProvider({
     setVisible(false);
   }, []);
   const openCoach = useCallback((options?: OpenCoachOptions) => {
+    setTargetRequest({ id: ++targetSequenceRef.current, selection: focusedTargetRef.current?.selection ?? null });
     setMounted(true);
     setVisible(true);
     setExpanded(Boolean(options?.fullScreen));
@@ -77,6 +88,8 @@ export function CoachOverlayProvider({
     if (enabled && !sessionChanged) return;
     setVisible(false);
     setMounted(false);
+    setTargetRequest(undefined);
+    focusedTargetRef.current = null;
     setExpanded(false);
     setStarter(undefined);
     setStatus("idle");
@@ -136,7 +149,8 @@ export function CoachOverlayProvider({
     openCoach,
     closeCoach,
     setExpanded,
-  }), [closeCoach, expanded, hasUnread, openCoach, status, visible]);
+    registerTarget,
+  }), [closeCoach, expanded, hasUnread, openCoach, registerTarget, status, visible]);
 
   const compact = width < 768;
   const showFloatingLauncher = enabled && !visible;
@@ -230,7 +244,8 @@ export function CoachOverlayProvider({
                 </View>
               </View>
               <View style={[styles.coachBody, { paddingBottom: insets.bottom }]}>
-                <CoachScreen
+              <CoachScreen
+                targetRequest={targetRequest}
                   embedded
                   visible={visible}
                   starter={starter}

@@ -32,6 +32,7 @@ export type StoredMessageRun = {
   previousResponseId: string | null;
   responseIdsJson: string;
   pendingInputJson: string;
+  contextStateJson: string;
   activitiesJson: string;
   callSignaturesJson: string;
   roundCount: number;
@@ -57,6 +58,9 @@ export type CreateStartingMessageRunInput = {
   requestFingerprint: string;
   userMessageId: string;
   userContent: string;
+  userContextJson?: string;
+  timeZone?: string;
+  contextStateJson?: string;
   model: string;
   reasoningEffort: string;
   createdAt: string;
@@ -75,6 +79,7 @@ export type CreateStartingMessageRunResult =
   | { kind: "conflict" | "active"; run: StoredMessageRun };
 
 export type AttachMessageRunResponseInput = {
+  contextStateJson?: string;
   openAIResponseId: string;
   previousResponseId: string | null;
   responseIdsJson: string;
@@ -87,6 +92,7 @@ export type AttachMessageRunResponseInput = {
 };
 
 export type UpdateProcessingMessageRunInput = {
+  contextStateJson?: string;
   phase: string;
   openAIResponseId: string | null;
   previousResponseId: string | null;
@@ -109,6 +115,30 @@ export type BeginMessageRunCallInput = {
   argumentsJson: string;
   createdAt: string;
 };
+
+export type ClaimMessageRunProcessingInput = {
+  expectedResponseId: string | null;
+  leaseToken: string;
+  claimedAt: string;
+  leaseExpiresAt: string;
+};
+
+export type PreparedCoachProposal = {
+  id: string;
+  threadId: string;
+  proposedInputJson: string;
+  summary: string;
+  rationale: string;
+  diffJson: string;
+  createdAt: string;
+  originRunId: string;
+  originUserMessageId: string;
+  supersedesPlanId: string | null;
+} & (
+  | { kind: "routine"; routineId: string; routineCode: string; baseVersionId: string | null }
+  | { kind: "exercise"; action: string; exerciseId: string | null; exerciseName: string;
+      baseUpdatedAt: string | null; baseInputJson: string | null; supersedesExerciseName?: string }
+);
 
 export type StoredMessageRunCall = {
   id: string;
@@ -169,6 +199,7 @@ const runSelect = `SELECT id, owner_email AS ownerEmail, thread_id AS threadId,
   status, phase, model, reasoning_effort AS reasoningEffort,
   openai_response_id AS openAIResponseId, previous_response_id AS previousResponseId,
   response_ids_json AS responseIdsJson, pending_input_json AS pendingInputJson,
+  context_state_json AS contextStateJson,
   activities_json AS activitiesJson, call_signatures_json AS callSignaturesJson,
   round_count AS roundCount, tool_call_count AS toolCallCount,
   force_final AS forceFinal, proposal_staged AS proposalStaged,
@@ -226,10 +257,10 @@ export class D1MessageRunRepository {
         openai_response_id, previous_response_id, response_ids_json, pending_input_json,
         activities_json, call_signatures_json, round_count, tool_call_count,
         force_final, proposal_staged, error_code, error_message, error_retryable,
-        lease_token, lease_expires_at, created_at, updated_at, expires_at
+        lease_token, lease_expires_at, created_at, updated_at, expires_at, context_state_json
       ) SELECT ?, ?, thread.id, ?, ?, ?, NULL, 'starting', 'planning', ?, ?,
         NULL, NULL, '[]', '[]', '[]', '{}', 0, 0, 0, 0, NULL, NULL, 0,
-        NULL, NULL, ?, ?, ?
+        NULL, NULL, ?, ?, ?, ?
         FROM assistant_threads AS thread
         WHERE thread.id = ? AND thread.owner_email = ?
           AND NOT EXISTS (SELECT 1 FROM assistant_messages WHERE id = ?)`)
@@ -244,15 +275,16 @@ export class D1MessageRunRepository {
           input.createdAt,
           input.createdAt,
           input.expiresAt,
+          input.contextStateJson ?? "{}",
           input.threadId,
           ownerEmail,
           input.userMessageId,
         ),
       this.d1.prepare(`INSERT INTO assistant_messages (
         id, owner_email, thread_id, role, content, model, reasoning_effort,
-        response_id, activities_json, created_at
+        response_id, activities_json, created_at, context_json, time_zone
       ) SELECT run.user_message_id, run.owner_email, run.thread_id, 'user', ?,
-        NULL, NULL, NULL, '[]', run.created_at
+        NULL, NULL, NULL, '[]', run.created_at, ?, ?
         FROM assistant_message_runs AS run
         WHERE run.id = ? AND run.owner_email = ? AND run.thread_id = ?
           AND run.idempotency_key = ? AND run.request_fingerprint = ?
@@ -260,6 +292,8 @@ export class D1MessageRunRepository {
           AND NOT EXISTS (SELECT 1 FROM assistant_messages WHERE id = run.user_message_id)`)
         .bind(
           input.userContent,
+          input.userContextJson ?? "{}",
+          input.timeZone ?? "UTC",
           input.id,
           ownerEmail,
           input.threadId,
@@ -304,10 +338,10 @@ export class D1MessageRunRepository {
       openai_response_id, previous_response_id, response_ids_json, pending_input_json,
       activities_json, call_signatures_json, round_count, tool_call_count,
       force_final, proposal_staged, error_code, error_message, error_retryable,
-      lease_token, lease_expires_at, created_at, updated_at, expires_at
+      lease_token, lease_expires_at, created_at, updated_at, expires_at, context_state_json
     ) SELECT ?, source.owner_email, source.thread_id, ?, ?, source.user_message_id,
       NULL, 'starting', 'planning', ?, ?, NULL, NULL, '[]', '[]', '[]', '{}',
-      0, 0, 0, 0, NULL, NULL, 0, NULL, NULL, ?, ?, ?
+      0, 0, 0, 0, NULL, NULL, 0, NULL, NULL, ?, ?, ?, source.context_state_json
       FROM assistant_message_runs AS source
       WHERE source.id = ? AND source.owner_email = ? AND source.thread_id = ?
         AND source.status IN ('failed', 'expired')
@@ -376,20 +410,14 @@ export class D1MessageRunRepository {
     return row ? storedRun(row) : null;
   }
 
-  async claimProcessing(
-    ownerEmail: string,
-    runId: string,
-    leaseToken: string,
-    claimedAt: string,
-    leaseExpiresAt: string,
-    staleBefore: string,
-  ) {
+  async claimProcessing(ownerEmail: string, runId: string, input: ClaimMessageRunProcessingInput) {
     const result = await this.update(`UPDATE assistant_message_runs
       SET status = 'processing', lease_token = ?, lease_expires_at = ?, updated_at = ?
-      WHERE id = ? AND owner_email = ? AND (
+      WHERE id = ? AND owner_email = ? AND openai_response_id IS ? AND expires_at > ? AND (
         status IN ('starting', 'queued', 'in_progress')
         OR (status = 'processing' AND (lease_expires_at IS NULL OR lease_expires_at <= ?))
-      )`, [leaseToken, leaseExpiresAt, claimedAt, runId, ownerEmail, staleBefore]);
+      )`, [input.leaseToken, input.leaseExpiresAt, input.claimedAt, runId, ownerEmail,
+        input.expectedResponseId, input.claimedAt, input.claimedAt]);
     return changed(result);
   }
 
@@ -403,13 +431,16 @@ export class D1MessageRunRepository {
   ) {
     const result = await this.update(`UPDATE assistant_message_runs
       SET status = ?, phase = ?, lease_token = NULL, lease_expires_at = NULL, updated_at = ?
-      WHERE id = ? AND owner_email = ? AND status = 'processing' AND lease_token = ?`, [
+      WHERE id = ? AND owner_email = ? AND status = 'processing' AND lease_token = ?
+        AND expires_at > ? AND lease_expires_at > ?`, [
       status,
       phase,
       updatedAt,
       runId,
       ownerEmail,
       leaseToken,
+      updatedAt,
+      updatedAt,
     ]);
     return changed(result);
   }
@@ -421,24 +452,26 @@ export class D1MessageRunRepository {
   ) {
     const leasePredicate = input.leaseToken === undefined
       ? "status = 'starting' AND lease_token IS NULL"
-      : "status = 'processing' AND lease_token = ?";
+      : "status = 'processing' AND lease_token = ? AND lease_expires_at > ?";
     const result = await this.update(`UPDATE assistant_message_runs
       SET openai_response_id = ?, previous_response_id = ?, response_ids_json = ?,
-        pending_input_json = ?, status = ?, phase = ?, round_count = ?,
+        pending_input_json = ?, context_state_json = COALESCE(?, context_state_json), status = ?, phase = ?, round_count = ?,
         lease_token = NULL, lease_expires_at = NULL, error_code = NULL,
         error_message = NULL, error_retryable = 0, updated_at = ?
-      WHERE id = ? AND owner_email = ? AND ${leasePredicate}`, [
+      WHERE id = ? AND owner_email = ? AND expires_at > ? AND ${leasePredicate}`, [
       input.openAIResponseId,
       input.previousResponseId,
       input.responseIdsJson,
       input.pendingInputJson ?? "[]",
+      input.contextStateJson ?? null,
       input.status,
       input.phase,
       input.roundCount,
       input.updatedAt,
       runId,
       ownerEmail,
-      ...(input.leaseToken === undefined ? [] : [input.leaseToken]),
+      input.updatedAt,
+      ...(input.leaseToken === undefined ? [] : [input.leaseToken, input.updatedAt]),
     ]);
     return changed(result);
   }
@@ -476,14 +509,16 @@ export class D1MessageRunRepository {
   ) {
     const result = await this.update(`UPDATE assistant_message_runs
       SET phase = ?, openai_response_id = ?, previous_response_id = ?, response_ids_json = ?,
-        pending_input_json = ?, activities_json = ?, call_signatures_json = ?,
+        pending_input_json = ?, context_state_json = COALESCE(?, context_state_json), activities_json = ?, call_signatures_json = ?,
         round_count = ?, tool_call_count = ?, force_final = ?, proposal_staged = ?, updated_at = ?
-      WHERE id = ? AND owner_email = ? AND status = 'processing' AND lease_token = ?`, [
+      WHERE id = ? AND owner_email = ? AND status = 'processing' AND lease_token = ?
+        AND expires_at > ? AND lease_expires_at > ?`, [
       input.phase,
       input.openAIResponseId,
       input.previousResponseId,
       input.responseIdsJson,
       input.pendingInputJson,
+      input.contextStateJson ?? null,
       input.activitiesJson,
       input.callSignaturesJson,
       input.roundCount,
@@ -494,6 +529,8 @@ export class D1MessageRunRepository {
       runId,
       ownerEmail,
       leaseToken,
+      input.updatedAt,
+      input.updatedAt,
     ]);
     return changed(result);
   }
@@ -504,6 +541,81 @@ export class D1MessageRunRepository {
       WHERE owner_email = ? AND run_id = ? AND call_id = ?`)
       .bind(ownerEmail, runId, callId)
       .first<MessageRunCallRow>();
+  }
+
+  async findReusableReadCall(ownerEmail: string, runId: string, signature: string) {
+    await this.ready();
+    return await this.d1.prepare(`${callSelect}
+      WHERE owner_email = ? AND run_id = ? AND call_signature = ? AND status = 'succeeded'
+        AND NOT EXISTS (SELECT 1 FROM assistant_message_run_calls later
+          WHERE later.owner_email = ? AND later.run_id = ? AND later.tool_name LIKE 'propose_%'
+            AND later.created_at >= assistant_message_run_calls.created_at)
+      ORDER BY created_at DESC LIMIT 1`)
+      .bind(ownerEmail, runId, signature, ownerEmail, runId).first<MessageRunCallRow>();
+  }
+
+  async commitProposalResult(ownerEmail: string, runId: string, callId: string, leaseToken: string,
+    input: { plans: PreparedCoachProposal[]; outputJson: string; updatedAt: string }) {
+    await this.ready();
+    const saved = await this.getCall(ownerEmail, runId, callId);
+    if (saved?.outputJson !== null && saved?.outputJson !== undefined) return saved.outputJson === input.outputJson;
+    const conditions: string[] = [];
+    const conditionValues: unknown[] = [];
+    for (const plan of input.plans) {
+      conditions.push(`EXISTS (SELECT 1 FROM assistant_message_runs provenance
+        WHERE provenance.id = ? AND provenance.owner_email = ? AND provenance.thread_id = ?
+          AND provenance.user_message_id = ? AND provenance.id = ?)`);
+      conditionValues.push(runId, ownerEmail, plan.threadId, plan.originUserMessageId, plan.originRunId);
+      if (plan.supersedesPlanId) {
+        const table = plan.kind === "routine" ? "assistant_change_plans" : "assistant_exercise_change_plans";
+        const target = plan.kind === "routine"
+          ? `(prior.routine_id = ? OR (prior.base_version_id IS NULL AND ? IS NULL AND prior.routine_code = ?))`
+          : `(prior.exercise_id IS ? AND (prior.exercise_id IS NOT NULL OR prior.exercise_name = ?))`;
+        conditions.push(`EXISTS (SELECT 1 FROM ${table} prior WHERE prior.id = ?
+          AND prior.owner_email = ? AND prior.thread_id = ? AND prior.status = 'pending' AND ${target})`);
+        conditionValues.push(plan.supersedesPlanId, ownerEmail, plan.threadId,
+          ...(plan.kind === "routine" ? [plan.routineId, plan.baseVersionId, plan.routineCode] : [plan.exerciseId, plan.supersedesExerciseName ?? plan.exerciseName]));
+      }
+    }
+    const reserve = this.d1.prepare(`UPDATE assistant_message_run_calls SET output_json = ?, updated_at = ?
+      WHERE owner_email = ? AND run_id = ? AND call_id = ? AND status = 'processing'
+        AND lease_token = ? AND output_json IS NULL
+        AND EXISTS (SELECT 1 FROM assistant_message_runs run WHERE run.id = ? AND run.owner_email = ?
+          AND run.status = 'processing' AND run.lease_token = ? AND run.expires_at > ? AND run.lease_expires_at > ?)
+        ${conditions.map((condition) => `AND ${condition}`).join("\n")}`)
+      .bind(input.outputJson, input.updatedAt, ownerEmail, runId, callId, leaseToken,
+        runId, ownerEmail, leaseToken, input.updatedAt, input.updatedAt, ...conditionValues);
+    const committedGuard = `EXISTS (SELECT 1 FROM assistant_message_run_calls call
+      JOIN assistant_message_runs run ON run.id = call.run_id AND run.owner_email = call.owner_email
+      WHERE call.owner_email = ? AND call.run_id = ? AND call.call_id = ? AND call.status = 'processing'
+        AND call.lease_token = ? AND call.output_json = ? AND call.updated_at = ?
+        AND run.status = 'processing' AND run.lease_token = ? AND run.expires_at > ? AND run.lease_expires_at > ?)`;
+    const committedValues = [ownerEmail, runId, callId, leaseToken, input.outputJson,
+      input.updatedAt, leaseToken, input.updatedAt, input.updatedAt];
+    const statements = [reserve];
+    for (const plan of input.plans) {
+      const table = plan.kind === "routine" ? "assistant_change_plans" : "assistant_exercise_change_plans";
+      const common = { id: plan.id, owner_email: ownerEmail, thread_id: plan.threadId,
+        proposed_input_json: plan.proposedInputJson, summary: plan.summary, rationale: plan.rationale,
+        diff_json: plan.diffJson, status: "pending", created_at: plan.createdAt, updated_at: plan.createdAt,
+        origin_run_id: plan.originRunId, origin_user_message_id: plan.originUserMessageId,
+        supersedes_plan_id: plan.supersedesPlanId, applied_as: null };
+      const row = plan.kind === "routine"
+        ? { ...common, routine_id: plan.routineId, routine_code: plan.routineCode, base_version_id: plan.baseVersionId, applied_version_id: null }
+        : { ...common, action: plan.action, exercise_id: plan.exerciseId, exercise_name: plan.exerciseName,
+          base_updated_at: plan.baseUpdatedAt, base_input_json: plan.baseInputJson, applied_exercise_id: null };
+      const columns = Object.keys(row);
+      statements.push(this.d1.prepare(`INSERT INTO ${table} (${columns.join(",")})
+        SELECT ${columns.map(() => "?").join(",")} WHERE ${committedGuard}
+        ON CONFLICT(id) DO NOTHING`).bind(...Object.values(row), ...committedValues));
+      if (plan.supersedesPlanId) {
+        statements.push(this.d1.prepare(`UPDATE ${table} SET status = 'superseded', updated_at = ?
+          WHERE id = ? AND owner_email = ? AND thread_id = ? AND status = 'pending' AND ${committedGuard}`)
+          .bind(input.updatedAt, plan.supersedesPlanId, ownerEmail, plan.threadId, ...committedValues));
+      }
+    }
+    const results = await this.d1.batch(statements);
+    return changed(results[0]);
   }
 
   async beginCall(
@@ -519,7 +631,7 @@ export class D1MessageRunRepository {
     ) SELECT ?, run.owner_email, run.id, ?, ?, ?, ?, NULL, NULL, 'processing', NULL, ?, ?, ?
       FROM assistant_message_runs AS run
       WHERE run.id = ? AND run.owner_email = ? AND run.status = 'processing'
-        AND run.lease_token = ?`)
+        AND run.lease_token = ? AND run.expires_at > ? AND run.lease_expires_at > ?`)
       .bind(
         input.id,
         input.callId,
@@ -532,6 +644,8 @@ export class D1MessageRunRepository {
         runId,
         ownerEmail,
         leaseToken,
+        input.createdAt,
+        input.createdAt,
       )
       .run();
     let call = await this.getCall(ownerEmail, runId, input.callId);
@@ -547,7 +661,8 @@ export class D1MessageRunRepository {
       SET lease_token = ?, updated_at = ?
       WHERE owner_email = ? AND run_id = ? AND call_id = ? AND status = 'processing'
         AND EXISTS (SELECT 1 FROM assistant_message_runs
-          WHERE id = ? AND owner_email = ? AND status = 'processing' AND lease_token = ?)`, [
+          WHERE id = ? AND owner_email = ? AND status = 'processing' AND lease_token = ?
+            AND expires_at > ? AND lease_expires_at > ?)`, [
       leaseToken,
       input.createdAt,
       ownerEmail,
@@ -556,6 +671,8 @@ export class D1MessageRunRepository {
       runId,
       ownerEmail,
       leaseToken,
+      input.createdAt,
+      input.createdAt,
     ]);
     if (!changed(reclaimed)) return { kind: "rejected", call: null };
     call = await this.getCall(ownerEmail, runId, input.callId);
@@ -575,7 +692,8 @@ export class D1MessageRunRepository {
         SET status = ?, output_json = ?, activity_json = ?, error_message = ?, updated_at = ?
         WHERE owner_email = ? AND run_id = ? AND call_id = ? AND status = 'processing'
           AND lease_token = ? AND EXISTS (SELECT 1 FROM assistant_message_runs
-            WHERE id = ? AND owner_email = ? AND status = 'processing' AND lease_token = ?)`)
+            WHERE id = ? AND owner_email = ? AND status = 'processing' AND lease_token = ?
+              AND expires_at > ? AND lease_expires_at > ?)`)
         .bind(
           input.status,
           input.outputJson,
@@ -589,11 +707,14 @@ export class D1MessageRunRepository {
           runId,
           ownerEmail,
           leaseToken,
+          input.updatedAt,
+          input.updatedAt,
         ),
       this.d1.prepare(`UPDATE assistant_message_runs
         SET activities_json = ?, call_signatures_json = ?, tool_call_count = ?,
           proposal_staged = ?, phase = ?, updated_at = ?
         WHERE id = ? AND owner_email = ? AND status = 'processing' AND lease_token = ?
+          AND expires_at > ? AND lease_expires_at > ?
           AND EXISTS (SELECT 1 FROM assistant_message_run_calls
             WHERE owner_email = ? AND run_id = ? AND call_id = ? AND lease_token = ?
               AND status = ? AND updated_at = ?)`)
@@ -607,6 +728,8 @@ export class D1MessageRunRepository {
           runId,
           ownerEmail,
           leaseToken,
+          input.updatedAt,
+          input.updatedAt,
           ownerEmail,
           runId,
           callId,
@@ -634,6 +757,7 @@ export class D1MessageRunRepository {
         FROM assistant_message_runs AS run
         WHERE run.id = ? AND run.owner_email = ? AND run.status = 'processing'
           AND run.lease_token = ? AND run.assistant_message_id IS NULL
+          AND run.expires_at > ? AND run.lease_expires_at > ?
           AND NOT EXISTS (SELECT 1 FROM assistant_messages WHERE id = ?)`)
         .bind(
           input.assistantMessageId,
@@ -644,6 +768,8 @@ export class D1MessageRunRepository {
           runId,
           ownerEmail,
           leaseToken,
+          input.createdAt,
+          input.createdAt,
           input.assistantMessageId,
         ),
       this.d1.prepare(`UPDATE assistant_message_runs
@@ -654,6 +780,7 @@ export class D1MessageRunRepository {
           error_code = NULL, error_message = NULL, error_retryable = 0,
           lease_token = NULL, lease_expires_at = NULL, updated_at = ?, expires_at = ?
         WHERE id = ? AND owner_email = ? AND status = 'processing' AND lease_token = ?
+          AND expires_at > ? AND lease_expires_at > ?
           AND assistant_message_id IS NULL AND EXISTS (SELECT 1 FROM assistant_messages
             WHERE id = ? AND owner_email = ? AND thread_id = assistant_message_runs.thread_id
               AND role = 'assistant' AND content = ? AND activities_json = ?)`)
@@ -665,6 +792,8 @@ export class D1MessageRunRepository {
           runId,
           ownerEmail,
           leaseToken,
+          input.createdAt,
+          input.createdAt,
           input.assistantMessageId,
           ownerEmail,
           input.content,
@@ -677,6 +806,19 @@ export class D1MessageRunRepository {
         .bind(input.createdAt, ownerEmail, runId, ownerEmail, input.assistantMessageId),
     ]);
     return changed(results[1]);
+  }
+
+  async failUnattached(ownerEmail: string, runId: string, input: {
+    expectedUpdatedAt: string; error: MessageRunError; updatedAt: string; expiresAt: string;
+  }) {
+    const result = await this.update(`UPDATE assistant_message_runs
+      SET status = 'failed', phase = 'recovering', pending_input_json = '[]', call_signatures_json = '{}',
+        error_code = ?, error_message = ?, error_retryable = ?, updated_at = ?, expires_at = ?
+      WHERE id = ? AND owner_email = ? AND status IN ('starting', 'queued', 'in_progress')
+        AND openai_response_id IS NULL AND lease_token IS NULL AND updated_at = ?`,
+    [input.error.code, input.error.message, Number(input.error.retryable), input.updatedAt, input.expiresAt,
+      runId, ownerEmail, input.expectedUpdatedAt]);
+    return changed(result);
   }
 
   async fail(
@@ -749,7 +891,7 @@ export class D1MessageRunRepository {
   ) {
     const statusPredicate = leaseToken === undefined
       ? "status IN ('starting', 'queued', 'in_progress')"
-      : "status = 'processing' AND lease_token = ?";
+      : "status = 'processing' AND lease_token = ? AND expires_at > ? AND lease_expires_at > ?";
     const result = await this.update(`UPDATE assistant_message_runs
       SET status = ?, phase = 'recovering', pending_input_json = '[]', call_signatures_json = '{}',
         error_code = ?, error_message = ?, error_retryable = ?,
@@ -763,7 +905,7 @@ export class D1MessageRunRepository {
       expiresAt,
       runId,
       ownerEmail,
-      ...(leaseToken === undefined ? [] : [leaseToken]),
+      ...(leaseToken === undefined ? [] : [leaseToken, updatedAt, updatedAt]),
     ]);
     return changed(result);
   }

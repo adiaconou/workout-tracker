@@ -339,6 +339,28 @@ const additiveColumns: Record<string, Record<string, string>> = {
   },
   assistant_messages: {
     activities_json: "TEXT NOT NULL DEFAULT '[]'",
+    context_json: "TEXT NOT NULL DEFAULT '{}'",
+    time_zone: "TEXT NOT NULL DEFAULT 'UTC'",
+  },
+  assistant_threads: {
+    context_summary_json: "TEXT",
+    context_summary_through_message_id: "TEXT",
+    context_summary_updated_at: "TEXT",
+  },
+  assistant_message_runs: {
+    context_state_json: "TEXT NOT NULL DEFAULT '{}'",
+  },
+  assistant_change_plans: {
+    origin_run_id: "TEXT",
+    origin_user_message_id: "TEXT",
+    applied_as: "TEXT",
+    supersedes_plan_id: "TEXT",
+  },
+  assistant_exercise_change_plans: {
+    origin_run_id: "TEXT",
+    origin_user_message_id: "TEXT",
+    applied_as: "TEXT",
+    supersedes_plan_id: "TEXT",
   },
 };
 

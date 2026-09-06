@@ -25,6 +25,7 @@ const entityMigrationFilenames = [
   "drizzle/0015_material_rockslide.sql",
   "drizzle/0016_needy_phantom_reporter.sql",
   "drizzle/0017_aspiring_madrox.sql",
+  "drizzle/0019_naive_puppet_master.sql",
 ];
 
 test("applies the complete migration chain and creates the normalized entity model", async () => {
@@ -152,7 +153,7 @@ test("applies the complete migration chain and creates the normalized entity mod
         "pending_input_json", "activities_json", "call_signatures_json", "round_count",
         "tool_call_count", "force_final", "proposal_staged", "error_code", "error_message",
         "error_retryable", "lease_token", "lease_expires_at", "created_at", "updated_at",
-        "expires_at",
+        "expires_at", "context_state_json",
       ],
     );
     assert.deepEqual(

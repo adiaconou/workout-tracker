@@ -4,6 +4,9 @@ import type {
   CoachMessageRunError,
   CoachMessageRunPhase,
   CoachMessageRunStatus,
+  CoachMessageContext,
+  CoachPlanStatus,
+  CoachPlanProvenance,
 } from "../../contracts/api";
 
 export type {
@@ -27,6 +30,8 @@ export type AssistantThread = {
 };
 
 export type AssistantMessage = {
+  context?: CoachMessageContext | null;
+  timeZone?: string | null;
   id: string;
   threadId: string;
   role: "user" | "assistant";
@@ -48,12 +53,12 @@ export type CoachToolActivityRow = {
   tone: "success" | "error";
 };
 
-type ChangePlanBase = {
+type ChangePlanBase = CoachPlanProvenance & {
   id: string;
   summary: string;
   rationale: string;
   diff: string[];
-  status: "pending" | "applying" | "applied" | "rejected" | "stale";
+  status: CoachPlanStatus;
 };
 
 export type RoutineChangePlan = ChangePlanBase & {
@@ -74,6 +79,39 @@ export type ExerciseChangePlan = ChangePlanBase & {
 };
 
 export type ChangePlan = RoutineChangePlan | ExerciseChangePlan;
+
+export function coachPlanReceipt(plan: ChangePlan): { message: string; tone: "success" | "error" | "neutral" } | null {
+  const target = plan.kind === "routine" ? `Routine ${plan.routineCode}` : plan.exerciseName;
+  switch (plan.status) {
+    case "pending":
+    case "applying": return null;
+    case "applied": {
+      if (plan.kind === "exercise") return planApplySuccess(plan, true);
+      const message = plan.appliedAs === "draft" ? `Draft saved for ${target}.`
+        : plan.appliedAs === "published" ? `${target} published.` : `${target} applied.`;
+      return { message, tone: "success" };
+    }
+    case "rejected": return { message: `${target} proposal dismissed.`, tone: "neutral" };
+    case "superseded": return { message: `${target} proposal replaced by a revised proposal.`, tone: "neutral" };
+    case "stale": return { message: `${target} changed since this proposal. Ask Coach for a fresh proposal.`, tone: "error" };
+  }
+}
+
+export function coachPlanMessageGroups(messages: readonly AssistantMessage[], plans: readonly ChangePlan[]) {
+  const anchors = new Map<string, string>();
+  let userMessageId: string | null = null;
+  for (const message of messages) {
+    if (message.role === "user") userMessageId = message.id;
+    if (userMessageId) anchors.set(userMessageId, message.id);
+  }
+  const byMessageId: Record<string, ChangePlan[]> = {}, unlinked: ChangePlan[] = [];
+  for (const plan of plans) {
+    const anchor = plan.originUserMessageId ? anchors.get(plan.originUserMessageId) : undefined;
+    if (!anchor) { unlinked.push(plan); continue; }
+    (byMessageId[anchor] ??= []).push(plan);
+  }
+  return { byMessageId, unlinked };
+}
 
 export type PlanReviewSection = {
   key: string;
@@ -152,6 +190,13 @@ export type PlanActionFeedback = {
 
 const coachToolActivityLabels: Record<string, readonly [string, string]> = {
   get_coaching_context: ["Reviewed your routines and training context", "Couldn’t review your training context"],
+  get_routines: ["Checked the requested routines", "Couldn’t check the requested routines"],
+  get_plan: ["Reviewed the saved proposal", "Couldn’t review the saved proposal"],
+  get_exercise_progress: ["Reviewed exercise progress", "Couldn’t review exercise progress"],
+  get_workout_details: ["Reviewed workout details", "Couldn’t review workout details"],
+  search_thread_history: ["Checked earlier messages in this chat", "Couldn’t check earlier messages"],
+  propose_routine_edit: ["Prepared a routine edit for review", "Couldn’t prepare the routine edit"],
+  propose_routine_changes: ["Prepared routine changes for review", "Couldn’t prepare the routine changes"],
   get_routine: ["Checked the current routine", "Couldn’t check the current routine"],
   list_routine_versions: ["Reviewed saved routine versions", "Couldn’t review saved routine versions"],
   search_exercises: ["Searched available exercises", "Couldn’t search available exercises"],
@@ -429,6 +474,7 @@ const activeCoachRunStatuses = new Set<CoachMessageRunStatus>([
 const coachRunRetryDelaysMs = [2_000, 4_000, 8_000, 15_000] as const;
 
 const coachRunPhaseCopy: Record<CoachMessageRunPhase, Pick<CoachRunPresentation, "title" | "detail">> = {
+  summarizing: { title: "Keeping the conversation focused", detail: "Coach is saving the useful details from this chat before continuing." },
   planning: {
     title: "Planning the next steps",
     detail: "Coach is deciding what information is needed for your request.",

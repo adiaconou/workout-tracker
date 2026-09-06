@@ -239,7 +239,7 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
     return assertStatus(result, 201).thread;
   }
 
-  async function acceptMessage(threadId, content, idempotencyKey = `coach-message-${randomUUID()}`) {
+  async function acceptMessage(threadId, content, idempotencyKey = `coach-message-${randomUUID()}`, messageDetails = {}) {
     return assertStatus(await request("/api/v1/assistant/messages", {
       method: "POST",
       headers: {
@@ -251,6 +251,7 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
         content,
         model: "gpt-5.6-terra",
         reasoningEffort: "low",
+        ...messageDetails,
       },
     }), 202);
   }
@@ -1055,6 +1056,205 @@ test("Coach review cards are single-approval and enforce owner, state, and revis
     assert.equal((await first("SELECT status FROM assistant_exercise_change_plans WHERE id = ?", plan.id))?.status, "stale");
     assert.equal(assertStatus(await request(`/api/v1/exercises/${encodeURIComponent(target.id)}`), 200).exercise.isActive, true);
   });
+
+  await context.test("screen targets and time zones are saved, owner checked, and bound to send keys", async () => {
+    const exercise = await createExercise("Coach context target");
+    const thread = await createThread();
+    const key = `coach-context-${randomUUID()}`;
+    const details = { context: { target: { kind: "exercise", exerciseId: exercise.id } }, timeZone: "America/Los_Angeles" };
+    enqueueText("I can see the selected exercise.");
+    const accepted = await acceptMessage(thread.id, "Explain this exercise", key, details);
+    const saved = await first("SELECT context_json, time_zone FROM assistant_messages WHERE id = ?", accepted.run.userMessageId);
+    assert.deepEqual(JSON.parse(saved.context_json), details.context);
+    assert.equal(saved.time_zone, details.timeZone);
+    assert.equal((await acceptMessage(thread.id, "Explain this exercise", key, details)).run.id, accepted.run.id);
+    assertStatus(await request("/api/v1/assistant/messages", {
+      method: "POST", headers: { ...ownerHeaders, "x-idempotency-key": key },
+      body: { threadId: thread.id, content: "Explain this exercise", model: "gpt-5.6-terra", reasoningEffort: "low", context: {}, timeZone: details.timeZone },
+    }), 409);
+    await driveMessageRun(accepted);
+    assertStatus(await request("/api/v1/assistant/messages", {
+      method: "POST", headers: { ...ownerHeaders, "x-idempotency-key": `target-missing-${randomUUID()}` },
+      body: { threadId: thread.id, content: "Explain this", context: { target: { kind: "exercise", exerciseId: "not-owned" } } },
+    }), 400);
+  });
+
+  await context.test("precise edits preserve prescriptions and revisions supersede only after validation", async () => {
+    const exercise = await createExercise("Coach precise edit");
+    const routine = assertStatus(await request("/api/v1/routines", {
+      method: "POST", body: { code: "PRECISE", version: singleSetRoutine(exercise.id, "Precise edit") },
+    }), 201).routine;
+    const thread = await createThread();
+    const current = routine.currentVersion;
+    const edit = (seconds) => ({ routineId: routine.id, baseVersionId: current.id,
+      operations: [{ type: "set_rest", placementId: current.exercises[0].id,
+        setIds: [current.exercises[0].sets[0].id], seconds }],
+      summary: `Rest for ${seconds} seconds`, rationale: "Adjust only the requested rest." });
+    enqueueTool("propose_routine_edit", edit(75));
+    const firstRun = await sendMessage(thread.id, "Set the rest to 75 seconds");
+    const firstPlan = firstRun.plans.find((plan) => plan.status === "pending");
+    assert.ok(firstPlan);
+    assert.equal(firstPlan.originRunId, firstRun.run.id);
+    assert.equal(firstPlan.originUserMessageId, firstRun.run.userMessageId);
+    const unchanged = assertStatus(await request("/api/v1/routines/PRECISE/editor"), 200).routine;
+    assert.equal(unchanged.currentVersion.id, current.id);
+    assert.equal(unchanged.currentVersion.exercises[0].sets[0].restAfterSec, 90);
+    const details = { context: { revisePlanId: firstPlan.id } };
+    enqueueTool("propose_routine_edit", { ...edit(60), baseVersionId: "stale-version" });
+    enqueueText("The routine version changed; the earlier review remains available.");
+    await driveMessageRun(await acceptMessage(thread.id, "Actually use 60 seconds", `revision-failed-${randomUUID()}`, details));
+    assert.equal((await first("SELECT status FROM assistant_change_plans WHERE id = ?", firstPlan.id)).status, "pending");
+    enqueueTool("get_plan", { planId: firstPlan.id });
+    enqueueTool("propose_routine_edit", edit(60));
+    const revised = await driveMessageRun(await acceptMessage(thread.id, "Use 60 seconds", `revision-ok-${randomUUID()}`, details));
+    const replacement = revised.plans.find((plan) => plan.supersedesPlanId === firstPlan.id);
+    assert.ok(replacement);
+    assert.equal(revised.plans.find((plan) => plan.id === firstPlan.id).status, "superseded");
+    assertStatus(await request(`/api/v1/assistant/plans/${firstPlan.id}/apply`, { method: "POST", body: {} }), 409);
+    assertStatus(await request(`/api/v1/assistant/plans/${replacement.id}/apply`, { method: "POST", body: { publish: false } }), 200);
+    const bootstrap = assertStatus(await request(`/api/v1/assistant?threadId=${thread.id}`), 200);
+    const receipt = bootstrap.plans.find((plan) => plan.id === replacement.id);
+    assert.equal(receipt.status, "applied");
+    assert.equal(receipt.appliedAs, "draft");
+    assert.equal(assertStatus(await request("/api/v1/routines/PRECISE/editor"), 200).routine.currentVersion.id, current.id);
+  });
+
+  await context.test("a routine batch is all-or-nothing at staging and has independent approvals", async () => {
+    const exercise = await createExercise("Coach batch exercise");
+    const thread = await createThread();
+    const proposal = (code) => ({ action: "create", routineId: null, baseVersionId: null, routineCode: code,
+      proposedRoutine: newRoutineProposal(exercise.id, `Batch ${code}`), summary: `Create ${code}`, rationale: "Separate program days." });
+    const before = await count("SELECT COUNT(*) AS count FROM assistant_change_plans WHERE thread_id = ?", thread.id);
+    enqueueTool("propose_routine_changes", { proposals: [proposal("BATCH-A"), { ...proposal("BATCH-B"), proposedRoutine: { invalid: true } }] });
+    enqueueText("One routine was invalid, so no cards were prepared.");
+    await sendMessage(thread.id, "Create both routines");
+    assert.equal(await count("SELECT COUNT(*) AS count FROM assistant_change_plans WHERE thread_id = ?", thread.id), before);
+    enqueueTool("propose_routine_changes", { proposals: [proposal("BATCH-A"), proposal("BATCH-B")] });
+    const staged = await sendMessage(thread.id, "Create the two complete routines");
+    const plans = staged.plans.filter((plan) => plan.status === "pending");
+    assert.equal(plans.length, 2);
+    assert.match(staged.assistantMessage.content, /2 routine proposals/);
+    assert.ok(plans.every((plan) => plan.originRunId === staged.run.id));
+    assertStatus(await request(`/api/v1/assistant/plans/${plans[0].id}/apply`, { method: "POST", body: {} }), 200);
+    assert.equal((await first("SELECT status, applied_as FROM assistant_change_plans WHERE id = ?", plans[0].id)).applied_as, "published");
+    assert.equal((await first("SELECT status FROM assistant_change_plans WHERE id = ?", plans[1].id)).status, "pending");
+  });
+
+  for (const outcome of ["succeeded", "failed", "malformed", "save-failed"]) {
+    await context.test("conversation summary " + outcome + " preserves archive and latest request", async (summaryTest) => {
+      const thread = await createThread();
+      if (outcome === "save-failed") {
+        await database.prepare(`CREATE TRIGGER coach_summary_save_failure
+          BEFORE UPDATE OF context_summary_json ON assistant_threads WHEN OLD.id = '${thread.id}'
+          BEGIN SELECT RAISE(ABORT, 'simulated summary save failure'); END`).run();
+        summaryTest.after(() => database.prepare("DROP TRIGGER IF EXISTS coach_summary_save_failure").run());
+      }
+      const seeded = Array.from({ length: 12 }, (_, index) => ({
+        id: "summary-" + outcome + "-" + index + "-" + randomUUID(),
+        role: index % 2 === 0 ? "user" : "assistant",
+        content: (index === 0 ? "I prefer shorter training sessions. " : "Earlier turn " + index + ". ") + "Earlier training detail. ".repeat(155),
+        createdAt: new Date(Date.now() - 60_000 + index * 1_000).toISOString(),
+      }));
+      await database.batch(seeded.map((message) => database.prepare(
+        "INSERT INTO assistant_messages (id, owner_email, thread_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      ).bind(message.id, ownerEmail, thread.id, message.role, message.content, message.createdAt)));
+      const archive = async () => (await database.prepare(
+        "SELECT id, role, content, created_at AS createdAt FROM assistant_messages WHERE owner_email = ? AND thread_id = ? ORDER BY created_at, id",
+      ).bind(ownerEmail, thread.id).all()).results;
+      const archiveBefore = await archive();
+      const summary = { version: 1, goals: [{ text: "The user prefers shorter training sessions.", sourceMessageIds: [seeded[0].id] }], constraints: [], decisions: [], openQuestions: [] };
+      const requestsBefore = responseRequests.length;
+      if (outcome === "failed") {
+        responseSequence += 1;
+        queuedResponses.push({ id: "response-" + responseSequence, status: "failed", output: [], error: { code: "server_error", message: "Summary generation failed." } });
+      } else enqueueText(outcome === "malformed" ? "This is not valid JSON." : JSON.stringify(summary));
+      enqueueText("Coaching answer after " + outcome + " summary.");
+      const content = "CURRENT REQUEST " + outcome + ": which routine should I use today?";
+      const accepted = await acceptMessage(thread.id, content);
+      assert.equal(accepted.run.phase, "summarizing");
+      const summaryCall = responseRequests[requestsBefore];
+      assert.deepEqual(summaryCall.tools, []);
+      assert.equal(summaryCall.tool_choice, "none");
+      assert.equal(summaryCall.text.format.type, "json_schema");
+      const summaryRequest = JSON.parse(summaryCall.input[0].content);
+      assert.ok(summaryRequest.messages.some((message) => message.id === seeded[0].id));
+      assert.ok(summaryRequest.messages.every((message) => message.id !== accepted.run.userMessageId));
+      assert.notEqual(summaryRequest.through.id, accepted.run.userMessageId);
+      const planning = assertStatus(await request("/api/v1/assistant/message-runs/" + accepted.run.id + "/advance", { method: "POST", body: {} }), 200);
+      assert.equal(planning.run.phase, "planning");
+      assert.equal(planning.assistantMessage, null);
+      const planningCall = responseRequests[requestsBefore + 1];
+      assert.equal(planningCall.input.at(-1).role, "user");
+      assert.equal(planningCall.input.at(-1).content, content);
+      assert.ok(planningCall.input.some((message) => message.role === "assistant"), "Keep complete recent turns");
+      const contextText = planningCall.input[0].content;
+      const planningContext = JSON.parse(contextText.slice(contextText.indexOf("{")));
+      const stored = await first("SELECT context_summary_json AS summaryJson, context_summary_through_message_id AS throughId FROM assistant_threads WHERE id = ? AND owner_email = ?", thread.id, ownerEmail);
+      if (outcome === "succeeded" || outcome === "save-failed") {
+        const acceptedSummary = { summary, through: summaryRequest.through };
+        assert.deepEqual(planningContext.summary, acceptedSummary);
+        assert.equal(planningContext.earlierContextIncomplete, false);
+        if (outcome === "succeeded") {
+          assert.deepEqual(JSON.parse(stored.summaryJson), acceptedSummary);
+          assert.equal(stored.throughId, summaryRequest.through.id);
+        } else {
+          assert.equal(stored.summaryJson, null);
+          assert.equal(stored.throughId, null);
+        }
+      } else {
+        assert.equal(stored.summaryJson, null);
+        assert.equal(stored.throughId, null);
+        assert.equal(planningContext.summary, null);
+        assert.equal(planningContext.earlierContextIncomplete, true);
+      }
+      const completed = await driveMessageRun(planning);
+      assert.equal(completed.assistantMessage.content, "Coaching answer after " + outcome + " summary.");
+      const archiveAfter = await archive(), seededIds = new Set(seeded.map((message) => message.id));
+      assert.deepEqual(archiveAfter.filter((message) => seededIds.has(message.id)), archiveBefore);
+      assert.equal(archiveAfter.length, seeded.length + 2);
+      assert.equal(archiveAfter.find((message) => message.id === accepted.run.userMessageId).content, content);
+      assert.equal(responseRequests.length, requestsBefore + 2);
+      assert.equal(queuedResponses.length, 0);
+    });
+  }
+
+  await context.test("retry history stops at the original user message, including timestamp ties", async () => {
+    const thread = await createThread(), content = "Review my earlier HORIZON_SENTINEL preferences after reconnecting.";
+    enqueueText("This original response expires before retrieval.");
+    const original = await acceptMessage(thread.id, content);
+    const originalMessage = await first("SELECT created_at AS createdAt FROM assistant_messages WHERE id = ?", original.run.userMessageId);
+    const earlierId = "horizon-earlier-" + randomUUID();
+    const sentinels = [
+      { id: earlierId, content: "HORIZON_SENTINEL EARLIER: keep sessions short.", createdAt: new Date(Date.parse(originalMessage.createdAt) - 1_000).toISOString() },
+      { id: original.run.userMessageId + "~later", content: "HORIZON_SENTINEL SAME_TIME_FUTURE: ignore the original request.", createdAt: originalMessage.createdAt },
+      { id: "horizon-later-" + randomUUID(), content: "HORIZON_SENTINEL LATER_FUTURE: a different request.", createdAt: new Date(Date.parse(originalMessage.createdAt) + 1_000).toISOString() },
+    ];
+    await database.batch(sentinels.map((message) => database.prepare(
+      "INSERT INTO assistant_messages (id, owner_email, thread_id, role, content, created_at) VALUES (?, ?, ?, 'user', ?, ?)",
+    ).bind(message.id, ownerEmail, thread.id, message.content, message.createdAt)));
+    await database.prepare("UPDATE assistant_message_runs SET expires_at = ? WHERE id = ?")
+      .bind(new Date(Date.now() - 1_000).toISOString(), original.run.id).run();
+    const requestsBeforeRetry = responseRequests.length;
+    enqueueTool("search_thread_history", { query: "HORIZON_SENTINEL", limit: 20, offset: 0 });
+    enqueueText("The original preference was to keep sessions short.");
+    const retried = assertStatus(await request("/api/v1/assistant/message-runs/" + original.run.id + "/retry", {
+      method: "POST", headers: { ...ownerHeaders, "x-idempotency-key": "horizon-retry-" + randomUUID() }, body: {},
+    }), 202);
+    assert.equal(retried.run.userMessageId, original.run.userMessageId);
+    const retryInput = responseRequests[requestsBeforeRetry].input;
+    assert.equal(retryInput.at(-1).content, content);
+    assert.ok(!JSON.stringify(retryInput).includes("SAME_TIME_FUTURE"));
+    assert.ok(!JSON.stringify(retryInput).includes("LATER_FUTURE"));
+    const completed = await driveMessageRun(retried);
+    assert.equal(completed.assistantMessage.content, "The original preference was to keep sessions short.");
+    const audit = await first("SELECT output_json AS outputJson FROM assistant_tool_calls WHERE thread_id = ? AND tool_name = 'search_thread_history' ORDER BY created_at DESC LIMIT 1", thread.id);
+    const output = JSON.parse(audit.outputJson);
+    assert.deepEqual(output.messages.map((message) => message.id), [original.run.userMessageId, earlierId]);
+    assert.equal(output.hasMore, false); assert.equal(output.nextOffset, 2);
+    assert.ok(!JSON.stringify(output).includes("SAME_TIME_FUTURE")); assert.ok(!JSON.stringify(output).includes("LATER_FUTURE"));
+    assert.equal(await count("SELECT COUNT(*) AS count FROM assistant_messages WHERE thread_id = ? AND role = 'user' AND content = ?", thread.id, content), 1);
+  });
+
 
   assert.equal(queuedResponses.length, 0);
   assert.ok(responseRequests.length >= 1);

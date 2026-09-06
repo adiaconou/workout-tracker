@@ -211,6 +211,7 @@ export type CoachMessageRunStatus =
 
 export type CoachMessageRunPhase =
   | "planning"
+  | "summarizing"
   | "checking"
   | "recovering"
   | "synthesizing"
@@ -242,4 +243,34 @@ export type CoachMessageRun = {
   createdAt: string;
   updatedAt: string;
   expiresAt: string;
+};
+
+export type CoachTarget =
+  | { kind: "routine"; routineId: string; versionId?: string }
+  | { kind: "exercise"; exerciseId: string }
+  | { kind: "workout"; workoutId: string; viewedSetId?: string };
+
+export type CoachMessageContext = {
+  target?: CoachTarget;
+  revisePlanId?: string;
+};
+
+export type CoachMessageInput = {
+  threadId: string;
+  content: string;
+  model: string;
+  reasoningEffort: string;
+  context?: CoachMessageContext;
+  timeZone?: string;
+};
+
+export type CoachPlanStatus = "pending" | "applying" | "applied" | "rejected" | "stale" | "superseded";
+
+export type CoachPlanProvenance = {
+  originRunId?: string | null;
+  originUserMessageId?: string | null;
+  appliedAs?: "published" | "draft" | null;
+  supersedesPlanId?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
 };
