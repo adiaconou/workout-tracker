@@ -134,6 +134,13 @@
       "when": 1788722014512,
       "tag": "0019_naive_puppet_master",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1788734360973,
+      "tag": "0020_exercise_weight_settings",
+      "breakpoints": true
     }
   ]
 }

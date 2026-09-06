@@ -8,6 +8,13 @@ export type MuscleRole = "primary" | "secondary";
 export type TrackingType = "reps" | "duration" | "rounds";
 export type LoadType = "external" | "bodyweight" | "added" | "assistance";
 export type SideMode = "bilateral" | "per_side" | "per_leg" | "left_right";
+export type WeightUnit = "lb" | "kg";
+
+export type ExerciseWeightSettings = {
+  unit: WeightUnit;
+  minimumIncrement: number | null;
+  maximumAvailable: number | null;
+};
 
 export type ExerciseMuscle = {
   muscleGroup: MuscleGroup;
@@ -25,6 +32,7 @@ export type Exercise = {
   trackingType: TrackingType;
   defaultLoadType: LoadType;
   sideMode: SideMode;
+  weightSettings: ExerciseWeightSettings | null;
   instructions: string;
   muscles: ExerciseMuscle[];
   isFavorite: boolean;
@@ -40,6 +48,7 @@ export type ExerciseInput = {
   trackingType?: TrackingType;
   defaultLoadType?: LoadType;
   sideMode?: SideMode;
+  weightSettings?: ExerciseWeightSettings | null;
   instructions?: string;
   muscles?: ExerciseMuscle[];
 };

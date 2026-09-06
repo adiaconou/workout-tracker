@@ -50,7 +50,7 @@ import {
   getStopwatchSeconds,
 } from "./stopwatch";
 import {
-  getAdvancedSetInputDefaults,
+  getReadySetInputDefaults,
   getRecordedSetInputValues,
   getSetInputDefaults,
   type SetInputValues,
@@ -122,6 +122,8 @@ export function ActiveWorkoutScreen({ sessionId, onCoachTargetChange }: { sessio
   const navigationWorkoutId = useRef<string | null>(null);
   const navigationSetIds = useRef<readonly string[]>([]);
   const setInputDrafts = useRef<Record<string, SetInputValues>>({});
+  const manuallyEditedSetIds = useRef<Set<string>>(new Set());
+  const durationProgressSetIds = useRef<Set<string>>(new Set());
 
   const currentIndex = setNavigation.activeIndex;
   const viewedIndex = setNavigation.viewedIndex;
@@ -141,7 +143,11 @@ export function ActiveWorkoutScreen({ sessionId, onCoachTargetChange }: { sessio
       const replacingWorkout = navigationWorkoutId.current !== next.id;
       navigationWorkoutId.current = next.id;
       navigationSetIds.current = nextSetIds;
-      if (replacingWorkout) setInputDrafts.current = {};
+      if (replacingWorkout) {
+        setInputDrafts.current = {};
+        manuallyEditedSetIds.current.clear();
+        durationProgressSetIds.current.clear();
+      }
       const restEnd = next.restEndsAt ? Date.parse(next.restEndsAt) : Number.NaN;
       workoutElapsedAnchor.current = {
         seconds: next.workoutElapsedSeconds,
@@ -271,24 +277,40 @@ export function ActiveWorkoutScreen({ sessionId, onCoachTargetChange }: { sessio
 
   useEffect(() => {
     if (!viewedSet) return;
-    const recordedInputs = isViewingPast
+    const defaultInputs = isViewingPast
       ? viewedRecordedPerformance
         ? getRecordedSetInputValues(viewedSet, viewedRecordedPerformance)
         : { weight: "", result: "" }
-      : getSetInputDefaults(viewedSet);
+      : isViewingCurrent && workout
+        ? getReadySetInputDefaults(
+          workout.sets,
+          currentIndex,
+          workout.recordedPerformanceBySetId,
+        )
+        : getSetInputDefaults(viewedSet);
+    const manuallyEdited = manuallyEditedSetIds.current.has(viewedSet.id);
     const draft = isViewingPast
-      ? recordedInputs
-      : setInputDrafts.current[viewedSet.id] ?? recordedInputs;
-    if (!isViewingPast) setInputDrafts.current[viewedSet.id] = draft;
+      ? defaultInputs
+      : isViewingCurrent
+        ? manuallyEdited
+          ? setInputDrafts.current[viewedSet.id] ?? defaultInputs
+          : defaultInputs
+        : defaultInputs;
+    if (isViewingCurrent) setInputDrafts.current[viewedSet.id] = draft;
     setWeight(draft.weight);
     setResult(draft.result);
     setStopwatchStartedAt(null);
     setStopwatchElapsedMs(
-      viewedSet.targetUnit === "seconds" && draft.result
+      isViewingCurrent
+        && durationProgressSetIds.current.has(viewedSet.id)
+        && viewedSet.targetUnit === "seconds"
+        && draft.result
         ? Math.max(0, Number(draft.result) || 0) * 1000
         : 0,
     );
   }, [
+    currentIndex,
+    isViewingCurrent,
     isViewingPast,
     sessionId,
     viewedIndex,
@@ -299,6 +321,8 @@ export function ActiveWorkoutScreen({ sessionId, onCoachTargetChange }: { sessio
     viewedSet?.id,
     viewedSet?.targetUnit,
     workout?.id,
+    workout?.recordedPerformanceBySetId,
+    workout?.sets,
   ]);
 
   useEffect(() => {
@@ -401,19 +425,27 @@ export function ActiveWorkoutScreen({ sessionId, onCoachTargetChange }: { sessio
       setCompletedSets(success.completedSets);
       setSkippedSets(success.skippedSets);
       setSaveState("Saved");
+      const currentPerformance = {
+        workoutSetId: payload.workoutSetId,
+        ...recordedSetPerformance(
+          currentSet,
+          status,
+          prepared.numericWeight,
+          prepared.numericResult,
+        ),
+      };
+      const nextRecordedPerformanceBySetId = {
+        ...(workout.recordedPerformanceBySetId ?? {}),
+        [currentSet.id]: currentPerformance,
+      };
+      manuallyEditedSetIds.current.delete(currentSet.id);
+      durationProgressSetIds.current.delete(currentSet.id);
+      delete setInputDrafts.current[currentSet.id];
       setWorkout((current) => current ? {
         ...current,
         recordedPerformanceBySetId: {
           ...(current.recordedPerformanceBySetId ?? {}),
-          [currentSet.id]: {
-            workoutSetId: payload.workoutSetId,
-            ...recordedSetPerformance(
-              currentSet,
-              status,
-              prepared.numericWeight,
-              prepared.numericResult,
-            ),
-          },
+          [currentSet.id]: currentPerformance,
         },
       } : current);
       workoutElapsedAnchor.current = {
@@ -427,13 +459,17 @@ export function ActiveWorkoutScreen({ sessionId, onCoachTargetChange }: { sessio
       } else {
         const nextSet = workout.sets[success.nextSet.index];
         if (nextSet) {
-          const nextSetInputs = getAdvancedSetInputDefaults(
-            nextSet,
-            { weight, result },
+          const nextSetInputs = getReadySetInputDefaults(
+            workout.sets,
+            success.nextSet.index,
+            nextRecordedPerformanceBySetId,
           );
+          manuallyEditedSetIds.current.delete(nextSet.id);
+          durationProgressSetIds.current.delete(nextSet.id);
           setInputDrafts.current[nextSet.id] = nextSetInputs;
           setWeight(nextSetInputs.weight);
           setResult(nextSetInputs.result);
+          setStopwatchElapsedMs(0);
         }
         currentSetElapsedAnchor.current = success.nextSet.elapsedAnchor;
         setSetNavigation(initialSetNavigation(success.nextSet.index, workout.sets.length));
@@ -487,12 +523,17 @@ export function ActiveWorkoutScreen({ sessionId, onCoachTargetChange }: { sessio
 
   function startStopwatch() {
     if (!isViewingCurrent) return;
+    if (viewedSet) {
+      manuallyEditedSetIds.current.add(viewedSet.id);
+      durationProgressSetIds.current.add(viewedSet.id);
+    }
     setStopwatchStartedAt(Date.now() - stopwatchElapsedMs);
   }
 
   function updateSetWeight(value: string) {
     setWeight(value);
     if (viewedSet) {
+      manuallyEditedSetIds.current.add(viewedSet.id);
       setInputDrafts.current[viewedSet.id] = { weight: value, result };
     }
   }
@@ -500,6 +541,7 @@ export function ActiveWorkoutScreen({ sessionId, onCoachTargetChange }: { sessio
   function updateSetResult(value: string) {
     setResult(value);
     if (viewedSet) {
+      manuallyEditedSetIds.current.add(viewedSet.id);
       setInputDrafts.current[viewedSet.id] = { weight, result: value };
     }
   }
@@ -518,10 +560,12 @@ export function ActiveWorkoutScreen({ sessionId, onCoachTargetChange }: { sessio
   function resetStopwatch() {
     setStopwatchStartedAt(null);
     setStopwatchElapsedMs(0);
+    if (viewedSet) durationProgressSetIds.current.add(viewedSet.id);
     updateSetResult("");
   }
 
   function updateDurationResult(value: string) {
+    if (viewedSet) durationProgressSetIds.current.add(viewedSet.id);
     updateSetResult(value);
     if (stopwatchStartedAt !== null) return;
     const seconds = Number(value);
@@ -737,6 +781,8 @@ export function ActiveWorkoutScreen({ sessionId, onCoachTargetChange }: { sessio
         },
       );
       delete setInputDrafts.current[viewedSet.id];
+      manuallyEditedSetIds.current.delete(viewedSet.id);
+      durationProgressSetIds.current.delete(viewedSet.id);
       setReplacingPastSet(false);
       await load();
       setSaveState("Set updated");
@@ -798,6 +844,8 @@ export function ActiveWorkoutScreen({ sessionId, onCoachTargetChange }: { sessio
   function cancelPastSetEdit() {
     if (!viewedSet || !viewedRecordedPerformance || saving) return;
     const recorded = getRecordedSetInputValues(viewedSet, viewedRecordedPerformance);
+    manuallyEditedSetIds.current.delete(viewedSet.id);
+    durationProgressSetIds.current.delete(viewedSet.id);
     setInputDrafts.current[viewedSet.id] = recorded;
     setWeight(recorded.weight);
     setResult(recorded.result);

@@ -25,6 +25,7 @@ function exercise(overrides: Partial<Exercise> & Pick<Exercise, "id" | "name">):
     createdAt: "2026-08-09T00:00:00.000Z",
     updatedAt: "2026-08-09T00:00:00.000Z",
     ...rest,
+    weightSettings: rest.weightSettings ?? null,
   };
 }
 

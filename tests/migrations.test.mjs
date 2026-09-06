@@ -26,6 +26,7 @@ const entityMigrationFilenames = [
   "drizzle/0016_needy_phantom_reporter.sql",
   "drizzle/0017_aspiring_madrox.sql",
   "drizzle/0019_naive_puppet_master.sql",
+  "drizzle/0020_exercise_weight_settings.sql",
 ];
 
 test("applies the complete migration chain and creates the normalized entity model", async () => {
@@ -107,9 +108,21 @@ test("applies the complete migration chain and creates the normalized entity mod
     assert.ok(programIndexes.some((index) => index.name === "routine_programs_one_active_owner_idx" && index.unique === 1));
     assert.deepEqual(
       exerciseCatalogColumns
-        .filter((column) => ["origin", "template_key"].includes(column.name))
+        .filter((column) => [
+          "origin",
+          "template_key",
+          "weight_settings_unit",
+          "minimum_weight_increment",
+          "maximum_available_weight",
+        ].includes(column.name))
         .map((column) => column.name),
-      ["origin", "template_key"],
+      [
+        "origin",
+        "template_key",
+        "weight_settings_unit",
+        "minimum_weight_increment",
+        "maximum_available_weight",
+      ],
     );
     const originColumn = exerciseCatalogColumns.find((column) => column.name === "origin");
     assert.equal(originColumn.notnull, 1);
@@ -119,6 +132,15 @@ test("applies the complete migration chain and creates the normalized entity mod
     assert.equal(progressiveTrainingColumn.notnull, 1);
     assert.equal(progressiveTrainingColumn.dflt_value, "0");
     assert.equal(originColumn.dflt_value, "'custom'");
+    for (const name of [
+      "weight_settings_unit",
+      "minimum_weight_increment",
+      "maximum_available_weight",
+    ]) {
+      const column = exerciseCatalogColumns.find((candidate) => candidate.name === name);
+      assert.equal(column?.notnull, 0);
+      assert.equal(column?.dflt_value, null);
+    }
     assert.ok(exerciseCatalogIndexes.some(
       (index) => index.name === "exercise_catalog_owner_template_idx" && index.unique === 1,
     ));

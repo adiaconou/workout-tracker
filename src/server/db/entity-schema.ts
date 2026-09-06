@@ -111,6 +111,7 @@ const createStatements = [
     normalized_name TEXT NOT NULL, equipment TEXT NOT NULL DEFAULT 'other',
     movement_pattern TEXT NOT NULL DEFAULT 'other', tracking_type TEXT NOT NULL DEFAULT 'reps',
     default_load_type TEXT NOT NULL DEFAULT 'external', side_mode TEXT NOT NULL DEFAULT 'bilateral',
+    weight_settings_unit TEXT, minimum_weight_increment REAL, maximum_available_weight REAL,
     instructions TEXT NOT NULL DEFAULT '', origin TEXT NOT NULL DEFAULT 'custom',
     template_key TEXT, is_active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -336,6 +337,9 @@ const additiveColumns: Record<string, Record<string, string>> = {
   exercise_catalog: {
     origin: "TEXT NOT NULL DEFAULT 'custom'",
     template_key: "TEXT",
+    weight_settings_unit: "TEXT",
+    minimum_weight_increment: "REAL",
+    maximum_available_weight: "REAL",
   },
   assistant_messages: {
     activities_json: "TEXT NOT NULL DEFAULT '[]'",

@@ -4,6 +4,7 @@ import type {
   ExerciseProgressPoint,
   LoadType,
   TrackingType,
+  WeightUnit,
 } from "./entities/exercise";
 
 const POUNDS_PER_KILOGRAM = 2.2046226218;
@@ -13,8 +14,6 @@ const TOTAL_LOAD_TYPES = new Set<LoadType>([
   "added",
   "assistance",
 ]);
-
-type WeightUnit = "lb" | "kg";
 
 export type ExerciseProgressCandidate = Omit<
   ExerciseProgressPoint,

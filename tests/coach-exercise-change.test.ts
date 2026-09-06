@@ -28,6 +28,7 @@ function exercise(overrides: Partial<Exercise> = {}): Exercise {
     createdAt: "2026-08-01T00:00:00.000Z",
     updatedAt: "2026-08-01T00:00:00.000Z",
     ...overrides,
+    weightSettings: overrides.weightSettings ?? null,
   };
 }
 
@@ -44,6 +45,7 @@ test("normalizes a complete Coach exercise proposal with safe defaults", () => {
     trackingType: "reps",
     defaultLoadType: "external",
     sideMode: "bilateral",
+    weightSettings: null,
     instructions: "",
     muscles: [{ muscleGroup: "grip", role: "primary", weight: 1 }],
   });
@@ -66,6 +68,7 @@ test("builds a concrete create plan", () => {
     "Add Farmer Carry to the exercise library.",
     "Equipment: Dumbbell; Movement: Carry.",
     "Tracking: Duration; Loading: External weight; Side mode: Bilateral.",
+    "Available loading: Not set.",
     "Instructions: Walk tall.",
     "Muscles: Grip (Primary, weight 1).",
   ]);
@@ -102,12 +105,17 @@ test("describes every exercise field update with readable before and after value
     trackingType: "duration" as const,
     defaultLoadType: "bodyweight" as const,
     sideMode: "left_right" as const,
+    weightSettings: { unit: "kg" as const, minimumIncrement: 1.25, maximumAvailable: 50 },
     instructions: "Pause for two seconds.",
     muscles: [{ muscleGroup: "glutes" as const, role: "primary" as const, weight: 0.9 }],
   };
 
   const diff = buildExerciseChangeDiff("update", current, proposed);
-  assert.deepEqual(diff, [
+  assert.equal(
+    diff.find((line) => line.startsWith("Available loading:")),
+    "Available loading: Not set → 1.25 kg minimum increment; 50 kg maximum.",
+  );
+  assert.deepEqual(diff.filter((line) => !line.startsWith("Available loading:")), [
     "Name: Barbell Bench Press → Paused Barbell Bench Press.",
     "Equipment: Barbell → Bench and bodyweight.",
     "Movement: Push → Hip hinge.",
@@ -118,6 +126,20 @@ test("describes every exercise field update with readable before and after value
     "Muscles: Chest (Primary, weight 1), Triceps (Secondary, weight 0.5) → Glutes (Primary, weight 0.9).",
   ]);
   assert.doesNotMatch(diff.join("\n"), /bench_and_bodyweight|hip_hinge|left_right|->|"/i);
+});
+
+test("describes partial available-loading settings readably", () => {
+  const current = exercise({
+    weightSettings: { unit: "lb", minimumIncrement: 5, maximumAvailable: null },
+  });
+  const proposed = {
+    ...exerciseInputSnapshot(current),
+    weightSettings: { unit: "lb" as const, minimumIncrement: null, maximumAvailable: 80 },
+  };
+
+  assert.deepEqual(buildExerciseChangeDiff("update", current, proposed), [
+    "Available loading: 5 lb minimum increment; no known maximum → standard increment; 80 lb maximum.",
+  ]);
 });
 
 test("archive plans preserve routine versions and workout history", () => {

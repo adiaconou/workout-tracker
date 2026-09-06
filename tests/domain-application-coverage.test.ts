@@ -113,6 +113,7 @@ function exercise(overrides: Partial<Exercise> = {}): Exercise {
     createdAt: "2026-08-01T00:00:00.000Z",
     updatedAt: "2026-08-01T00:00:00.000Z",
     ...overrides,
+    weightSettings: overrides.weightSettings ?? null,
   };
 }
 
@@ -141,6 +142,48 @@ test("entity validators reject every malformed field and normalize valid input",
   assert.equal(normalized.equipment, "other");
   assert.equal(normalized.movementPattern, "other");
   assert.equal(normalized.instructions, "i");
+  assert.equal(validateExerciseInput({
+    name: "x",
+    weightSettings: { unit: "lb", minimumIncrement: null, maximumAvailable: null },
+  }).weightSettings, null);
+  assert.deepEqual(validateExerciseInput({
+    name: "x",
+    weightSettings: { unit: "kg", minimumIncrement: 1.25, maximumAvailable: 50 },
+  }).weightSettings, { unit: "kg", minimumIncrement: 1.25, maximumAvailable: 50 });
+  assert.throws(() => validateExerciseInput({
+    name: "x",
+    weightSettings: [] as unknown as NonNullable<ExerciseInput["weightSettings"]>,
+  }), /Weight settings are invalid/);
+  assert.throws(() => validateExerciseInput({
+    name: "x",
+    weightSettings: "invalid" as unknown as NonNullable<ExerciseInput["weightSettings"]>,
+  }), /Weight settings are invalid/);
+  assert.throws(() => validateExerciseInput({
+    name: "x",
+    weightSettings: {
+      unit: "stone" as "lb",
+      minimumIncrement: 1,
+      maximumAvailable: null,
+    },
+  }), /unit must be lb or kg/);
+  for (const minimumIncrement of [undefined, Number.NaN, 0, -1] as unknown[]) {
+    assert.throws(() => validateExerciseInput({
+      name: "x",
+      weightSettings: {
+        unit: "lb",
+        minimumIncrement: minimumIncrement as number,
+        maximumAvailable: null,
+      },
+    }), /positive number or blank/);
+  }
+  assert.throws(() => validateExerciseInput({
+    name: "x",
+    weightSettings: { unit: "lb", minimumIncrement: 1.125, maximumAvailable: null },
+  }), /two decimal places/);
+  assert.throws(() => validateExerciseInput({
+    name: "x",
+    weightSettings: { unit: "lb", minimumIncrement: 5, maximumAvailable: 2.5 },
+  }), /at least the minimum/);
 
   assert.throws(() => validateRoutineVersionInput(validRoutineInput({ focus: "" })), /Routine name/);
   assert.throws(
@@ -848,6 +891,7 @@ test("guided workout construction covers all legacy parsing and interleaving pat
   assert.ok(interleaved.some((set) => set.restRule === "emom"));
   assert.ok(interleaved.some((set) => set.targetUnit === "seconds"));
   assert.deepEqual(interleaved.map((set) => set.globalIndex), interleaved.map((_set, index) => index));
+  assert.ok(interleaved.every((set) => set.weightSettings === null));
 
   const notAdjacent = buildGuidedSets(routineWithExercises([
     legacyExercise({ name: "Barbell Curl", exerciseOrder: 1 }),
@@ -894,7 +938,12 @@ test("normalized workout construction covers sorting, supersets, targets, rest, 
         ],
       }),
       normalizedExercise("second", { position: 2, supersetGroup: "group", sets: secondSets }),
-      normalizedExercise("first", { position: 1, supersetGroup: " group ", sets: firstSets }),
+      normalizedExercise("first", {
+        position: 1,
+        supersetGroup: " group ",
+        weightSettings: { unit: "lb", minimumIncrement: 5, maximumAvailable: 100 },
+        sets: firstSets,
+      }),
     ],
   };
   const routine = { ...baseRoutine, normalizedPrescription: prescription } as Routine & { normalizedPrescription: NormalizedWorkoutPrescription };
@@ -905,6 +954,12 @@ test("normalized workout construction covers sorting, supersets, targets, rest, 
   assert.equal(sets.find((set) => set.id === "both-null")?.effort, "Exercise instructions");
   assert.equal(sets.find((set) => set.id === "both-null")?.purpose, "Set note");
   assert.equal(sets.find((set) => set.id === "seconds")?.purpose, "Fallback purpose");
+  assert.deepEqual(sets.find((set) => set.id === "both-null")?.weightSettings, {
+    unit: "lb",
+    minimumIncrement: 5,
+    maximumAvailable: 100,
+  });
+  assert.equal(sets.find((set) => set.id === "seconds")?.weightSettings, null);
   assert.deepEqual(new Set(sets.map((set) => set.restDisplay)), new Set([
     "Start every minute",
     "No rest before drop",

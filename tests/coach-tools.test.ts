@@ -8,7 +8,7 @@ import { coachProposalCompletionText, isCoachProposalTool } from "../src/server/
 
 const exercise = (id = "e1", overrides = {}): Exercise => ({ id, ownerEmail: "owner", name: id,
   normalizedName: id, equipment: "dumbbells", movementPattern: "push", trackingType: "reps",
-  defaultLoadType: "external", sideMode: "bilateral", instructions: "Control the descent.",
+  defaultLoadType: "external", sideMode: "bilateral", weightSettings: null, instructions: "Control the descent.",
   muscles: [{ muscleGroup: "chest", role: "primary", weight: 1 }], isFavorite: false,
   isActive: true, createdAt: "2026-09-01", updatedAt: "2026-09-01", ...overrides });
 const current = (): RoutineVersion => ({ id: "v1", ownerEmail: "owner", routineId: "r1", versionNumber: 1,

@@ -9,6 +9,7 @@ import type {
   Exercise,
   ExerciseInput,
   ExerciseMuscle,
+  ExerciseWeightSettings,
   LoadType,
   Routine,
   RoutineAggregate,
@@ -41,6 +42,16 @@ import { ensureEntityData, ensureEntitySchema } from "./entity-schema";
 type Row = Record<string, unknown>;
 const bool = (value: unknown) => Boolean(Number(value));
 const numberOrNull = (value: unknown) => value === null || value === undefined ? null : Number(value);
+
+function exerciseWeightSettingsFromRow(row: Row): ExerciseWeightSettings | null {
+  const unit = row.weightSettingsUnit;
+  const minimumIncrement = numberOrNull(row.minimumWeightIncrement);
+  const maximumAvailable = numberOrNull(row.maximumAvailableWeight);
+  if ((unit !== "lb" && unit !== "kg") || (minimumIncrement === null && maximumAvailable === null)) {
+    return null;
+  }
+  return { unit, minimumIncrement, maximumAvailable };
+}
 
 function formatRest(seconds: number, rule: string) {
   if (rule === "emom") return "Start every minute";
@@ -96,6 +107,7 @@ export class D1EntityRepository implements EntityRepository {
       normalizedName: String(row.normalizedName), equipment: String(row.equipment),
       movementPattern: String(row.movementPattern), trackingType: String(row.trackingType) as Exercise["trackingType"],
       defaultLoadType: String(row.defaultLoadType) as LoadType, sideMode: String(row.sideMode) as SideMode,
+      weightSettings: exerciseWeightSettingsFromRow(row),
       instructions: String(row.instructions), muscles: muscles.results.map((muscle) => ({ ...muscle, weight: Number(muscle.weight) })),
       isFavorite: bool(row.isFavorite),
       isActive: bool(row.isActive), createdAt: String(row.createdAt), updatedAt: String(row.updatedAt),
@@ -105,7 +117,10 @@ export class D1EntityRepository implements EntityRepository {
   private exerciseSelect() {
     return `SELECT ec.id, ec.owner_email AS ownerEmail, ec.name, ec.normalized_name AS normalizedName,
       equipment, movement_pattern AS movementPattern, tracking_type AS trackingType,
-      default_load_type AS defaultLoadType, side_mode AS sideMode, instructions,
+      default_load_type AS defaultLoadType, side_mode AS sideMode,
+      weight_settings_unit AS weightSettingsUnit,
+      minimum_weight_increment AS minimumWeightIncrement,
+      maximum_available_weight AS maximumAvailableWeight, instructions,
       is_active AS isActive, created_at AS createdAt, updated_at AS updatedAt,
       EXISTS (
         SELECT 1 FROM exercise_favorites ef
@@ -280,11 +295,14 @@ export class D1EntityRepository implements EntityRepository {
     const statements: D1PreparedStatement[] = [
       this.d1.prepare(`INSERT INTO exercise_catalog (
         id, owner_email, name, normalized_name, equipment, movement_pattern, tracking_type,
-        default_load_type, side_mode, instructions, origin, template_key, is_active, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'custom', NULL, 1, ?, ?)`)
+        default_load_type, side_mode, weight_settings_unit, minimum_weight_increment,
+        maximum_available_weight, instructions, origin, template_key, is_active, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'custom', NULL, 1, ?, ?)`)
         .bind(id, ownerEmail, input.name, normalizeExerciseName(input.name), input.equipment ?? "other",
           input.movementPattern ?? "other", input.trackingType ?? "reps", input.defaultLoadType ?? "external",
-          input.sideMode ?? "bilateral", input.instructions ?? "", now, now),
+          input.sideMode ?? "bilateral", input.weightSettings?.unit ?? null,
+          input.weightSettings?.minimumIncrement ?? null,
+          input.weightSettings?.maximumAvailable ?? null, input.instructions ?? "", now, now),
     ];
     for (const muscle of input.muscles ?? []) {
       statements.push(this.d1.prepare("INSERT INTO exercise_muscles (exercise_id, muscle_group, role, weight) VALUES (?, ?, ?, ?)")
@@ -303,11 +321,22 @@ export class D1EntityRepository implements EntityRepository {
     const statements: D1PreparedStatement[] = [
       this.d1.prepare(`UPDATE exercise_catalog SET name = ?, normalized_name = ?, equipment = ?,
         movement_pattern = ?, tracking_type = ?, default_load_type = ?, side_mode = ?,
+        weight_settings_unit = ?, minimum_weight_increment = ?, maximum_available_weight = ?,
         instructions = ?, updated_at = ? WHERE id = ? AND owner_email = ?`)
         .bind(input.name ?? existing.name, normalizeExerciseName(input.name ?? existing.name),
           input.equipment ?? existing.equipment, input.movementPattern ?? existing.movementPattern,
           input.trackingType ?? existing.trackingType, input.defaultLoadType ?? existing.defaultLoadType,
-          input.sideMode ?? existing.sideMode, input.instructions ?? existing.instructions, now, id, ownerEmail),
+          input.sideMode ?? existing.sideMode,
+          input.weightSettings === undefined
+            ? existing.weightSettings?.unit ?? null
+            : input.weightSettings?.unit ?? null,
+          input.weightSettings === undefined
+            ? existing.weightSettings?.minimumIncrement ?? null
+            : input.weightSettings?.minimumIncrement ?? null,
+          input.weightSettings === undefined
+            ? existing.weightSettings?.maximumAvailable ?? null
+            : input.weightSettings?.maximumAvailable ?? null,
+          input.instructions ?? existing.instructions, now, id, ownerEmail),
       this.d1.prepare("DELETE FROM exercise_muscles WHERE exercise_id = ?").bind(id),
     ];
     for (const muscle of muscles) {
@@ -346,11 +375,15 @@ export class D1EntityRepository implements EntityRepository {
     const statements: D1PreparedStatement[] = [
       this.d1.prepare(`UPDATE exercise_catalog SET name = ?, normalized_name = ?, equipment = ?,
         movement_pattern = ?, tracking_type = ?, default_load_type = ?, side_mode = ?,
+        weight_settings_unit = ?, minimum_weight_increment = ?, maximum_available_weight = ?,
         instructions = ?, updated_at = ?
         WHERE id = ? AND owner_email = ? AND is_active = 1 AND updated_at = ?`)
         .bind(input.name, normalizeExerciseName(input.name), input.equipment ?? "other",
           input.movementPattern ?? "other", input.trackingType ?? "reps",
           input.defaultLoadType ?? "external", input.sideMode ?? "bilateral",
+          input.weightSettings?.unit ?? null,
+          input.weightSettings?.minimumIncrement ?? null,
+          input.weightSettings?.maximumAvailable ?? null,
           input.instructions ?? "", mutationMarker, id, ownerEmail, expectedUpdatedAt),
       this.d1.prepare(`DELETE FROM exercise_muscles WHERE exercise_id = ? AND EXISTS (
         SELECT 1 FROM exercise_catalog

@@ -11,20 +11,35 @@ import {
   Card,
   Eyebrow,
   Heading,
+  Field,
   LoadingView,
   Message,
   RowLink,
   Screen,
 } from "../ui/ui";
+import { useProfile } from "../profile/public";
 import { colors, radii, spacing } from "../ui/tokens";
 import { ExerciseProgressCard } from "./exercise-progress-card";
+import {
+  createExerciseWeightSettingsDraft,
+  parseExerciseWeightSettingsDraft,
+  preferredExerciseWeightUnit,
+  type ExerciseWeightSettingsDraft,
+  type ExerciseWeightSettingsDraftErrors,
+} from "./exercise-weight-settings";
 
 export function ExerciseDetailScreen({ exerciseId, onCoachTargetChange }: { exerciseId: string; onCoachTargetChange?: CoachTargetChange }) {
+  const { profile } = useProfile();
   const [exercise, setExercise] = useState<Exercise | null>(null);
   const [usedIn, setUsedIn] = useState<RoutineAggregate[]>([]);
   const [usageStatus, setUsageStatus] = useState<"idle" | "loading" | "loaded" | "error">("idle");
   const [loading, setLoading] = useState(true);
   const [savingFavorite, setSavingFavorite] = useState(false);
+  const [editingWeightSettings, setEditingWeightSettings] = useState(false);
+  const [weightDraft, setWeightDraft] = useState<ExerciseWeightSettingsDraft | null>(null);
+  const [weightErrors, setWeightErrors] = useState<ExerciseWeightSettingsDraftErrors>({});
+  const [savingWeightSettings, setSavingWeightSettings] = useState(false);
+  const [weightSettingsError, setWeightSettingsError] = useState("");
   const [error, setError] = useState("");
   useEffect(() => {
     onCoachTargetChange?.(!loading && exercise ? { target: { kind: "exercise", exerciseId: exercise.id }, label: exercise.name } : null);
@@ -37,6 +52,10 @@ export function ExerciseDetailScreen({ exerciseId, onCoachTargetChange }: { exer
     setExercise(null);
     setUsedIn([]);
     setUsageStatus(exerciseId ? "loading" : "idle");
+    setEditingWeightSettings(false);
+    setWeightDraft(null);
+    setWeightErrors({});
+    setWeightSettingsError("");
 
     if (!exerciseId) {
       setLoading(false);
@@ -111,6 +130,48 @@ export function ExerciseDetailScreen({ exerciseId, onCoachTargetChange }: { exer
     }
   }
 
+  function beginWeightSettingsEdit() {
+    if (!exercise) return;
+    setWeightDraft(createExerciseWeightSettingsDraft(
+      exercise.weightSettings,
+      preferredExerciseWeightUnit(profile?.measurementSystem),
+    ));
+    setWeightErrors({});
+    setWeightSettingsError("");
+    setEditingWeightSettings(true);
+  }
+
+  function cancelWeightSettingsEdit() {
+    setEditingWeightSettings(false);
+    setWeightDraft(null);
+    setWeightErrors({});
+    setWeightSettingsError("");
+  }
+
+  async function saveWeightSettings() {
+    if (!exercise || !weightDraft || savingWeightSettings) return;
+    const parsed = parseExerciseWeightSettingsDraft(weightDraft);
+    setWeightErrors(parsed.errors);
+    if (Object.keys(parsed.errors).length) return;
+    setSavingWeightSettings(true);
+    setWeightSettingsError("");
+    try {
+      const payload = await apiRequest<{ exercise: Exercise }>(
+        `/api/v1/exercises/${encodeURIComponent(exercise.id)}`,
+        { method: "PATCH", body: JSON.stringify({ weightSettings: parsed.value }) },
+      );
+      setExercise(payload.exercise);
+      setEditingWeightSettings(false);
+      setWeightDraft(null);
+    } catch (caught) {
+      setWeightSettingsError(
+        caught instanceof Error ? caught.message : "Available loading could not be saved.",
+      );
+    } finally {
+      setSavingWeightSettings(false);
+    }
+  }
+
   if (loading) return <LoadingView label="Loading exercise…" />;
   if (!exercise) {
     return (
@@ -168,6 +229,101 @@ export function ExerciseDetailScreen({ exerciseId, onCoachTargetChange }: { exer
         <Fact label="Tracks" value={label(exercise.trackingType)} />
         <Fact label="Loading" value={label(exercise.defaultLoadType)} />
         <Fact label="Side mode" value={label(exercise.sideMode)} />
+      </Card>
+
+      <Card>
+        <View style={styles.cardHeading}>
+          <View style={styles.loadSettingsHeading}>
+            <Eyebrow>Coach targets</Eyebrow>
+            <Heading level={2} size="medium">Available loading</Heading>
+          </View>
+          {!editingWeightSettings ? (
+            <Button
+              title={exercise.weightSettings ? "Edit settings" : "Add settings"}
+              accessibilityLabel="Edit available loading settings"
+              compact
+              variant="secondary"
+              onPress={beginWeightSettingsEdit}
+            />
+          ) : null}
+        </View>
+        <Body muted>
+          Recommendations stay within the loads your equipment can provide. Values use
+          the same weight number you log during workouts.
+        </Body>
+        {editingWeightSettings && weightDraft ? (
+          <View style={styles.loadSettingsEditor}>
+            {weightSettingsError ? <Message>{weightSettingsError}</Message> : null}
+            <View style={styles.weightFields}>
+              <View style={styles.weightField}>
+                <Field
+                  label={`Minimum weight increment (${weightDraft.unit})`}
+                  hint="Leave blank to use the standard increment."
+                  error={weightErrors.minimumIncrement}
+                  editable={!savingWeightSettings}
+                  value={weightDraft.minimumIncrement}
+                  inputMode="decimal"
+                  keyboardType="decimal-pad"
+                  autoCorrect={false}
+                  maxLength={12}
+                  onChangeText={(minimumIncrement) => {
+                    setWeightDraft({ ...weightDraft, minimumIncrement });
+                    if (Object.keys(weightErrors).length) setWeightErrors({});
+                  }}
+                />
+              </View>
+              <View style={styles.weightField}>
+                <Field
+                  label={`Maximum available (${weightDraft.unit})`}
+                  hint="Leave blank when there is no known maximum."
+                  error={weightErrors.maximumAvailable}
+                  editable={!savingWeightSettings}
+                  value={weightDraft.maximumAvailable}
+                  inputMode="decimal"
+                  keyboardType="decimal-pad"
+                  autoCorrect={false}
+                  maxLength={12}
+                  onChangeText={(maximumAvailable) => {
+                    setWeightDraft({ ...weightDraft, maximumAvailable });
+                    if (Object.keys(weightErrors).length) setWeightErrors({});
+                  }}
+                />
+              </View>
+            </View>
+            <View style={styles.loadSettingsActions}>
+              <Button
+                title="Cancel"
+                compact
+                variant="secondary"
+                disabled={savingWeightSettings}
+                onPress={cancelWeightSettingsEdit}
+              />
+              <Button
+                title="Save settings"
+                compact
+                loading={savingWeightSettings}
+                onPress={() => void saveWeightSettings()}
+              />
+            </View>
+          </View>
+        ) : (
+          <View style={styles.weightFacts}>
+            <Fact
+              label="Smallest increment"
+              value={formatWeightSetting(
+                exercise.weightSettings?.minimumIncrement ?? null,
+                exercise.weightSettings?.unit,
+              )}
+            />
+            <Fact
+              label="Maximum available"
+              value={formatWeightSetting(
+                exercise.weightSettings?.maximumAvailable ?? null,
+                exercise.weightSettings?.unit,
+              )}
+            />
+          </View>
+        )}
       </Card>
 
       <ExerciseProgressCard exerciseId={exercise.id} exerciseName={exercise.name} />
@@ -241,6 +397,10 @@ function label(value: string) {
   return value.split("_").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
 }
 
+function formatWeightSetting(value: number | null, unit: string | undefined) {
+  return value === null || !unit ? "Not set" : `${value} ${unit}`;
+}
+
 const styles = StyleSheet.create({
   back: { color: colors.textMuted, fontSize: 13, fontWeight: "700" },
   title: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: spacing.md },
@@ -254,6 +414,12 @@ const styles = StyleSheet.create({
   favoriteIconSelected: { color: colors.warning },
   active: { color: colors.success, fontSize: 10, fontWeight: "800", textTransform: "uppercase" },
   factGrid: { flexDirection: "row", flexWrap: "wrap" },
+  loadSettingsHeading: { flex: 1, gap: spacing.xs },
+  loadSettingsEditor: { gap: spacing.md },
+  weightFields: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
+  weightField: { flexGrow: 1, flexBasis: 220, minWidth: 0 },
+  weightFacts: { flexDirection: "row", flexWrap: "wrap" },
+  loadSettingsActions: { flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: spacing.sm },
   fact: { flexGrow: 1, flexBasis: 130, gap: spacing.xs, paddingVertical: spacing.sm },
   factLabel: { color: colors.textDim, fontSize: 9, textTransform: "uppercase", fontWeight: "800" },
   factValue: { color: colors.text, fontSize: 13, fontWeight: "700" },

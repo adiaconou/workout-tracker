@@ -10,6 +10,7 @@ const baseSet = {
   targetMax: 10,
   targetType: "reps" as const,
   targetUnit: "reps" as const,
+  weightSettings: null,
   weightUnit: "lb",
 };
 
@@ -156,6 +157,120 @@ test("adjusts added, weighted-bodyweight, and assistance loads conservatively", 
     { ...baseSet, loadType: "bodyweight" },
     { ...atTop, loadType: "bodyweight", actualWeight: null },
   )?.actualReps, 11);
+});
+
+test("uses exercise increments and caps without resetting reps at an unchanged maximum", () => {
+  const configured = {
+    ...baseSet,
+    weightSettings: { unit: "lb" as const, minimumIncrement: 5, maximumAvailable: 107 },
+  };
+  assert.equal(recommendProgressiveTarget(
+    configured,
+    previous({ actualWeight: 100, actualReps: 10 }),
+  )?.actualWeight, 105);
+  assert.deepEqual(recommendProgressiveTarget(
+    configured,
+    previous({ actualWeight: 105, actualReps: 10 }),
+  ), {
+    status: "Completed",
+    actualWeight: 107,
+    actualReps: 8,
+    actualDurationSec: null,
+    weightUnit: "lb",
+    targetType: "reps",
+    loadType: "external",
+  });
+  assert.deepEqual(recommendProgressiveTarget(
+    configured,
+    previous({ actualWeight: 107, actualReps: 10 }),
+  ), {
+    status: "Completed",
+    actualWeight: 107,
+    actualReps: 10,
+    actualDurationSec: null,
+    weightUnit: "lb",
+    targetType: "reps",
+    loadType: "external",
+  });
+  assert.deepEqual(recommendProgressiveTarget(
+    {
+      ...configured,
+      weightSettings: { unit: "lb", minimumIncrement: 5, maximumAvailable: 105 },
+    },
+    previous({ actualWeight: 103, actualReps: 10 }),
+  ), {
+    status: "Completed",
+    actualWeight: 105,
+    actualReps: 8,
+    actualDurationSec: null,
+    weightUnit: "lb",
+    targetType: "reps",
+    loadType: "external",
+  });
+  assert.deepEqual(recommendProgressiveTarget(
+    {
+      ...configured,
+      weightSettings: { unit: "lb", minimumIncrement: null, maximumAvailable: 101 },
+    },
+    previous({ actualWeight: 100, actualReps: 10 }),
+  )?.actualWeight, 101);
+  assert.equal(recommendProgressiveTarget(
+    { ...configured, setType: "warmup" as const },
+    previous({ actualWeight: 120, actualReps: 5 }),
+  )?.actualWeight, 107);
+});
+
+test("converts configured limits, stabilizes decimals, and bounds assistance", () => {
+  assert.equal(recommendProgressiveTarget({
+    ...baseSet,
+    weightUnit: "kg",
+    weightSettings: { unit: "lb", minimumIncrement: 5, maximumAvailable: 105 },
+  }, previous({ actualWeight: 100, actualReps: 10, weightUnit: "lb" }))?.actualWeight, 47.63);
+  assert.equal(recommendProgressiveTarget({
+    ...baseSet,
+    weightSettings: { unit: "lb", minimumIncrement: 0.1, maximumAvailable: null },
+  }, previous({ actualWeight: 0.2, actualReps: 10 }))?.actualWeight, 0.3);
+  assert.equal(recommendProgressiveTarget({
+    ...baseSet,
+    loadType: "assistance",
+    weightSettings: { unit: "lb", minimumIncrement: 5, maximumAvailable: 20 },
+  }, previous({
+    loadType: "assistance",
+    actualWeight: 25,
+    actualReps: 10,
+  }))?.actualWeight, 15);
+});
+
+test("ignores malformed legacy settings and preserves standard increment fallbacks", () => {
+  assert.equal(recommendProgressiveTarget({
+    ...baseSet,
+    weightSettings: { unit: undefined as unknown as "lb", minimumIncrement: 5, maximumAvailable: null },
+  }, previous({ actualReps: 10 }))?.actualWeight, 102.5);
+  assert.equal(recommendProgressiveTarget({
+    ...baseSet,
+    weightSettings: { unit: "lb", minimumIncrement: 0.001, maximumAvailable: null },
+  }, previous({ actualReps: 10 }))?.actualWeight, 100, "a rounded increment must not invent a load increase");
+  assert.equal(recommendProgressiveTarget({
+    ...baseSet,
+    weightSettings: {
+      unit: "lb",
+      minimumIncrement: 0,
+      maximumAvailable: Number.NaN,
+    },
+  }, previous({ actualReps: 10 }))?.actualWeight, 102.5);
+  assert.equal(recommendProgressiveTarget({
+    ...baseSet,
+    weightUnit: "plates",
+    weightSettings: { unit: "kg", minimumIncrement: 1, maximumAvailable: 20 },
+  }, previous({ actualWeight: 4, actualReps: 10, weightUnit: "plates" }))?.actualWeight, 4);
+  assert.equal(recommendProgressiveTarget({
+    ...baseSet,
+    weightSettings: {
+      unit: "stone" as "lb",
+      minimumIncrement: 5,
+      maximumAvailable: 100,
+    },
+  }, previous({ actualReps: 10 }))?.actualWeight, 102.5);
 });
 
 test("converts comparable load units and avoids inventing unsupported increments", () => {

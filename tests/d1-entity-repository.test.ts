@@ -1204,14 +1204,27 @@ test("D1 entity repository provisions exercises, versions, publishes, materializ
         { muscleGroup: "quads", role: "primary", weight: 1 },
         { muscleGroup: "glutes", role: "secondary", weight: 0.7 },
       ],
+      weightSettings: { unit: "lb", minimumIncrement: 5, maximumAvailable: 80 },
+    });
+    assert.deepEqual(exercise.weightSettings, {
+      unit: "lb",
+      minimumIncrement: 5,
+      maximumAvailable: 80,
     });
     const routine = await repository.createRoutine(owner, "E", singleSetRoutine(exercise.id, "Simple legs"));
     assert.equal(routine.currentVersion?.versionNumber, 1);
     assert.equal(routine.currentVersion?.exercises[0].sets[0].restAfterSec, 90);
-    await repository.updateExercise(owner, exercise.id, {
+    const updatedExercise = await repository.updateExercise(owner, exercise.id, {
       name: "Updated goblet squat",
       defaultLoadType: "bodyweight",
     });
+    assert.deepEqual(updatedExercise?.weightSettings, exercise.weightSettings);
+    assert.equal((await repository.updateExercise(owner, exercise.id, {
+      weightSettings: null,
+    }))?.weightSettings, null);
+    assert.deepEqual((await repository.updateExercise(owner, exercise.id, {
+      weightSettings: exercise.weightSettings,
+    }))?.weightSettings, exercise.weightSettings);
     const projectedExercise = await d1.prepare(`SELECT name, load_type AS loadType FROM exercises
       WHERE owner_email = ? AND routine_code = 'E' AND exercise_order = 1`)
       .bind(owner).first<{ name: string; loadType: string }>();
@@ -1442,6 +1455,7 @@ test("D1 entity repository applies Coach exercise updates and archives only at t
     const created = await repository.createExercise(owner, {
       name: "CAS press",
       equipment: "machine",
+      weightSettings: { unit: "kg", minimumIncrement: 2.5, maximumAvailable: 100 },
       muscles: [{ muscleGroup: "chest", role: "primary", weight: 1 }],
     });
     const routine = await repository.createRoutine(owner, "CAS", singleSetRoutine(created.id, "CAS routine"));
@@ -1471,12 +1485,18 @@ test("D1 entity repository applies Coach exercise updates and archives only at t
         trackingType: "reps",
         defaultLoadType: "bodyweight",
         sideMode: "bilateral",
+        weightSettings: { unit: "kg", minimumIncrement: 1.25, maximumAvailable: 80 },
         instructions: "Approved edit",
         muscles: [{ muscleGroup: "triceps", role: "primary", weight: 0.8 }],
       },
     );
     assert.equal(applied?.name, "Updated CAS press");
     assert.deepEqual(applied?.muscles, [{ muscleGroup: "triceps", role: "primary", weight: 0.8 }]);
+    assert.deepEqual(applied?.weightSettings, {
+      unit: "kg",
+      minimumIncrement: 1.25,
+      maximumAvailable: 80,
+    });
     const projectedExercise = await d1.prepare(`SELECT name, load_type AS loadType FROM exercises
       WHERE owner_email = ? AND routine_code = 'CAS' AND exercise_order = 1`)
       .bind(owner).first<{ name: string; loadType: string }>();

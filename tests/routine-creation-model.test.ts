@@ -46,6 +46,7 @@ function libraryExercise(overrides: Partial<Exercise> = {}): Exercise {
     createdAt: "now",
     updatedAt: "now",
     ...overrides,
+    weightSettings: overrides.weightSettings ?? null,
   };
 }
 

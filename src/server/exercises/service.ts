@@ -48,6 +48,9 @@ export class ExerciseService {
       trackingType: input.trackingType ?? existing.trackingType,
       defaultLoadType: input.defaultLoadType ?? existing.defaultLoadType,
       sideMode: input.sideMode ?? existing.sideMode,
+      weightSettings: input.weightSettings === undefined
+        ? existing.weightSettings
+        : input.weightSettings,
       instructions: input.instructions ?? existing.instructions,
       muscles: input.muscles ?? existing.muscles,
     }));

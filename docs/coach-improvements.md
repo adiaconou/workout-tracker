@@ -38,13 +38,18 @@ validation, complete pagination, and late responses after a thread switch.
 Run `npm test` for typechecking, architecture boundaries, behavior, and 100%
 per-file unit coverage, then `npm run build` for the application bundle.
 
-Release validation is run in an isolated worktree containing only the Coach changes.
-The existing exercise settings and set-prefill work remains local and uncommitted.
+The initial Coach-only release was validated in an isolated worktree. The follow-up
+release also includes per-exercise weight settings and workout set prefilling,
+with their persistence, Coach integration, and regression tests.
 
-Release validation on September 6, 2026: `npm test` passed all 478 tests,
+Coach-only release validation on September 6, 2026: `npm test` passed all 478 tests,
 typechecking, architecture lint, and 100% per-file coverage. `npm run build`,
 `git diff --check`, and the 30-scenario offline catalog passed. Drizzle confirmed
 that the isolated migration snapshot matches the schema with no further changes.
+
+The complete follow-up release passed 490 tests with 100% per-file coverage,
+typechecking, architecture lint, the production build, and all 30 offline
+evaluation scenarios. The migration generator reported no remaining schema changes.
 
 ## Implemented behavior
 
@@ -66,8 +71,9 @@ fresh server state supplies current routine and proposal status.
 
 Migration `0019_naive_puppet_master.sql` adds context snapshots, summary cursors,
 proposal provenance, revision links, and draft/publication receipts. It is additive
-and follows the published migration chain through 0017. Migration 0018 belongs
-to separate, unshipped exercise settings work and is excluded from this release.
+and follows the published migration chain through 0017. The exercise settings
+migration was regenerated as `0020_exercise_weight_settings.sql` to follow the
+Coach migration and is included in the follow-up release.
 
 ## Evaluation
 

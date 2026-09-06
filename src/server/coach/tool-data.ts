@@ -27,9 +27,9 @@ export function coachPage<T>(items: readonly T[], limit: number, offset: number,
 
 export function coachExerciseSummary(exercise: Exercise) {
   const { id, name, equipment, movementPattern, trackingType, defaultLoadType, sideMode,
-    muscles, isActive, updatedAt } = exercise;
+    weightSettings, muscles, isActive, updatedAt } = exercise;
   return { id, name, equipment, movementPattern, trackingType, defaultLoadType, sideMode,
-    muscles, isActive, updatedAt };
+    weightSettings, muscles, isActive, updatedAt };
 }
 
 export function coachRoutineSummary(routine: RoutineAggregate) {

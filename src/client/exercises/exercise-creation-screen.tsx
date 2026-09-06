@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Platform,
   Pressable,
@@ -16,6 +16,7 @@ import {
   type TrackingType,
 } from "../../domain/entities/exercise";
 import { apiRequest } from "../api/client";
+import { useProfile } from "../profile/public";
 import {
   Body,
   Button,
@@ -38,6 +39,11 @@ import {
   type ExerciseCreationForm,
 } from "./exercise-creation-model";
 import { exerciseDetailHref } from "./exercise-routes";
+import {
+  parseExerciseWeightSettingsDraft,
+  preferredExerciseWeightUnit,
+  type ExerciseWeightSettingsDraftErrors,
+} from "./exercise-weight-settings";
 
 const trackingTypeOptions: ReadonlyArray<readonly [TrackingType, string]> = [
   ["reps", "Reps"],
@@ -65,11 +71,32 @@ const primaryMuscleOptions: ReadonlyArray<readonly [MuscleGroup | "", string]> =
 ];
 
 export function ExerciseCreationScreen() {
-  const [form, setForm] = useState<ExerciseCreationForm>(createExerciseCreationForm);
+  const { profile } = useProfile();
+  const preferredWeightUnit = preferredExerciseWeightUnit(profile?.measurementSystem);
+  const [form, setForm] = useState<ExerciseCreationForm>(() => (
+    createExerciseCreationForm(preferredWeightUnit)
+  ));
   const [nameError, setNameError] = useState("");
   const [muscleError, setMuscleError] = useState("");
+  const [weightErrors, setWeightErrors] = useState<ExerciseWeightSettingsDraftErrors>({});
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setForm((current) => {
+      if (
+        current.weightSettings.minimumIncrement.trim()
+        || current.weightSettings.maximumAvailable.trim()
+        || current.weightSettings.unit === preferredWeightUnit
+      ) {
+        return current;
+      }
+      return {
+        ...current,
+        weightSettings: { ...current.weightSettings, unit: preferredWeightUnit },
+      };
+    });
+  }, [preferredWeightUnit]);
 
   function update(patch: Partial<ExerciseCreationForm>) {
     setForm((current) => ({ ...current, ...patch }));
@@ -79,9 +106,11 @@ export function ExerciseCreationScreen() {
     if (saving) return;
     const nextNameError = exerciseCreationNameError(form);
     const nextMuscleError = exerciseCreationMuscleError(form);
+    const parsedWeightSettings = parseExerciseWeightSettingsDraft(form.weightSettings);
     setNameError(nextNameError);
     setMuscleError(nextMuscleError);
-    if (nextNameError || nextMuscleError) return;
+    setWeightErrors(parsedWeightSettings.errors);
+    if (nextNameError || nextMuscleError || Object.keys(parsedWeightSettings.errors).length) return;
 
     setSaving(true);
     setError("");
@@ -191,6 +220,57 @@ export function ExerciseCreationScreen() {
           disabled={saving}
           onChange={(sideMode) => update({ sideMode })}
         />
+      </Card>
+
+      <Card>
+        <Eyebrow>Coach targets · optional</Eyebrow>
+        <Heading level={2} size="small">Available loading</Heading>
+        <Body muted>
+          Coach uses these guardrails to suggest loads your equipment can provide.
+          Use the same weight number you log during workouts.
+        </Body>
+        <View style={styles.weightFields}>
+          <View style={styles.weightField}>
+            <Field
+              label={`Minimum weight increment (${form.weightSettings.unit})`}
+              hint="Leave blank to use the standard increment."
+              error={weightErrors.minimumIncrement}
+              editable={!saving}
+              value={form.weightSettings.minimumIncrement}
+              inputMode="decimal"
+              keyboardType="decimal-pad"
+              autoCorrect={false}
+              maxLength={12}
+              placeholder={form.weightSettings.unit === "kg" ? "1" : "2.5"}
+              onChangeText={(minimumIncrement) => {
+                update({
+                  weightSettings: { ...form.weightSettings, minimumIncrement },
+                });
+                if (Object.keys(weightErrors).length) setWeightErrors({});
+              }}
+            />
+          </View>
+          <View style={styles.weightField}>
+            <Field
+              label={`Maximum available (${form.weightSettings.unit})`}
+              hint="Leave blank when there is no known maximum."
+              error={weightErrors.maximumAvailable}
+              editable={!saving}
+              value={form.weightSettings.maximumAvailable}
+              inputMode="decimal"
+              keyboardType="decimal-pad"
+              autoCorrect={false}
+              maxLength={12}
+              placeholder="50"
+              onChangeText={(maximumAvailable) => {
+                update({
+                  weightSettings: { ...form.weightSettings, maximumAvailable },
+                });
+                if (Object.keys(weightErrors).length) setWeightErrors({});
+              }}
+            />
+          </View>
+        </View>
       </Card>
 
       <Card>
@@ -372,6 +452,8 @@ const styles = StyleSheet.create({
   },
   groupError: { color: colors.danger, fontSize: 12, lineHeight: 17, fontWeight: "700" },
   choiceGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  weightFields: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
+  weightField: { flexGrow: 1, flexBasis: 220, minWidth: 0 },
   choice: {
     minHeight: 44,
     minWidth: 128,

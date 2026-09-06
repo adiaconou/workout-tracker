@@ -4,8 +4,14 @@ import type {
   MuscleGroup,
   SideMode,
   TrackingType,
+  WeightUnit,
 } from "../../domain/entities/exercise";
 import { validateExerciseInput } from "../../domain/exercises/validation";
+import {
+  createExerciseWeightSettingsDraft,
+  parseExerciseWeightSettingsDraft,
+  type ExerciseWeightSettingsDraft,
+} from "./exercise-weight-settings";
 
 export const exerciseEquipmentOptions = [
   ["other", "Other / not listed"],
@@ -38,9 +44,10 @@ export type ExerciseCreationForm = {
   instructions: string;
   primaryMuscle: MuscleGroup | "";
   secondaryMuscles: MuscleGroup[];
+  weightSettings: ExerciseWeightSettingsDraft;
 };
 
-export function createExerciseCreationForm(): ExerciseCreationForm {
+export function createExerciseCreationForm(weightUnit: WeightUnit = "lb"): ExerciseCreationForm {
   return {
     name: "",
     equipment: "other",
@@ -51,6 +58,7 @@ export function createExerciseCreationForm(): ExerciseCreationForm {
     instructions: "",
     primaryMuscle: "",
     secondaryMuscles: [],
+    weightSettings: createExerciseWeightSettingsDraft(null, weightUnit),
   };
 }
 
@@ -97,6 +105,9 @@ export function buildExerciseCreationInput(
   const muscleError = exerciseCreationMuscleError(form);
   if (muscleError) throw new Error(muscleError);
   const primaryMuscle = form.primaryMuscle as MuscleGroup;
+  const parsedWeightSettings = parseExerciseWeightSettingsDraft(form.weightSettings);
+  const weightError = Object.values(parsedWeightSettings.errors)[0];
+  if (weightError) throw new Error(weightError);
 
   return validateExerciseInput({
     name: form.name,
@@ -106,6 +117,7 @@ export function buildExerciseCreationInput(
     defaultLoadType: form.defaultLoadType,
     sideMode: form.sideMode,
     instructions: form.instructions,
+    weightSettings: parsedWeightSettings.value,
     muscles: [
       { muscleGroup: primaryMuscle, role: "primary" as const, weight: 1 },
       ...form.secondaryMuscles.map((muscleGroup) => ({

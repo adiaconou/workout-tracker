@@ -582,6 +582,7 @@ export async function startWorkout(
               loadType: catalog?.defaultLoadType ?? "external",
               sideMode: catalog?.sideMode ?? exercise.sets[0]?.sideMode ?? "bilateral",
               weightUnit: measurementSnapshot.weightUnit,
+              weightSettings: catalog?.weightSettings ?? null,
               sets: [...exercise.sets]
                 .sort((left, right) => left.position - right.position)
                 .map((set) => ({

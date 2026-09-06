@@ -89,6 +89,16 @@ const proposedExerciseSchema = {
     trackingType: { type: "string", enum: ["reps", "duration", "rounds"] },
     defaultLoadType: { type: "string", enum: ["external", "bodyweight", "added", "assistance"] },
     sideMode: { type: "string", enum: ["bilateral", "per_side", "per_leg", "left_right"] },
+    weightSettings: {
+      type: ["object", "null"],
+      properties: {
+        unit: { type: "string", enum: ["lb", "kg"] },
+        minimumIncrement: { type: ["number", "null"], exclusiveMinimum: 0 },
+        maximumAvailable: { type: ["number", "null"], exclusiveMinimum: 0 },
+      },
+      required: ["unit", "minimumIncrement", "maximumAvailable"],
+      additionalProperties: false,
+    },
     instructions: { type: "string" },
     muscles: {
       type: "array",
@@ -106,7 +116,7 @@ const proposedExerciseSchema = {
   },
   required: [
     "name", "equipment", "movementPattern", "trackingType", "defaultLoadType",
-    "sideMode", "instructions", "muscles",
+    "sideMode", "weightSettings", "instructions", "muscles",
   ],
   additionalProperties: false,
 } as const;

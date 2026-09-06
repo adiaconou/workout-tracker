@@ -24,6 +24,11 @@ test("starts with practical tracking defaults and requires a name", () => {
     instructions: "",
     primaryMuscle: "",
     secondaryMuscles: [],
+    weightSettings: {
+      unit: "lb",
+      minimumIncrement: "",
+      maximumAvailable: "",
+    },
   });
   assert.equal(exerciseCreationNameError(form), "Exercise name is required.");
   assert.equal(exerciseCreationMuscleError(form), "Select a primary muscle.");
@@ -88,6 +93,7 @@ test("builds the owner-agnostic exercise POST payload and normalizes text", () =
     defaultLoadType: "external",
     sideMode: "per_side",
     instructions: "Keep the ribs down.",
+    weightSettings: null,
     muscles: [
       { muscleGroup: "back", role: "primary", weight: 1 },
       { muscleGroup: "biceps", role: "secondary", weight: 0.5 },
@@ -109,9 +115,35 @@ test("builds the owner-agnostic exercise POST payload and normalizes text", () =
       defaultLoadType: "external",
       sideMode: "bilateral",
       instructions: "",
+      weightSettings: null,
       muscles: [{ muscleGroup: "grip", role: "primary", weight: 1 }],
     },
   );
+});
+
+test("includes validated available-loading settings in the exercise payload", () => {
+  const input = buildExerciseCreationInput({
+    ...createExerciseCreationForm("kg"),
+    name: "Cable row",
+    primaryMuscle: "back",
+    weightSettings: {
+      unit: "kg",
+      minimumIncrement: "2.5",
+      maximumAvailable: " 80 ",
+    },
+  });
+
+  assert.deepEqual(input.weightSettings, {
+    unit: "kg",
+    minimumIncrement: 2.5,
+    maximumAvailable: 80,
+  });
+  assert.throws(() => buildExerciseCreationInput({
+    ...createExerciseCreationForm(),
+    name: "Cable row",
+    primaryMuscle: "back",
+    weightSettings: { unit: "lb", minimumIncrement: "5", maximumAvailable: "2.5" },
+  }), /Maximum must be at least/);
 });
 
 test("offers only equipment requirements understood by availability checks", () => {

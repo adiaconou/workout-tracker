@@ -312,6 +312,7 @@ export function exerciseGenerationContext(exercises: readonly Exercise[]) {
     trackingType: exercise.trackingType,
     defaultLoadType: exercise.defaultLoadType,
     sideMode: exercise.sideMode,
+    weightSettings: exercise.weightSettings,
     instructions: exercise.instructions,
     muscles: exercise.muscles,
   }));

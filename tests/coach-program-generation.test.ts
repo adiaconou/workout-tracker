@@ -290,6 +290,7 @@ test("exercise generation context exposes only fields needed to prescribe librar
     trackingType: "reps",
     defaultLoadType: "bodyweight",
     sideMode: "bilateral",
+    weightSettings: { unit: "lb", minimumIncrement: 5, maximumAvailable: 50 },
     instructions: "Keep a rigid torso.",
     muscles: [{ muscleGroup: "chest", role: "primary", weight: 1 }],
     isFavorite: true,
@@ -305,6 +306,7 @@ test("exercise generation context exposes only fields needed to prescribe librar
     trackingType: "reps",
     defaultLoadType: "bodyweight",
     sideMode: "bilateral",
+    weightSettings: { unit: "lb", minimumIncrement: 5, maximumAvailable: 50 },
     instructions: "Keep a rigid torso.",
     muscles: [{ muscleGroup: "chest", role: "primary", weight: 1 }],
   }]);

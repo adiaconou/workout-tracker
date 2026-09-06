@@ -11,6 +11,7 @@ type ProgressiveSet = Pick<
   | "targetMin"
   | "targetType"
   | "targetUnit"
+  | "weightSettings"
   | "weightUnit"
 >;
 
@@ -44,29 +45,65 @@ function previousResult(set: ProgressiveSet, previous: PreviousExerciseSet) {
   return value !== null && Number.isFinite(value) && value > 0 ? value : null;
 }
 
+function stableWeight(value: number) {
+  return Number(value.toFixed(2));
+}
+
+function configuredWeightValue(
+  set: ProgressiveSet,
+  value: number | null | undefined,
+) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+  const settingsUnit = canonicalWeightUnit(set.weightSettings?.unit ?? "");
+  const currentUnit = canonicalWeightUnit(set.weightUnit);
+  if (!settingsUnit || !currentUnit) return null;
+  return convertWeight(value, settingsUnit, currentUnit);
+}
+
+function maximumLoad(set: ProgressiveSet) {
+  return configuredWeightValue(set, set.weightSettings?.maximumAvailable);
+}
+
 function previousWeight(set: ProgressiveSet, previous: PreviousExerciseSet) {
   const value = previous.actualWeight;
-  if (value === null) return set.loadType === "bodyweight" ? 0 : null;
+  if (value === null) {
+    return set.loadType === "bodyweight" ? { value: 0, atMaximum: false } : null;
+  }
   if (!Number.isFinite(value) || value < 0) return null;
-  if (value === 0) return 0;
+  if (value === 0) return { value: 0, atMaximum: false };
 
   const previousUnitLabel = previous.weightUnit.trim() || set.weightUnit;
   const currentUnit = canonicalWeightUnit(set.weightUnit);
   const previousUnit = canonicalWeightUnit(previousUnitLabel);
   if (currentUnit && previousUnit) {
     const converted = convertWeight(value, previousUnit, currentUnit);
-    const increment = loadIncrement(set.weightUnit)!;
-    return Number((Math.round(converted / increment) * increment).toFixed(2));
+    const maximum = maximumLoad(set);
+    if (maximum !== null && converted >= maximum) {
+      return { value: stableWeight(maximum), atMaximum: true };
+    }
+    if (currentUnit === previousUnit) {
+      return { value: stableWeight(converted), atMaximum: false };
+    }
+    const increment = loadIncrement(set)!;
+    const quantized = stableWeight(Math.round(converted / increment) * increment);
+    return {
+      value: maximum === null ? quantized : Math.min(quantized, stableWeight(maximum)),
+      atMaximum: maximum !== null && quantized >= maximum,
+    };
   }
-  return normalized(previousUnitLabel) === normalized(set.weightUnit) ? value : null;
+  return normalized(previousUnitLabel) === normalized(set.weightUnit)
+    ? { value, atMaximum: false }
+    : null;
 }
 
 function resultIncrement(set: ProgressiveSet) {
   return set.targetUnit === "seconds" ? 5 : 1;
 }
 
-function loadIncrement(weightUnit: string) {
-  const unit = canonicalWeightUnit(weightUnit);
+function loadIncrement(set: ProgressiveSet) {
+  const configured = configuredWeightValue(set, set.weightSettings?.minimumIncrement);
+  if (configured !== null) return configured;
+  const unit = canonicalWeightUnit(set.weightUnit);
   if (unit === "kg") return 1;
   if (unit === "lb") return 2.5;
   return null;
@@ -104,8 +141,9 @@ export function recommendProgressiveTarget(
   }
 
   const result = previousResult(set, previous);
-  const weight = previousWeight(set, previous);
-  if (result === null || weight === null) return undefined;
+  const previousLoad = previousWeight(set, previous);
+  if (result === null || previousLoad === null) return undefined;
+  const weight = previousLoad.value;
 
   const targetMin = positiveTarget(set.targetMin);
   const targetMax = positiveTarget(set.targetMax);
@@ -127,13 +165,20 @@ export function recommendProgressiveTarget(
     );
   }
 
-  const nextLoad = loadIncrement(set.weightUnit);
+  const nextLoad = loadIncrement(set);
   if (targetMin !== null && nextLoad !== null) {
     if (loadType === "external" || loadType === "added" || (loadType === "bodyweight" && weight > 0)) {
-      return performance(set, weight + nextLoad, targetMin);
+      if (previousLoad.atMaximum) return performance(set, weight, targetMax);
+      const maximum = maximumLoad(set);
+      const increased = stableWeight(maximum === null
+        ? weight + nextLoad
+        : Math.min(weight + nextLoad, maximum));
+      return increased > weight
+        ? performance(set, increased, targetMin)
+        : performance(set, weight, targetMax);
     }
     if (loadType === "assistance" && weight > 0) {
-      return performance(set, Math.max(0, weight - nextLoad), targetMin);
+      return performance(set, stableWeight(Math.max(0, weight - nextLoad)), targetMin);
     }
   }
 

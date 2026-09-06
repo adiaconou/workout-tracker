@@ -21,6 +21,7 @@ const fullExercise = (name, overrides = {}) => ({
   trackingType: "reps",
   defaultLoadType: "external",
   sideMode: "bilateral",
+  weightSettings: null,
   instructions: "Move with control.",
   muscles: [{ muscleGroup: "grip", role: "primary", weight: 1 }],
   ...overrides,

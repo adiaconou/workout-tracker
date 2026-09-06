@@ -248,7 +248,8 @@ test("exercise service performs catalog CRUD through the repository boundary", a
         id: "exercise-1", ownerEmail, name: input.name, normalizedName: input.name.toLowerCase(),
         equipment: input.equipment ?? "other", movementPattern: input.movementPattern ?? "other",
         trackingType: input.trackingType ?? "reps", defaultLoadType: input.defaultLoadType ?? "external",
-        sideMode: input.sideMode ?? "bilateral", instructions: input.instructions ?? "",
+        sideMode: input.sideMode ?? "bilateral", weightSettings: input.weightSettings ?? null,
+        instructions: input.instructions ?? "",
         muscles: input.muscles ?? [], isFavorite: false, isActive: true, createdAt: "now", updatedAt: "now",
       };
       return stored;
@@ -292,7 +293,8 @@ test("exercise service requires a primary muscle only when creating a new exerci
         id: "exercise-new", ownerEmail, name: input.name, normalizedName: input.name.toLowerCase(),
         equipment: input.equipment ?? "other", movementPattern: input.movementPattern ?? "other",
         trackingType: input.trackingType ?? "reps", defaultLoadType: input.defaultLoadType ?? "external",
-        sideMode: input.sideMode ?? "bilateral", instructions: input.instructions ?? "",
+        sideMode: input.sideMode ?? "bilateral", weightSettings: input.weightSettings ?? null,
+        instructions: input.instructions ?? "",
         muscles: input.muscles ?? [], isFavorite: false, isActive: true, createdAt: "now", updatedAt: "now",
       };
       return stored;
@@ -334,6 +336,13 @@ test("exercise service requires a primary muscle only when creating a new exerci
   });
   assert.deepEqual(updatedLegacy?.muscles, []);
   assert.equal(updatedLegacy?.instructions, "Keep the legacy row editable.");
+  const configured = await service.update("owner@example.com", stored.id, {
+    weightSettings: { unit: "kg", minimumIncrement: 2.5, maximumAvailable: 40 },
+  });
+  assert.deepEqual(configured?.weightSettings, { unit: "kg", minimumIncrement: 2.5, maximumAvailable: 40 });
+  assert.deepEqual((await service.update("owner@example.com", stored.id, { instructions: "Retain limits." }))?.weightSettings,
+    configured?.weightSettings, "omission must preserve equipment settings");
+  assert.equal((await service.update("owner@example.com", stored.id, { weightSettings: null }))?.weightSettings, null);
 });
 
 test("exercise progress validates units and normalizes the requested start date", async () => {

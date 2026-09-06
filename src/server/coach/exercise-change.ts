@@ -3,6 +3,7 @@ import type {
   Exercise,
   ExerciseInput,
   ExerciseMuscle,
+  ExerciseWeightSettings,
   LoadType,
   SideMode,
   TrackingType,
@@ -17,6 +18,7 @@ export type CompleteExerciseInput = {
   trackingType: TrackingType;
   defaultLoadType: LoadType;
   sideMode: SideMode;
+  weightSettings: ExerciseWeightSettings | null;
   instructions: string;
   muscles: ExerciseMuscle[];
 };
@@ -53,6 +55,7 @@ export function completeExerciseInput(value: unknown): CompleteExerciseInput {
     trackingType: validated.trackingType ?? "reps",
     defaultLoadType: validated.defaultLoadType ?? "external",
     sideMode: validated.sideMode ?? "bilateral",
+    weightSettings: validated.weightSettings ?? null,
     instructions: validated.instructions!,
     muscles: validated.muscles!,
   };
@@ -66,6 +69,7 @@ export function exerciseInputSnapshot(exercise: Exercise): CompleteExerciseInput
     trackingType: exercise.trackingType,
     defaultLoadType: exercise.defaultLoadType,
     sideMode: exercise.sideMode,
+    weightSettings: exercise.weightSettings,
     instructions: exercise.instructions,
     muscles: exercise.muscles,
   };
@@ -88,6 +92,7 @@ export function buildExerciseChangeDiff(
         + `Loading: ${loadLabels[proposed.defaultLoadType]}; `
         + `Side mode: ${sideLabels[proposed.sideMode]}`,
       ),
+      asSentence(`Available loading: ${formatWeightSettings(proposed.weightSettings)}`),
       asSentence(`Instructions: ${formatInstructions(proposed.instructions)}`),
       asSentence(`Muscles: ${formatMuscles(proposed.muscles)}`),
     ];
@@ -109,6 +114,11 @@ export function buildExerciseChangeDiff(
   pushFieldChange(changes, "Tracking", current.trackingType, proposed.trackingType, formatTracking);
   pushFieldChange(changes, "Loading", current.defaultLoadType, proposed.defaultLoadType, formatLoading);
   pushFieldChange(changes, "Side mode", current.sideMode, proposed.sideMode, formatSideMode);
+  if (canonicalWeightSettings(current.weightSettings) !== canonicalWeightSettings(proposed.weightSettings)) {
+    changes.push(asSentence(
+      `Available loading: ${formatWeightSettings(current.weightSettings)} → ${formatWeightSettings(proposed.weightSettings)}`,
+    ));
+  }
   pushFieldChange(changes, "Instructions", current.instructions, proposed.instructions, formatInstructions);
   if (canonicalMuscles(current.muscles) !== canonicalMuscles(proposed.muscles)) {
     changes.push(asSentence(`Muscles: ${formatMuscles(current.muscles)} → ${formatMuscles(proposed.muscles)}`));
@@ -145,6 +155,21 @@ function formatMuscles(muscles: ExerciseMuscle[]) {
 
 function formatInstructions(instructions: string) {
   return instructions || "None";
+}
+
+function canonicalWeightSettings(settings: ExerciseWeightSettings | null) {
+  return JSON.stringify(settings);
+}
+
+function formatWeightSettings(settings: ExerciseWeightSettings | null) {
+  if (!settings) return "Not set";
+  const minimum = settings.minimumIncrement === null
+    ? "standard increment"
+    : `${settings.minimumIncrement} ${settings.unit} minimum increment`;
+  const maximum = settings.maximumAvailable === null
+    ? "no known maximum"
+    : `${settings.maximumAvailable} ${settings.unit} maximum`;
+  return `${minimum}; ${maximum}`;
 }
 
 function formatIdentifier(value: string) {

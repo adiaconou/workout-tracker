@@ -1,4 +1,5 @@
 import type {
+  ExerciseWeightSettings,
   LoadType,
   RestRule,
   RoutineSetType,
@@ -65,6 +66,7 @@ export type NormalizedWorkoutExerciseSnapshot = {
   loadType: LoadType;
   sideMode: SideMode;
   weightUnit: string;
+  weightSettings?: ExerciseWeightSettings | null;
   sets: NormalizedWorkoutSetSnapshot[];
 };
 
@@ -100,6 +102,7 @@ export type GuidedSet = {
   restRule: "standard" | "after_both_sides" | "no_rest_before_drop" | "emom" | "after_superset";
   loadType: string;
   weightUnit: string;
+  weightSettings?: ExerciseWeightSettings | null;
   sourceRoutineExerciseId?: string | null;
   sourceRoutineSetId?: string | null;
   targetType?: TargetType;
@@ -195,6 +198,7 @@ function createExerciseSets(exercise: WorkoutPrescriptionExercise): GuidedSet[] 
         restRule,
         loadType: exercise.loadType,
         weightUnit: exercise.weightUnit,
+        weightSettings: null,
       });
     }
   }
@@ -265,6 +269,7 @@ function buildNormalizedGuidedSets(prescription: NormalizedWorkoutPrescription) 
         restRule: set.restRule,
         loadType: exercise.loadType,
         weightUnit: exercise.weightUnit,
+        weightSettings: exercise.weightSettings ?? null,
         sourceRoutineExerciseId: exercise.sourceRoutineExerciseId,
         sourceRoutineSetId: set.sourceRoutineSetId,
         targetType: set.targetType,
